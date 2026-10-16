@@ -22,12 +22,14 @@ public sealed record WorkflowSettings(int PollSeconds = 10, int TimeoutMinutes =
 public sealed record WorkloadClassification(string Classification, string Reason);
 public sealed record WorkflowPlan(WorkflowRequest Request, string Classification, string Reason, string JobId,
     string Fingerprint, int PollSeconds, int TimeoutMinutes);
-public sealed record TaskSpec(WorkflowPlan Plan, int Index)
+public sealed record TaskSpec(WorkflowPlan Plan, int Index, DateTime? DeadlineUtc = null)
 {
     public string TaskId => $"task-{Index:00}";
     public int DelaySeconds => Plan.Classification == "heavy" ? Plan.Request.HeavyDelaySeconds : Plan.Request.LightDelaySeconds;
     public bool InjectFailure => Plan.Request.FailTaskIndex == Index;
 }
+public sealed record BatchJobTerminationStatus(string State, bool Completed);
+public sealed class TransientWorkflowException(string message, Exception innerException) : Exception(message, innerException);
 public sealed record BatchTaskStatus(string TaskId, string State, bool Completed, bool Succeeded, int? ExitCode, string? Failure);
 public sealed record ResultReference(string RequestId, string TaskId, string Uri);
 public sealed record AggregateReference(string RequestId, string Uri, int Sum, int TaskCount);
@@ -38,6 +40,7 @@ public sealed record ManifestResult(string RequestId, string JobId, string Finge
 public sealed class WorkflowConflictException(string message) : Exception(message);
 public interface IBatchGateway
 {
+    Task<BatchJobTerminationStatus> TerminateJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default);
     Task EnsureJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default);
     Task EnsureTaskAsync(TaskSpec spec, CancellationToken cancellationToken = default);
     Task<BatchTaskStatus> GetStatusAsync(TaskSpec spec, CancellationToken cancellationToken = default);

@@ -6,6 +6,7 @@ namespace Poc.Tests;
 // Deliberately test-only: these doubles do not demonstrate Azure connectivity or Durable replay.
 internal sealed class FakeBatchGateway : IBatchGateway
 {
+    public Task<BatchJobTerminationStatus> TerminateJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => Task.FromResult(new BatchJobTerminationStatus("Completed", true));
     public Dictionary<string, string> Jobs { get; } = [];
     public Dictionary<string, string> Tasks { get; } = [];
     public int? MissingFileIndex { get; set; }

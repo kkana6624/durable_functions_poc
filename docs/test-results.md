@@ -1,5 +1,22 @@
 # PoC 検証結果
 
+## 2026-10-17 信頼性改善後の再検証
+
+Azure実接続は引き続き未実施。下の2026-10-16の30件は初版の履歴で、現在の結果は次のとおりです。
+
+| 対象 | 結果 |
+|---|---|
+| .NET単体テスト | 54 Pass / 0 Fail / 0 Skip。`artifacts/reliability-validation/dotnet-test.log` |
+| Release publish | 成功。`artifacts/reliability-validation/publish.log`、`publish/` |
+| PowerShellオフライン試験 | Deployment.Common / Test-Deployment / Deploy.Workflowの3組成功 |
+| Terraform Mock | main 7件、bootstrap 1件成功 |
+
+追加検証は同入力の同時受付、異入力の競合、通知応答喪失後の再送、既存インスタンスの再利用、Entity状態再読み込み後の起動抑止、一時障害の再試行上限と期限、SDKの複合例外と通信timeout、呼出元cancelの非再試行、長時間Activity中の期限到達、停止対象照合、停止要求の再実行、自然完了との競合、停止確認失敗時の未公開を対象とします。
+
+配置試験では作成済みbackendのPlanOnly、backend不存在と参照エラーの区別、既存0台Pool、新規全台準備、node pagination、12 Functions検出、状態GET404待機と401/403失敗を確認しました。いずれもFake/Mockです。Entityの実checkpoint、host中断復旧、Blobサービスでの同時条件付き書き込み、実Batchの停止は未実証です。[設計と公式資料](workflow-reliability.md)に根拠と残るAzure試験を記載します。
+
+## 初版の記録
+
 記録日: 2026-10-16。Azure 接続値と資格情報が提供されていないため実環境試験は未実施です。以下は期待値と実施手順の記録であり、実環境での成功を意味しません。
 
 ## 実行環境・証跡
@@ -55,11 +72,11 @@ SDK 互換性の確認では、当初の `Azure.Identity 1.17.1` と Functions �
 | T05 | 待機中に PoC Function のみ再起動 | 同じ instance で再開し manifest 公開 | Azure 接続なし | Not tested |
 | T06 Mock | Fake で結果ファイル取得失敗 | 明示失敗、manifest なし | `MissingTaskFileIsAnErrorAndPreventsManifest` 成功 | Pass（Mock） |
 | T06 Azure | 実 Batch File API で取得不能 | 明示失敗、manifest なし | 実ノードは未試験 | Not tested |
-| Timeout | 待機より短い期限 | TimedOut、manifest なし、Batch 残存を記録 | Azure 接続なし | Not tested |
-| T07 | 同一 requestId の同時 POST | 受付競合と Batch ID 重複を観察 | P1 / 厳密保証なし | Not tested |
+| Timeout | 待機より短い期限 | TimedOut、manifestなし、Job停止結果を記録 | Mock成功、実Azure接続なし | Not tested（Azure） |
+| T07 | 同一 requestId の同時 POST | 同入力は同instance、異入力は409、Entityで起動を直列化 | 2026-10-17 Mock成功、実Azure接続なし | Not tested（Azure） |
 | T08 Mock | Activity の副作用後に再呼び出し | 同一 Job / Task / manifest を再利用 | `ReplayedActivitiesReuseResourcesAndManifest` 成功。1 Job / 3 Tasks / 5文書 | Pass（Mock） |
 | T08 Azure | 実 Activity 副作用後の中断・再実行 | 同一 Job / Task / manifest を再利用 | クラウド replay 未実施 | Not tested |
 | T09 | OutputFiles 直送比較 | Blob への直接永続化 | P1 / 未実装 | Not tested |
-| T10 | Durable / Batch 停止 | 両方の状態整合性 | P1 / 未実装 | Not tested |
+| T10 | Durable / Batch 停止 | 両方の状態整合性 | 期限超過時のJob停止は実装・Mock成功。利用者キャンセル連鎖は未実装 | Not tested（Azure） |
 
 Azure 試験時は `artifacts/` 等へ日時、設定（秘密を除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、該当行に具体的なパスを追記します。Durable の runtimeStatus が Completed でも業務 output が Failed / TimedOut の場合は成功としません。最終成功は manifest の内容と入力との整合性まで確認します。

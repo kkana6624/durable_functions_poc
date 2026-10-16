@@ -17,6 +17,15 @@ function Invoke-ValidationHttp {
     }
     catch {
         # URLs contain Durable system keys; neither request URLs nor exception text may be logged.
+        $responseProperty = $_.Exception.PSObject.Properties['Response']
+        if ($responseProperty -and $responseProperty.Value) {
+            $status = [int]$responseProperty.Value.StatusCode
+            if ($status -eq 404 -and $Method -eq 'Get') {
+                # Entity admission is asynchronous; instance creation can follow the HTTP 202.
+                return @{ StatusCode=404; Data=$null }
+            }
+            if ($status -in @(401,403)) { Stop-Validation "Workflow HTTP authorization failed (HTTP $status); secret-bearing URLs were suppressed." }
+        }
         throw 'Workflow HTTP request failed. Check network access, Function authentication, and Application Insights; secret-bearing URLs were suppressed.'
     }
 }
@@ -66,30 +75,47 @@ function Invoke-DeploymentValidation {
     $endpoint = $Outputs.batch_endpoint.TrimEnd('/')
     $poolId = [Uri]::EscapeDataString($Outputs.batch_pool_id)
     if ($Phase -in @('Pool','All')) {
-    $minimumNodes = if ($Outputs.ContainsKey('batch_node_count') -and $null -ne $Outputs.batch_node_count) { [int]$Outputs.batch_node_count } else { 1 }
-    if ($minimumNodes -lt 1) { throw 'batch_node_count must be at least 1 for readiness validation.' }
+    # A referenced pool may intentionally have zero nodes until a task triggers autoscale.
+    # New pools expose their configured count; all of those nodes must be usable.
+    $minimumNodes = if ($Outputs.ContainsKey('batch_node_count') -and $null -ne $Outputs.batch_node_count) { [int]$Outputs.batch_node_count } else { 0 }
+    if ($minimumNodes -lt 0) { throw 'batch_node_count cannot be negative.' }
+    if ($Outputs.ContainsKey('batch_mode') -and $Outputs.batch_mode -eq 'new' -and $minimumNodes -lt 1) { throw 'New pools require a positive batch_node_count.' }
     $null = Wait-ValidationCondition -RetryErrors -Description 'Batch node readiness' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
         $pool = Invoke-AzJson -Arguments @('rest','--method','get','--url',"$endpoint/pools/$poolId`?api-version=2025-06-01",'--resource','https://batch.core.windows.net/')
+        if ($minimumNodes -eq 0) { return $true }
         if ($pool.PSObject.Properties['resizeErrors'] -and @($pool.resizeErrors).Count -gt 0) {
             $codes = @($pool.resizeErrors | ForEach-Object { $_.code }) -join ', '
             Stop-Validation "Batch pool resize failed ($codes). Check quota, image access, networking, and Batch permissions."
         }
-        $page = Invoke-AzJson -Arguments @('rest','--method','get','--url',"$endpoint/pools/$poolId/nodes?api-version=2025-06-01",'--resource','https://batch.core.windows.net/')
-        $nodes = @($page.value)
+        $nodes = @()
+        $next = "$endpoint/pools/$poolId/nodes?api-version=2025-06-01"
+        $visited = @{}
+        while ($next) {
+            $nextUri = [Uri]$next
+            if ($nextUri.Scheme -ne 'https' -or $nextUri.Authority -ne ([Uri]$endpoint).Authority -or $visited.ContainsKey($next)) {
+                Stop-Validation 'Batch node pagination returned an invalid or repeated continuation URL.'
+            }
+            $visited[$next] = $true
+            $page = Invoke-AzJson -Arguments @('rest','--method','get','--url',$next,'--resource','https://batch.core.windows.net/')
+            $nodes += @($page.value)
+            $next = if ($page.PSObject.Properties['odata.nextLink']) { [string]$page.'odata.nextLink' } else { $null }
+        }
         return @($nodes | Where-Object { $_.state -in @('idle','running') -and $_.schedulingState -ne 'disabled' }).Count -ge $minimumNodes
     }
-    Write-Host 'Batch nodes are ready.'
+    if ($minimumNodes -eq 0) { Write-Host 'Existing Batch pool is accessible; tasks may trigger node allocation.' }
+    else { Write-Host 'All configured Batch nodes are ready.' }
     if ($Phase -eq 'Pool') { return [pscustomobject]@{ Ready=$true; Phase='Pool'; Smoke='Not tested' } }
     }
     $expected = @('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity',
-        'EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity')
+        'EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',
+        'WorkflowAdmissionEntity','TerminateBatchJobActivity')
     $null = Wait-ValidationCondition -RetryErrors -Description 'Function indexing' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
         $functions = @(Invoke-AzJson -Arguments @('functionapp','function','list','--name',$Outputs.function_app_name,
             '--resource-group',$Outputs.resource_group_name))
         $names = @($functions | ForEach-Object { ($_.name -split '/')[-1] })
         return @($expected | Where-Object { $_ -notin $names }).Count -eq 0
     }
-    Write-Host 'All 10 Functions are indexed.'
+    Write-Host "All $($expected.Count) Functions are indexed."
     if (-not $Smoke) { return [pscustomobject]@{ Ready=$true; Smoke='Not tested' } }
 
     $keys = Wait-ValidationCondition -RetryErrors -Description 'Function key availability (requires listKeys permission)' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
@@ -116,6 +142,7 @@ function Invoke-DeploymentValidation {
     }
     $status = Wait-ValidationCondition -RetryErrors -Description 'Three-task workflow' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
         $response = Invoke-ValidationHttp -Uri $statusUri.AbsoluteUri
+        if ($response.StatusCode -eq 404) { return $null }
         $data = $response.Data
         if ($data.runtimeStatus -in @('Failed','Terminated','Canceled','Suspended')) {
             Stop-Validation "Smoke workflow ended with runtimeStatus $($data.runtimeStatus). Check Application Insights using the request ID."

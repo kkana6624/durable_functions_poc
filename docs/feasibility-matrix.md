@@ -1,6 +1,6 @@
 # 実現性評価
 
-2026-10-16。ローカルの build / publish と 30 単体テストが成功し、Azure 実接続は未実施です。Fake とメモリ上の保存先による検証を、実 Pool / Durable host / Blob service による実証と分けて記録します。証跡は [検証結果](test-results.md)、`artifacts/build.log`、`artifacts/publish.log`、`artifacts/test-summary.txt`（実測要約、生ログではない）です。
+2026-10-17。信頼性改善後の54単体テスト、Release publish、PowerShellオフライン3組、Terraform Mock8件が成功し、Azure実接続は未実施です。Fakeとメモリ上の保存先による検証を、実Pool / Durable host / Blob serviceによる実証と分けて記録します。証跡は[検証結果](test-results.md)、`artifacts/reliability-validation/dotnet-test.log`と`publish.log`です。変更の根拠は[信頼性改善の設計](workflow-reliability.md)を参照してください。
 
 | 検証 | 実装 / 評価対象 | ローカル結果 | Azure 実接続結果 | 残る確認・制限 |
 |---|---|---|---|---|
@@ -11,8 +11,10 @@
 | F05 異常 / 期限超過 | exit code / failure info 判定、失敗結果、公開抑止 | Pass（Mock）: 失敗・欠損時の未公開、期限判定 | Not tested | 実非ゼロ Task と期限超過を観察 |
 | F06 Blob 集約 | 小結果保存、sum、条件付き manifest | Pass（Fake / メモリ保存）: sum=3、分類、改ざん拒否 | Not tested | Blob service の条件付き書込と URI を確認 |
 | Activity 冪等性 | 決定的 ID、入力照合、条件付き Blob | Pass（Fake / メモリ保存）: 再実行で1 Job / 3 Tasks / 5文書、入力衝突拒否 | Not tested | 実障害・リプレイ試験が必要 |
-| 同一 requestId の厳密排他 | 事前照会は完全な排他ではない | Not tested | Not tested / Gap | P1。重複受付の観測が必要 |
-| キャンセル連鎖 | 失敗後 Task を自動停止しない | Not tested | Not tested / Gap | P1。手動 PoC Job 清掃 |
+| 同一 requestId の受付 | immutable入力Blob＋Durable Entityの起動状態 | Pass（Mock）: 同時受付、入力競合、再送、状態再読込 | Not tested | Entity状態とMain履歴保持が前提。実host中断復旧を確認 |
+| 期限超過時のBatch停止 | Job照合・停止要求・完了確認、server側期限 | Pass（Mock）: 停止再実行、自然完了競合、停止失敗時未公開 | Not tested | 実Job停止・host停止中の期限制約を確認 |
+| 一時障害の再試行 | SDKとDurableの有界retry、呼出元cancel区別 | Pass（Mock）: 上限・期限・恒久エラー除外 | Not tested | 実サービスの通信障害・スロットリングを確認 |
+| 利用者キャンセル連鎖 | Durable管理APIからのキャンセルとBatch連動 | Not tested | Not tested / Gap | P1。通常Task失敗では兄弟の自然終了を待つ |
 | 本番の大容量結果永続化 | P0 は小さなローカル Task ファイルの転送 | Not tested | Not tested / Gap | OutputFiles / 直接アップロード / 修復を比較 |
 | LSF / HPC Pack の完全代替 | スケジューラ互換、Fair Share、Backfilling | Not tested | Not tested | 今回の非スコープ |
 | 数百台性能・価格 / MPI / HA | 本番負荷と障害条件 | Not tested | Not tested | 今回の非スコープ |

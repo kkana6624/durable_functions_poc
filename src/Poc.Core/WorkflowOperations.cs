@@ -14,6 +14,7 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
         return new(request, classification.Classification, classification.Reason, WorkflowIdentity.JobId(request.RequestId),
             WorkflowIdentity.Fingerprint(request, classification.Classification), settings.PollSeconds, settings.TimeoutMinutes);
     }
+    public Task<BatchJobTerminationStatus> TerminateJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.TerminateJobAsync(plan, cancellationToken);
     public Task EnsureJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.EnsureJobAsync(plan, cancellationToken);
     public Task EnsureTaskAsync(TaskSpec spec, CancellationToken cancellationToken = default) => batch.EnsureTaskAsync(spec, cancellationToken);
     public Task<BatchTaskStatus> GetStatusAsync(TaskSpec spec, CancellationToken cancellationToken = default) => batch.GetStatusAsync(spec, cancellationToken);

@@ -21,17 +21,17 @@ public class OrchestrationTests
         var plan = Plan(request);
         var context = Context();
         context.Setup(c => c.GetInput<WorkflowRequest>()).Returns(request);
-        context.Setup(c => c.CallActivityAsync<WorkflowPlan>(nameof(WorkflowFunctions.ClassifyActivity), request, null))
+        context.Setup(c => c.CallActivityAsync<WorkflowPlan>(nameof(WorkflowFunctions.ClassifyActivity), request, It.IsAny<TaskOptions>()))
             .ReturnsAsync(plan);
-        context.Setup(c => c.CallActivityAsync<object>(nameof(WorkflowFunctions.EnsureBatchJobActivity), plan, null))
+        context.Setup(c => c.CallActivityAsync<object>(nameof(WorkflowFunctions.EnsureBatchJobActivity), plan, It.IsAny<TaskOptions>()))
             .ReturnsAsync((object)null!);
         var children = Enumerable.Range(0, 3).Select(_ => new TaskCompletionSource<TaskMonitorResult>()).ToArray();
         context.Setup(c => c.CallSubOrchestratorAsync<TaskMonitorResult>(nameof(WorkflowFunctions.MonitorBatchTaskOrchestrator), It.IsAny<object>(), null))
             .Returns((TaskName _, object input, TaskOptions? _) => children[((TaskSpec)input).Index].Task);
-        context.Setup(c => c.CallActivityAsync<ResultReference[]>(nameof(WorkflowFunctions.FetchAndPersistActivity), plan, null)).ReturnsAsync([]);
-        context.Setup(c => c.CallActivityAsync<AggregateReference>(nameof(WorkflowFunctions.AggregateActivity), plan, null))
+        context.Setup(c => c.CallActivityAsync<ResultReference[]>(nameof(WorkflowFunctions.FetchAndPersistActivity), plan, It.IsAny<TaskOptions>())).ReturnsAsync([]);
+        context.Setup(c => c.CallActivityAsync<AggregateReference>(nameof(WorkflowFunctions.AggregateActivity), plan, It.IsAny<TaskOptions>()))
             .ReturnsAsync(new AggregateReference(request.RequestId, "aggregate", 3, 3));
-        context.Setup(c => c.CallActivityAsync<ManifestReference>(nameof(WorkflowFunctions.PublishManifestActivity), plan, null))
+        context.Setup(c => c.CallActivityAsync<ManifestReference>(nameof(WorkflowFunctions.PublishManifestActivity), plan, It.IsAny<TaskOptions>()))
             .ReturnsAsync(new ManifestReference(request.RequestId, "manifest", "aggregate", 3, 3));
 
         var run = WorkflowFunctions.MainOrchestrator(context.Object);
@@ -39,13 +39,13 @@ public class OrchestrationTests
         children[0].SetResult(new TaskMonitorResult("task-00", failure ? "Failed" : "Succeeded", failure ? "exit 42" : null));
         children[1].SetResult(new TaskMonitorResult("task-01", "Succeeded", null));
         Assert.False(run.IsCompleted);
-        context.Verify(c => c.CallActivityAsync<ResultReference[]>(nameof(WorkflowFunctions.FetchAndPersistActivity), plan, null), Times.Never);
+        context.Verify(c => c.CallActivityAsync<ResultReference[]>(nameof(WorkflowFunctions.FetchAndPersistActivity), plan, It.IsAny<TaskOptions>()), Times.Never);
         children[2].SetResult(new TaskMonitorResult("task-02", "Succeeded", null));
         if (failure) await Assert.ThrowsAsync<InvalidOperationException>(() => run);
         else Assert.Equal("Succeeded", (await run).State);
         var expected = failure ? Times.Never() : Times.Once();
-        context.Verify(c => c.CallActivityAsync<ResultReference[]>(nameof(WorkflowFunctions.FetchAndPersistActivity), plan, null), expected);
-        context.Verify(c => c.CallActivityAsync<ManifestReference>(nameof(WorkflowFunctions.PublishManifestActivity), plan, null), expected);
+        context.Verify(c => c.CallActivityAsync<ResultReference[]>(nameof(WorkflowFunctions.FetchAndPersistActivity), plan, It.IsAny<TaskOptions>()), expected);
+        context.Verify(c => c.CallActivityAsync<ManifestReference>(nameof(WorkflowFunctions.PublishManifestActivity), plan, It.IsAny<TaskOptions>()), expected);
     }
 
     [Fact]
@@ -58,12 +58,12 @@ public class OrchestrationTests
         var initial = new DateTime(2026, 10, 16, 0, 0, 0, DateTimeKind.Utc);
         var current = initial;
         context.SetupGet(c => c.CurrentUtcDateTime).Returns(() => current);
-        context.Setup(c => c.CallActivityAsync<object>(nameof(WorkflowFunctions.EnsureBatchTaskActivity), spec, null)).ReturnsAsync((object)null!);
-        context.Setup(c => c.CallActivityAsync<BatchTaskStatus>(nameof(WorkflowFunctions.GetBatchTaskStatusActivity), spec, null))
+        context.Setup(c => c.CallActivityAsync<object>(nameof(WorkflowFunctions.EnsureBatchTaskActivity), spec, It.IsAny<TaskOptions>())).ReturnsAsync((object)null!);
+        context.Setup(c => c.CallActivityAsync<BatchTaskStatus>(nameof(WorkflowFunctions.GetBatchTaskStatusActivity), spec, It.IsAny<TaskOptions>()))
             .ReturnsAsync(new BatchTaskStatus(spec.TaskId, "running", false, false, null, null));
         var timerDates = new List<DateTime>();
         context.Setup(c => c.CreateTimer(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
-            .Returns((DateTime date, CancellationToken _) => { timerDates.Add(date); current = date; return Task.CompletedTask; });
+            .Returns((DateTime date, CancellationToken _) => { if (_.CanBeCanceled) return Task.Delay(Timeout.Infinite, _); timerDates.Add(date); current = date; return Task.CompletedTask; });
 
         var result = await WorkflowFunctions.MonitorBatchTaskOrchestrator(context.Object);
         Assert.Equal("TimedOut", result.State);

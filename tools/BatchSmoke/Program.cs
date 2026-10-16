@@ -6,13 +6,18 @@ using Poc.Core;
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value ? value : throw new ArgumentException($"Set {name}.");
 var endpoint = Required("BATCH_ENDPOINT");
 var pool = Required("BATCH_POOL_ID");
-var requestId = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal)) ?? $"smoke-{DateTime.UtcNow:yyyyMMddHHmmss}";
+var timeoutIndex = Array.IndexOf(args, "--timeout-seconds");
+var timeoutSeconds = timeoutIndex < 0 ? 900 : timeoutIndex + 1 < args.Length &&
+    int.TryParse(args[timeoutIndex + 1], out var seconds) && seconds is >= 1 and <= 7200
+        ? seconds : throw new ArgumentException("--timeout-seconds requires an integer from 1 to 7200.");
+var requestId = args.Where((_, index) => index != timeoutIndex + 1 || timeoutIndex < 0)
+    .FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal)) ?? $"smoke-{Guid.NewGuid():N}";
 var fail = args.Contains("--fail");
 var batch = new AzureBatchGateway(new BatchClient(new Uri(endpoint), new DefaultAzureCredential()), pool);
 var request = new WorkflowRequest(requestId, "light", 1, fail ? 0 : null, 2, 5);
-var operations = new WorkflowOperations(batch, null!, new StubWorkloadClassifier(), new WorkflowSettings());
+var operations = new WorkflowOperations(batch, null!, new StubWorkloadClassifier(), new WorkflowSettings(TimeoutMinutes: (int)Math.Ceiling(timeoutSeconds / 60.0)));
 var plan = await operations.ClassifyAsync(request);
-using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(plan.TimeoutMinutes));
+using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 await batch.EnsureJobAsync(plan, timeout.Token);
 var spec = new TaskSpec(plan, 0);
 await batch.EnsureTaskAsync(spec, timeout.Token);

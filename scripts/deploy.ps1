@@ -87,11 +87,28 @@ try {
         $bootstrapJson = Invoke-Tool $terraform @('-chdir=infra/bootstrap', 'show', '-json', $bootstrapPlan) | ConvertFrom-Json
         Assert-DeploymentPlan -Plan $bootstrapJson -BatchMode existing
         if ($PlanOnly) {
-            Write-Host "Bootstrap plan saved to $bootstrapPlan. Main plan requires the backend to exist; no apply or code deployment performed."
-            return
+            # Successful existence queries distinguish absence from RBAC/network failures.
+            # Do not catch errors here: an inaccessible backend is not a missing backend.
+            $groupExists = Invoke-AzJson @('group', 'exists', '--name', $backend.resource_group_name)
+            $backendExists = $false
+            if ($groupExists -eq $true) {
+                $accounts = @(Invoke-AzJson @('storage', 'account', 'list', '--resource-group', $backend.resource_group_name))
+                if (@($accounts | Where-Object { $_.name -eq $backend.storage_account_name }).Count -gt 0) {
+                    $container = Invoke-AzJson @('storage', 'container', 'exists', '--account-name', $backend.storage_account_name,
+                        '--name', $backend.container_name, '--auth-mode', 'login')
+                    $backendExists = $container.exists -eq $true
+                }
+            }
+            if (-not $backendExists) {
+                Write-Host "Bootstrap plan saved to $bootstrapPlan. Backend does not exist; main plan requires bootstrap apply. No apply or code deployment performed."
+                return
+            }
+            Write-Host 'Backend exists; continuing to the main infrastructure plan without applying bootstrap.'
         }
-        Write-Host 'Creating or updating the dedicated Terraform state backend...'
-        $null = Invoke-Tool $terraform @('-chdir=infra/bootstrap', 'apply', '-input=false', $bootstrapPlan) -LogPath (Join-Path $run 'bootstrap-apply.log')
+        else {
+            Write-Host 'Creating or updating the dedicated Terraform state backend...'
+            $null = Invoke-Tool $terraform @('-chdir=infra/bootstrap', 'apply', '-input=false', $bootstrapPlan) -LogPath (Join-Path $run 'bootstrap-apply.log')
+        }
     }
     $backendConfig = @{ subscription_id = $variables.subscription_id; resource_group_name = $backend.resource_group_name; storage_account_name = $backend.storage_account_name; container_name = $backend.container_name; key = "$Environment.tfstate"; use_azuread_auth = $true }
     $backendFile = Join-Path $run 'backend.hcl'
@@ -109,7 +126,7 @@ try {
     while ($true) {
         try { $null = Invoke-Tool $terraform @('-chdir=infra', 'init', '-input=false', "-backend-config=$backendFile") -LogPath (Join-Path $run 'init.log'); break }
         catch {
-            $newBackend = $backend.ContainsKey('Create') -and $backend.Create
+            $newBackend = -not $PlanOnly -and $backend.ContainsKey('Create') -and $backend.Create
             $permissionPropagation = $_.Exception.Message -match '(?i)403|AuthorizationPermissionMismatch|AuthorizationFailure|Forbidden|not authorized|permission'
             if (-not $newBackend -or -not $permissionPropagation -or (Get-Date) -ge $deadline) { throw }
             Start-Sleep -Seconds 10
@@ -138,7 +155,7 @@ try {
             $env:BATCH_POOL_ID = $outputs.batch_pool_id
             $env:AZURE_TENANT_ID = $account.tenantId
             $smokeId = 'deploy-smoke-' + [Guid]::NewGuid().ToString('N')
-            $null = Invoke-Tool $dotnet @('run', '--project', 'tools/BatchSmoke/BatchSmoke.csproj', '--no-build', '--', $smokeId) -LogPath (Join-Path $run 'batch-smoke.log')
+            $null = Invoke-Tool $dotnet @('run', '--project', 'tools/BatchSmoke/BatchSmoke.csproj', '--no-build', '--', $smokeId, '--timeout-seconds', [string]$timeout) -LogPath (Join-Path $run 'batch-smoke.log')
         }
         finally {
             $env:BATCH_ENDPOINT = $previousBatchEndpoint

@@ -27,6 +27,11 @@ function Invoke-AzJson {
         return [pscustomobject]@{ allocationState='steady' }
     }
     if ($command -match '^rest .*?/nodes\?') {
+        if ($script:scenario -eq 'paging') {
+            $page=[pscustomobject]@{ value=@([pscustomobject]@{ state='idle'; schedulingState='enabled' }) }
+            if ($command -notmatch 'skiptoken') { $page | Add-Member -NotePropertyName 'odata.nextLink' -NotePropertyValue 'https://batch.example/pools/pool/nodes?api-version=2025-06-01&skiptoken=next' }
+            return $page
+        }
         $state=if ($script:scenario -eq 'neverready' -or ($script:scenario -eq 'retry' -and $script:poolReads -lt 2)) { 'creating' } else { 'idle' }
         $nodes=@([pscustomobject]@{ state=$state; schedulingState='enabled' })
         if ($script:scenario -eq 'allnodes' -and $script:poolReads -ge 2) { $nodes+= [pscustomobject]@{ state='idle'; schedulingState='enabled' } }
@@ -34,7 +39,8 @@ function Invoke-AzJson {
     }
     if ($command -match '^functionapp function list ') {
         $names=@('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity',
-            'EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity')
+            'EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',
+            'WorkflowAdmissionEntity','TerminateBatchJobActivity')
         if ($script:scenario -eq 'missingfunction') { $names=$names[0..8] }
         return @($names | ForEach-Object { [pscustomobject]@{ name="poc-app/$_" } })
     }
@@ -65,12 +71,14 @@ function Invoke-ValidationHttp {
         return @{ StatusCode=202; Data=[pscustomobject]@{ instanceId='poc-instance'; statusQueryGetUri='https://poc.example/status?code=DO-NOT-LOG-STATUS-KEY' } }
     }
     $script:httpReads++
+    if ($script:scenario -eq 'workflowpending' -and $script:httpReads -eq 1) { return @{ StatusCode=404; Data=$null } }
     $state=if ($script:scenario -eq 'workflowfailed') { 'Failed' } else { 'Completed' }
     return @{ StatusCode=200; Data=[pscustomobject]@{ runtimeStatus=$state; output=[pscustomobject]@{ state='Succeeded' } } }
 }
 $outputs=@{ subscription_id='subscription'; resource_group_name='poc-rg'; function_app_name='poc-app'; function_app_url='https://poc.example';
     storage_account_name='pocstorage'; blob_container_name='poc-results'; blob_endpoint='https://pocstorage.blob.core.windows.net/'; batch_endpoint='https://batch.example';
     batch_pool_id='pool'; batch_account_name='account'; batch_resource_group_name='batch-rg' }
+$outputs.batch_node_count=1
 
 $result=Invoke-DeploymentValidation -Outputs $outputs -Phase All -Smoke -TimeoutSeconds 2 -PollSeconds 1
 Assert-True ($result.Smoke -eq 'Pass' -and $result.Sum -eq 3) 'Full smoke should pass'
@@ -86,17 +94,29 @@ $script:scenario='allnodes'; $script:poolReads=0
 $outputs.batch_node_count=2
 $result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 3 -PollSeconds 1
 Assert-True ($script:poolReads -eq 2 -and $result.Ready) 'New Pool should wait for every configured node'
-$outputs.Remove('batch_node_count')
+$script:scenario='paging'; $script:poolReads=0
+$result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 2 -PollSeconds 1
+Assert-True ($result.Ready -and $script:poolReads -eq 1) 'Readiness must count nodes across continuation pages'
+$outputs.batch_node_count=1
 $script:scenario='resize'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'AllocationFailed'
 $script:scenario='permission'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'permission'
 $script:scenario='neverready'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'timed out'
+$outputs.Remove('batch_node_count')
+$script:calls.Clear()
+$result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1
+Assert-True ($result.Ready -and @($script:calls | Where-Object { $_ -match '/nodes\?' }).Count -eq 0) 'Existing zero-node pool must pass accessibility without waiting for allocation'
+$script:scenario='permission'
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'permission'
 $script:scenario='missingfunction'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Functions -TimeoutSeconds 1 -PollSeconds 1 } 'indexing timed out'
 $script:scenario='workflowfailed'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Functions -Smoke -TimeoutSeconds 1 -PollSeconds 1 } 'runtimeStatus Failed'
+$script:scenario='workflowpending'; $script:httpReads=0
+$result=Invoke-DeploymentValidation -Outputs $outputs -Phase Functions -Smoke -TimeoutSeconds 3 -PollSeconds 1
+Assert-True ($result.Smoke -eq 'Pass' -and $script:httpReads -eq 2) 'Status polling must wait through instance creation HTTP 404 after entity admission'
 $script:scenario='corrupt'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Functions -Smoke -TimeoutSeconds 1 -PollSeconds 1 } 'inconsistent'
 
@@ -107,4 +127,19 @@ try { Invoke-ValidationHttp -Uri 'https://poc.example/status?code=DO-NOT-LOG-STA
 catch {
     Assert-True ($_.Exception.Message -match 'suppressed' -and $_.Exception.Message -notmatch 'DO-NOT-LOG') 'HTTP error must suppress secrets'
 }
-Write-Host 'Deployment validation offline tests: PASS (11 scenarios; no Azure calls).'
+$script:httpStatus=404
+function Invoke-WebRequest {
+    $error=[InvalidOperationException]::new('Failed secret-bearing URL')
+    $error | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode=$script:httpStatus })
+    throw $error
+}
+$pending=Invoke-ValidationHttp -Uri 'https://poc.example/status?code=DO-NOT-LOG'
+Assert-True ($pending.StatusCode -eq 404 -and $null -eq $pending.Data) 'HTTP wrapper must expose pending instance without reading a missing JSON body'
+foreach ($status in @(401,403)) {
+    $script:httpStatus=$status
+    try { Invoke-ValidationHttp -Uri 'https://poc.example/status?code=DO-NOT-LOG'; throw 'Expected authorization failure' }
+    catch {
+        Assert-True ($_.Exception.Data['PermanentValidation'] -and $_.Exception.Message -notmatch 'DO-NOT-LOG') 'HTTP authorization failures must stop retries and suppress credentials'
+    }
+}
+Write-Host 'Deployment validation offline tests: PASS (node pagination, existing zero-node pools, readiness, smoke, redaction; no Azure calls).'

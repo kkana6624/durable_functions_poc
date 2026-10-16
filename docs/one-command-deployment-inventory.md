@@ -75,7 +75,7 @@ Poolのpublic IPを無効にするだけでは通信は完成しない。nodeMan
 3. restore / build / test / publishとZIP作成。ZIP直下のhost.jsonと拡張機能ディレクトリを確認。
 4. state backendを準備または参照し、Terraform init / validate / plan。既存モードでは共有Batch資材への変更がないことを機械的に確認。
 5. 保存済みplanをapplyし、Account endpoint、Pool ID、Function名、Blob URIをoutputから取得。
-6. RBAC反映とPoolノードの準備完了を、期限・リトライ・resize error検出付きで待つ。
+6. RBAC反映を待ち、新規Poolは指定全台の準備完了を期限・リトライ・resize error検出付きで待つ。既存Poolは存在・参照権限を確認し、0台でも配置を進める。SmokeはTask投入後に自動拡張・完了を待つ。
 7. FunctionコードをEntra認証でZIP配置し、配置完了・Functions検出を確認。
 8. 検証オプション有効時は単一Batch smoke→HTTP workflow→manifest/sum=3確認。試験結果を配置結果と区別して保存。
 9. 環境名、state key、成果物hash、配置先ID、結果、ログの場所を表示。Function keyや管理URLの秘密は表示・保存しない。

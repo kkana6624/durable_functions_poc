@@ -17,7 +17,11 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId) : IBatc
     {
         ValidatePlan(plan);
         if (string.IsNullOrWhiteSpace(poolId)) throw new ArgumentException("Existing pool ID is required.");
-        var create = new BatchJobCreateOptions(plan.JobId, new BatchPoolInfo { PoolId = poolId });
+        var create = new BatchJobCreateOptions(plan.JobId, new BatchPoolInfo { PoolId = poolId })
+        {
+            // Server-side safety net also applies while the Functions host is unavailable.
+            Constraints = new BatchJobConstraints { MaxWallClockTime = TimeSpan.FromMinutes(plan.TimeoutMinutes) }
+        };
         create.Metadata.Add(new BatchMetadataItem(FingerprintName, plan.Fingerprint));
         try { await client.CreateJobAsync(create, cancellationToken: cancellationToken); }
         catch (RequestFailedException ex) when (ex.Status == 409 && ex.ErrorCode == "JobExists") { }
@@ -34,6 +38,15 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId) : IBatc
     public async Task EnsureTaskAsync(TaskSpec spec, CancellationToken cancellationToken = default)
     {
         ValidateSpec(spec);
+        if (spec.DeadlineUtc is { } deadline && DateTime.UtcNow >= deadline)
+            throw new TimeoutException("Task submission deadline exceeded.");
+        // A terminated job cannot accept new tasks. This read detects conflicts before submission;
+        // Batch enforces the final state check atomically if termination races CreateTask.
+        var job = (await client.GetJobAsync(spec.Plan.JobId, cancellationToken: cancellationToken)).Value;
+        ValidateJob(spec.Plan, job);
+        if (job.State != BatchJobState.Active) throw new WorkflowConflictException("Batch job is no longer active.");
+        if (spec.DeadlineUtc is { } submissionDeadline && DateTime.UtcNow >= submissionDeadline)
+            throw new TimeoutException("Task submission deadline exceeded while checking the job.");
         var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
         var create = new BatchTaskCreateOptions(spec.TaskId, command) { Constraints = new BatchTaskConstraints { MaxTaskRetryCount = 0 } };
         create.EnvironmentSettings.Add(new EnvironmentSetting(FingerprintEnvironment) { Value = spec.Plan.Fingerprint });
@@ -43,6 +56,41 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId) : IBatc
         if (task.CommandLine != command || task.Constraints?.MaxTaskRetryCount != 0 ||
             task.EnvironmentSettings.SingleOrDefault(e => e.Name == FingerprintEnvironment)?.Value != spec.Plan.Fingerprint)
             throw new WorkflowConflictException($"Batch task {spec.TaskId} belongs to different input.");
+    }
+    private void ValidateJob(WorkflowPlan plan, BatchJob job)
+    {
+        if (job.PoolInfo.PoolId != poolId || job.Metadata.SingleOrDefault(m => m.Name == FingerprintName)?.Value != plan.Fingerprint)
+            throw new WorkflowConflictException($"Batch job {plan.JobId} belongs to different input or pool.");
+    }
+    public async Task<BatchJobTerminationStatus> TerminateJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default)
+    {
+        ValidatePlan(plan);
+        var job = (await client.GetJobAsync(plan.JobId, cancellationToken: cancellationToken)).Value;
+        ValidateJob(plan, job);
+        if (job.State == BatchJobState.Completed) return new(job.State.ToString(), true);
+        if (job.State != BatchJobState.Terminating)
+        {
+            try
+            {
+                await client.TerminateJobAsync(WaitUntil.Started, plan.JobId,
+                    new BatchJobTerminateOptions { TerminationReason = "PoC workflow monitoring deadline exceeded." },
+                    requestConditions: new RequestConditions { IfMatch = job.ETag },
+                    cancellationToken: cancellationToken);
+            }
+            catch (RequestFailedException ex) when (ex.Status == 409 && ex.ErrorCode is "JobCompleted" or "JobBeingTerminated") { }
+            catch (RequestFailedException ex) when (ex.Status == 412)
+            {
+                // A natural state transition also changes the ETag. Accept only a verified
+                // terminal transition; never bypass the condition for a changed active job.
+                var changed = (await client.GetJobAsync(plan.JobId, cancellationToken: cancellationToken)).Value;
+                ValidateJob(plan, changed);
+                if (changed.State != BatchJobState.Completed && changed.State != BatchJobState.Terminating) throw;
+                return new(changed.State.ToString(), changed.State == BatchJobState.Completed);
+            }
+        }
+        job = (await client.GetJobAsync(plan.JobId, cancellationToken: cancellationToken)).Value;
+        ValidateJob(plan, job);
+        return new(job.State.ToString(), job.State == BatchJobState.Completed);
     }
     public async Task<BatchTaskStatus> GetStatusAsync(TaskSpec spec, CancellationToken cancellationToken = default)
     {

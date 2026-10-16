@@ -6,6 +6,7 @@ $null=New-Item -ItemType Directory -Path (Join-Path $temporary 'scripts') -Force
 $oldTrace=$env:POC_FAKE_TRACE
 $oldDefault=$env:POC_FAKE_DEFAULT
 $oldRequest=$env:POC_FAKE_REQUESTID
+$oldBackend=$env:POC_FAKE_BACKEND
 try {
     foreach ($file in @('deploy.ps1','Deployment.Common.ps1','Test-Deployment.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "../$file") -Destination (Join-Path $temporary "scripts/$file")
@@ -53,10 +54,16 @@ $command=$args -join ' '
 if ($command -match '^version') { '{"azure-cli":"2.80.0"}' }
 elseif ($command -match '^account show') { '{"id":"target-subscription","state":"Enabled","tenantId":"target-tenant"}' }
 elseif ($command -match '^provider show') { '{"registrationState":"Registered"}' }
+elseif ($command -match '^group exists') {
+    if ($env:POC_FAKE_BACKEND -eq 'forbidden') { 'AuthorizationFailed'; exit 1 }
+    if ($env:POC_FAKE_BACKEND -eq 'present') { 'true' } else { 'false' }
+}
+elseif ($command -match '^storage account list') { '[{"name":"pocstate123"}]' }
+elseif ($command -match '^storage container exists') { '{"exists":true}' }
 elseif ($command -match '^rest .*?/nodes\?') { '{"value":[{"state":"idle","schedulingState":"enabled"}]}' }
 elseif ($command -match '^rest ') { '{"allocationState":"steady"}' }
 elseif ($command -match '^functionapp function list') {
-    @('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity') | ForEach-Object { @{name="poc-app/$_"} } | ConvertTo-Json
+    @('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity','WorkflowAdmissionEntity','TerminateBatchJobActivity') | ForEach-Object { @{name="poc-app/$_"} } | ConvertTo-Json
 }
 elseif ($command -match '^functionapp function keys list') { '{"default":"PRIVATE-FUNCTION-KEY"}' }
 elseif ($command -match '^storage blob download') {
@@ -103,10 +110,13 @@ exit 0
     $single=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match 'dotnet run --project tools/BatchSmoke/BatchSmoke.csproj' })
     $post=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -eq 'http Post' })
     Assert-True ($single -ge 0 -and $post -gt $single) 'Smoke switch must survive dot-sourcing and run single Batch task before HTTP three-task workflow'
+    Assert-True ($trace[$single] -match '--timeout-seconds 60') 'Batch smoke must use the configured deployment timeout'
+    Assert-True (@($trace | Where-Object { $_ -match '^az rest .*?/nodes\?' }).Count -eq 0) 'Existing pool smoke must submit tasks without a node-allocation precondition'
     Assert-True (($trace -join "`n") -notmatch 'PRIVATE-FUNCTION-KEY|code=PRIVATE') 'Trace must not contain Function or Durable status keys'
     $bootstrapConfigPath=Join-Path $temporary 'bootstrap-config.psd1'
     $bootstrapConfig=$config.Replace('Create=$false',"Create=`$true; location='japaneast'; deployer_principal_id='deployer-object-id'")
     Set-Content -LiteralPath $bootstrapConfigPath -Value $bootstrapConfig -Encoding UTF8
+    $env:POC_FAKE_BACKEND='missing'
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline-bootstrap' -ConfigFile $bootstrapConfigPath -PlanOnly
     $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
@@ -117,6 +127,21 @@ exit 0
     $expectedState=Join-Path $temporary '.deploy/offline-bootstrap/bootstrap/terraform.tfstate'
     Assert-True ([IO.Path]::IsPathRooted($expectedState)) 'Expected bootstrap state path must be absolute'
     Assert-True ($bootstrapInit[0] -match [regex]::Escape("-backend-config=path=$expectedState")) 'Bootstrap init must explicitly pin absolute local state path'
+    Clear-Content -LiteralPath $env:POC_FAKE_TRACE
+    $env:POC_FAKE_BACKEND='present'
+    & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline-bootstrap' -ConfigFile $bootstrapConfigPath -PlanOnly
+    $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
+    Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra plan ' }).Count -eq 1) 'Existing backend must allow main plan with Create=true'
+    Assert-True (@($trace | Where-Object { $_ -match 'terraform .* apply |config-zip' }).Count -eq 0) 'Existing backend PlanOnly must not apply or deploy'
+    Clear-Content -LiteralPath $env:POC_FAKE_TRACE
+    $env:POC_FAKE_BACKEND='forbidden'
+    $failed=$false
+    try { & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline-bootstrap' -ConfigFile $bootstrapConfigPath -PlanOnly }
+    catch { $failed=$_.Exception.Message -match 'AuthorizationFailed' }
+    Assert-True $failed 'Backend permission errors must fail instead of reporting absence'
+    $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
+    Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra init |terraform .* apply |config-zip' }).Count -eq 0) 'Failed backend probe must stop deployment'
+    $env:POC_FAKE_BACKEND='present'
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline-bootstrap' -ConfigFile $bootstrapConfigPath
     $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
@@ -137,5 +162,6 @@ exit 0
     $env:POC_FAKE_TRACE=$oldTrace
     $env:POC_FAKE_DEFAULT=$oldDefault
     $env:POC_FAKE_REQUESTID=$oldRequest
+    $env:POC_FAKE_BACKEND=$oldBackend
     if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
 }
