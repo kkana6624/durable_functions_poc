@@ -8,6 +8,7 @@
 - 以下の既存記録は過去checkpointであり、現在のHEAD・dirty状態・実試験結果は毎回確認する。実Azure試験は引き続き未実施。
 - `scripts/Invoke-PocValidation.ps1` を実装。単一/3Task、分類、期待exit 42、20並列と再送、異入力409、専用環境の期限停止を判定し、秘密を除いたsummaryと終了コード0/1/2を出力する。現在のAPIでは全世代のMain履歴を証明できないため、20並列は観測後もNotRunとして残す。
 - runnerオフライン試験（実ローカルHTTP20並行送信を含む）、.NET54件、Release publish、既存PowerShell3組、Terraform Mock8件が成功。証跡は `artifacts/runner-validation/`。実行手順はREADME、今回の結果は `docs/test-results.md`。
+- runnerの処理順序、生成されるAzure/ローカル成果物、試験判定は[検証runnerの処理フロー](validation-runner-flow.md)に記録。
 - 次は個人用Azure設定・接続方式を確定して現行PoCを実証し、その後、共通ネットワークIaC→認証付きAPI→C++入出力へ進む。runnerは配置やPool設定変更、host停止、権限変更、自動清掃を行わない。
 
 記録日: 2026-10-17  

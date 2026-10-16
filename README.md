@@ -178,6 +178,8 @@ terraform -chdir=infra/bootstrap test
 
 個人環境では現行の公開endpointを使います。VPN/ExpressRouteへの切替と任意の小型WebAppは、[共通ネットワーク設計](docs/network-connectivity-design.md)にまとめた後続実装です。Azure実接続試験の結果とローカルFake成功は区別してください。
 
+runnerとAzure側の処理順序、生成物、シナリオ別の判定は[検証runnerの処理フロー](docs/validation-runner-flow.md)を参照してください。
+
 - **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
 - **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
 - **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。現在のテスト実行結果は [検証結果](docs/test-results.md) を参照してください。
