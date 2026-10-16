@@ -309,9 +309,9 @@ public sealed class PocAdmissionOverlapServer : IDisposable {
     . (Join-Path $PSScriptRoot '../Invoke-PocValidation.ps1')
     $script:httpStatus=404
     function Invoke-WebRequest {
-        $error=[InvalidOperationException]::new('Secret URL '+$script:secret)
-        $error | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode=$script:httpStatus })
-        throw $error
+        $exception=[InvalidOperationException]::new('Secret URL '+$script:secret)
+        $exception | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode=$script:httpStatus })
+        throw $exception
     }
     foreach ($code in @(404,409)) {
         $script:httpStatus=$code

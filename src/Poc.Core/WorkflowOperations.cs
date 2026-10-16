@@ -60,6 +60,7 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
     {
         var tasks = await ReadTasksAsync(plan, cancellationToken);
         var aggregate = await results.ReadAsync<AggregateResult>(WorkflowIdentity.AggregatePath(plan), cancellationToken);
+        if (aggregate.TaskIds is null) throw new InvalidDataException("Aggregate is missing task IDs.");
         if (aggregate.RequestId != plan.Request.RequestId || aggregate.JobId != plan.JobId || aggregate.Fingerprint != plan.Fingerprint ||
             aggregate.TaskCount != tasks.Length || aggregate.Sum != tasks.Sum(t => t.Value) || !aggregate.TaskIds.SequenceEqual(tasks.Select(t => t.TaskId)))
             throw new InvalidDataException("Aggregate does not match the complete set of task results.");

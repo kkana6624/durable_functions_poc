@@ -142,4 +142,4 @@ SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` 
 | T09 | OutputFiles 直送比較 | Blob への直接永続化 | P1 / 未実装 | Not tested |
 | T10 | Durable / Batch 停止 | 両方の状態整合性 | 期限超過時のJob停止は実装・Mock成功。利用者キャンセル連鎖は未実装 | Not tested（Azure） |
 
-Azure 実環境での試験実施時は、`artifacts/` 配下へ実行日時、設定値（秘密情報を除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、上表の該当行に証跡パスを追記します。なお、Durable Functions の `runtimeStatus` が `Completed` であっても、業務出力（`output`）が `Failed` または `TimedOut` の場合は失敗とみなします。最終的な合格判定では、出力された manifest の内容と入力データとの整合性まで確認します。
+Azure 実環境での試験実施時は、`artifacts/` 配下へ実行日時、設定値（秘密情報を除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、上表の該当行に証跡パスを追記します。なお、`MainOrchestrator` は失敗・タイムアウト時に例外を再スローするため、その場合の `runtimeStatus` は `Failed`、`customStatus.state` は `Failed` または `TimedOut` になります。`runtimeStatus` が `Completed` となるのは `output.state` が `Succeeded` の場合のみで、それ以外は失敗とみなします。最終的な合格判定では、出力された manifest の内容と入力データとの整合性まで確認します。

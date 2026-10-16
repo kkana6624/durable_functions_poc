@@ -80,7 +80,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             context.SetCustomStatus(new { state = "Submitting", plan.JobId, plan.Classification });
             // Do not abandon job creation: it could create a new job after cleanup saw no job.
             try { await context.CallActivityAsync(nameof(EnsureBatchJobActivity), plan, RetryOptions(deadline)); }
-            catch (TaskFailedException) when (context.CurrentUtcDateTime >= deadline)
+            catch (TaskFailedException ex) when (context.CurrentUtcDateTime >= deadline && ex.FailureDetails.IsCausedBy<TransientWorkflowException>())
             {
                 // An ambiguous network failure may have created the job. Expired children trigger
                 // identity-checked cleanup rather than submitting work after the deadline.
@@ -177,8 +177,11 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     {
         using var cancellation = new CancellationTokenSource();
         var timer = context.CreateTimer(deadline, cancellation.Token);
-        if (await Task.WhenAny(activity, timer) == timer) throw new TimeoutException("Shared monitoring deadline exceeded during an Activity.");
+        var completed = await Task.WhenAny(activity, timer);
+        if (completed == timer) throw new TimeoutException("Shared monitoring deadline exceeded during an Activity.");
         cancellation.Cancel();
+        // A failed Activity must not be masked as a timeout: permanent failures keep their cause.
+        if (completed == activity && activity.IsFaulted) return await activity;
         if (context.CurrentUtcDateTime >= deadline) throw new TimeoutException("Shared monitoring deadline exceeded during an Activity.");
         return await activity;
     }
@@ -195,6 +198,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         // Azure.Core uses a linked timeout token. The caller's token distinguishes host cancellation.
         OperationCanceledException => true,
         RequestFailedException { Status: 0 or 408 or 429 or 500 or 502 or 503 or 504 } => true,
+        Grpc.Core.RpcException => true,
         HttpRequestException { StatusCode: null or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or
             HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout } => true,
         _ => false

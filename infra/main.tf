@@ -102,16 +102,15 @@ resource "azurerm_linux_function_app" "poc" {
   }
 
   app_settings = {
-    FUNCTIONS_WORKER_RUNTIME         = "dotnet-isolated"
-    AzureWebJobsStorage__accountName = azurerm_storage_account.poc.name
-    AzureWebJobsStorage__credential  = "managedidentity"
-    BATCH_ENDPOINT                   = local.batch_endpoint
-    BATCH_POOL_ID                    = local.batch_pool_id
-    BLOB_ENDPOINT                    = azurerm_storage_account.poc.primary_blob_endpoint
-    BLOB_CONTAINER                   = azurerm_storage_container.results.name
-    BATCH_POLL_SECONDS               = tostring(var.batch_poll_seconds)
-    WORKFLOW_TIMEOUT_MIN             = tostring(var.workflow_timeout_minutes)
-    WEBSITE_RUN_FROM_PACKAGE         = "1"
+    FUNCTIONS_WORKER_RUNTIME        = "dotnet-isolated"
+    AzureWebJobsStorage__credential = "managedidentity"
+    BATCH_ENDPOINT                  = local.batch_endpoint
+    BATCH_POOL_ID                   = local.batch_pool_id
+    BLOB_ENDPOINT                   = azurerm_storage_account.poc.primary_blob_endpoint
+    BLOB_CONTAINER                  = azurerm_storage_container.results.name
+    BATCH_POLL_SECONDS              = tostring(var.batch_poll_seconds)
+    WORKFLOW_TIMEOUT_MIN            = tostring(var.workflow_timeout_minutes)
+    WEBSITE_RUN_FROM_PACKAGE        = "1"
   }
 }
 

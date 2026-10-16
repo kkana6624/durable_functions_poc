@@ -203,6 +203,103 @@ public class ResilienceTests
         Assert.Equal(TimeSpan.FromMinutes(plan.TimeoutMinutes), creation!.Constraints.MaxWallClockTime);
     }
 
+    [Fact]
+    public async Task PermanentEnsureJobFailureAtDeadlineIsNotSwallowedAndNoTerminationIsRequested()
+    {
+        var request = new WorkflowRequest("conflict-at-deadline");
+        var plan = Plan(request);
+        var context = Context();
+        var start = DateTime.UtcNow;
+        var reads = 0;
+        // First read computes the deadline; later reads are past it.
+        context.SetupGet(c => c.CurrentUtcDateTime).Returns(() => reads++ == 0 ? start : start.AddHours(1));
+        context.Setup(c => c.GetInput<WorkflowRequest>()).Returns(request);
+        context.Setup(c => c.CallActivityAsync<WorkflowPlan>(nameof(WorkflowFunctions.ClassifyActivity), request, It.IsAny<TaskOptions>())).ReturnsAsync(plan);
+        var details = new TaskFailureDetails(typeof(WorkflowConflictException).FullName!, "foreign job", null, null, null);
+        context.Setup(c => c.CallActivityAsync(nameof(WorkflowFunctions.EnsureBatchJobActivity), plan, It.IsAny<TaskOptions>()))
+            .ThrowsAsync(new TaskFailedException(nameof(WorkflowFunctions.EnsureBatchJobActivity), 1, details));
+        context.Setup(c => c.SetCustomStatus(It.IsAny<object>()));
+
+        await Assert.ThrowsAsync<TaskFailedException>(() => WorkflowFunctions.MainOrchestrator(context.Object));
+        context.Verify(c => c.CallActivityAsync<BatchJobTerminationStatus>(nameof(WorkflowFunctions.TerminateBatchJobActivity), It.IsAny<object>(), It.IsAny<TaskOptions>()), Times.Never);
+        context.Verify(c => c.CallSubOrchestratorAsync<TaskMonitorResult>(nameof(WorkflowFunctions.MonitorBatchTaskOrchestrator), It.IsAny<object>(), null), Times.Never);
+    }
+
+    [Fact]
+    public void GrpcFailuresAreTransientAlsoInsideAggregateException()
+    {
+        var rpc = new Grpc.Core.RpcException(new Grpc.Core.Status(Grpc.Core.StatusCode.Unavailable, "down"));
+        Assert.True(WorkflowFunctions.IsTransientFailure(rpc, TestContext.Current.CancellationToken));
+        Assert.True(WorkflowFunctions.IsTransientFailure(new AggregateException(rpc), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task TerminateTreatsMissingJobAsCompleted()
+    {
+        var plan = Plan(new WorkflowRequest("stop-404"));
+        var client = new Mock<BatchClient>();
+        client.Setup(c => c.GetJobAsync(It.IsAny<string>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RequestFailedException(404, "gone", "JobNotFound", null));
+        var status = await new AzureBatchGateway(client.Object, "pool").TerminateJobAsync(plan, TestContext.Current.CancellationToken);
+        Assert.True(status.Completed);
+    }
+
+    [Fact]
+    public async Task PreconditionFailureOnStillActiveJobReportsNotCompletedSoPollingRetries()
+    {
+        var plan = Plan(new WorkflowRequest("stop-412-active"));
+        var client = new Mock<BatchClient>();
+        client.Setup(c => c.GetJobAsync(It.IsAny<string>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(Job(plan, BatchJobState.Active, "pool", plan.Fingerprint), Mock.Of<Response>()));
+        client.Setup(c => c.TerminateJobAsync(WaitUntil.Started, plan.JobId, It.IsAny<BatchJobTerminateOptions>(), null, null, null, It.IsAny<RequestConditions>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RequestFailedException(412, "etag changed"));
+        Assert.False((await new AzureBatchGateway(client.Object, "pool").TerminateJobAsync(plan, TestContext.Current.CancellationToken)).Completed);
+    }
+
+    [Fact]
+    public async Task BlobPutIfAbsentCreatesAndIsIdempotentButRejectsDifferentContent()
+    {
+        var value = new { name = "a", value = 1 };
+        var same = BinaryData.FromObjectAsJson(value, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)).ToString();
+        const string path = "runs/poc-test/result.json";
+
+        var created = await Repository(new FakeBlobHandler(201, null)).PutIfAbsentAsync(path, value, TestContext.Current.CancellationToken);
+        Assert.EndsWith(path, created);
+        await Repository(new FakeBlobHandler(409, same)).PutIfAbsentAsync(path, value, TestContext.Current.CancellationToken);
+        await Assert.ThrowsAsync<WorkflowConflictException>(() =>
+            Repository(new FakeBlobHandler(409, "{\"name\":\"other\"}")).PutIfAbsentAsync(path, value, TestContext.Current.CancellationToken));
+    }
+
+    private static BlobResultRepository Repository(HttpMessageHandler handler) => new(new Azure.Storage.Blobs.BlobContainerClient(
+        new Uri("https://test.invalid/poc-results"),
+        new Azure.Storage.Blobs.BlobClientOptions
+        {
+            Transport = new Azure.Core.Pipeline.HttpClientTransport(new HttpClient(handler)),
+            Retry = { MaxRetries = 0 }
+        }));
+
+    // Test-only fake Blob endpoint: PUT answers with the configured status, GET returns existing content.
+    private sealed class FakeBlobHandler(int putStatus, string? existing) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            HttpResponseMessage response;
+            if (request.Method == HttpMethod.Put)
+            {
+                response = new HttpResponseMessage((System.Net.HttpStatusCode)putStatus) { Content = new ByteArrayContent([]) };
+                if (putStatus == 409) response.Headers.Add("x-ms-error-code", "BlobAlreadyExists");
+            }
+            else
+            {
+                response = new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(existing ?? "") };
+                response.Headers.Add("x-ms-blob-type", "BlockBlob");
+            }
+            response.Headers.ETag = new System.Net.Http.Headers.EntityTagHeaderValue("\"0x1\"");
+            response.Content.Headers.LastModified = DateTimeOffset.UtcNow;
+            return Task.FromResult(response);
+        }
+    }
+
     private static Mock<BatchClient> BatchReturning(BatchJob job)
     {
         var client = new Mock<BatchClient>();

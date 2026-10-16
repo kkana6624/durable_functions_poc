@@ -66,8 +66,8 @@ variable "gallery_image_version_id" {
   default     = null
   description = "Existing generalized Windows ACG version. New gallery mode reads and uses the version; never modifies it."
   validation {
-    condition     = var.gallery_image_version_id == null ? !(var.batch_mode == "new" && var.batch_image_source == "gallery") : can(regex("(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft.Compute/galleries/[^/]+/images/[^/]+/versions/[0-9]+\\.[0-9]+\\.[0-9]+$", var.gallery_image_version_id))
-    error_message = "New gallery mode requires an exact existing ACG version ARM ID (not latest)."
+    condition     = (var.batch_mode == "new" && var.batch_image_source == "gallery") ? (var.gallery_image_version_id != null && can(regex("(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft.Compute/galleries/[^/]+/images/[^/]+/versions/[0-9]+\\.[0-9]+\\.[0-9]+$", var.gallery_image_version_id))) : var.gallery_image_version_id == null
+    error_message = "New gallery mode requires an exact existing ACG version ARM ID (not latest); existing and marketplace modes must leave it null."
   }
 }
 variable "batch_image_source" {

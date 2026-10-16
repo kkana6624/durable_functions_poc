@@ -12,9 +12,9 @@ param(
 . (Join-Path $PSScriptRoot 'Validation.Assertions.ps1')
 
 function Stop-PocValidation([string]$Code) {
-    $error = [InvalidOperationException]::new($Code)
-    $error.Data['PocValidationCode'] = $Code
-    throw $error
+    $exception = [InvalidOperationException]::new($Code)
+    $exception.Data['PocValidationCode'] = $Code
+    throw $exception
 }
 
 function Invoke-PocValidationHttp {
@@ -257,9 +257,9 @@ function Invoke-PocScenario {
             $environment = @($task.environmentSettings | Where-Object { $_.name -eq 'POC_FINGERPRINT' })
             if ($environment.Count -ne 1 -or $environment[0].value -ne $expectedFingerprint) { Stop-PocValidation 'TaskFingerprintMismatch' }
         }
-        $input = Get-PocBlobDocument -Outputs $Outputs -Path "runs/poc-$requestId/request.json"
-        if ($input.version -ne 1 -or $input.instanceId -ne $jobId) { Stop-PocValidation 'InputIdentityMismatch' }
-        foreach ($field in $request.Keys) { if ($input.request.$field -ne $request[$field]) { Stop-PocValidation 'InputContentMismatch' } }
+        $storedRequest = Get-PocBlobDocument -Outputs $Outputs -Path "runs/poc-$requestId/request.json"
+        if ($storedRequest.version -ne 1 -or $storedRequest.instanceId -ne $jobId) { Stop-PocValidation 'InputIdentityMismatch' }
+        foreach ($field in $request.Keys) { if ($storedRequest.request.$field -ne $request[$field]) { Stop-PocValidation 'InputContentMismatch' } }
         $root = "runs/poc-$requestId"
         if ($Name -in @('failure','timeout')) {
             $expectedState = if ($Name -eq 'timeout') { 'TimedOut' } else { 'Failed' }

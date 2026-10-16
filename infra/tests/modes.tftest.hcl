@@ -60,6 +60,33 @@ run "existing_preserves_shared_resources" {
     condition     = azurerm_linux_function_app.poc.app_settings.BATCH_POOL_ID == "shared-windows" && azurerm_role_assignment.batch.scope == var.batch_account_id
     error_message = "Existing app configuration and RBAC must use the supplied account/pool."
   }
+  assert {
+    condition     = azurerm_linux_function_app.poc.storage_account_name == azurerm_storage_account.poc.name && azurerm_linux_function_app.poc.storage_uses_managed_identity == true && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureWebJobsStorage__accountName")
+    error_message = "Host storage account name must come only from the provider-managed identity attributes, not app_settings."
+  }
+}
+
+run "gallery_id_rejected_in_marketplace_mode" {
+  command = plan
+  variables {
+    batch_mode               = "new"
+    batch_account_id         = null
+    batch_endpoint           = null
+    batch_pool_id            = null
+    batch_image_source       = "marketplace"
+    batch_node_agent_sku_id  = "batch.node.windows amd64"
+    marketplace_image        = { publisher = "MicrosoftWindowsServer", offer = "WindowsServer", sku = "2022-datacenter", version = "20348.2527.240607" }
+    gallery_image_version_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/image-rg/providers/Microsoft.Compute/galleries/gallery/images/windows/versions/1.0.0"
+  }
+  expect_failures = [var.gallery_image_version_id]
+}
+
+run "gallery_id_rejected_in_existing_mode" {
+  command = plan
+  variables {
+    gallery_image_version_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/image-rg/providers/Microsoft.Compute/galleries/gallery/images/windows/versions/1.0.0"
+  }
+  expect_failures = [var.gallery_image_version_id]
 }
 
 run "new_marketplace_creates_dedicated_resources" {
