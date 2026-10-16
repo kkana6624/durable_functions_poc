@@ -1,0 +1,26 @@
+using Azure.Compute.Batch;
+using Azure.Identity;
+using Azure.Storage.Blobs;
+using Microsoft.Azure.Functions.Worker.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Poc.Core;
+
+var builder = FunctionsApplication.CreateBuilder(args);
+builder.ConfigureFunctionsWebApplication();
+
+string Required(string name) => builder.Configuration[name] is { Length: > 0 } value
+    ? value : throw new InvalidOperationException($"Required setting {name} is missing.");
+int Positive(string name, int fallback) => builder.Configuration[name] is not { Length: > 0 } text
+    ? fallback : int.TryParse(text, out var value) && value > 0
+        ? value : throw new InvalidOperationException($"{name} must be a positive integer.");
+
+var credential = new DefaultAzureCredential();
+builder.Services.AddSingleton<IBatchGateway>(new AzureBatchGateway(
+    new BatchClient(new Uri(Required("BATCH_ENDPOINT")), credential), Required("BATCH_POOL_ID")));
+builder.Services.AddSingleton<IResultRepository>(new BlobResultRepository(
+    new BlobServiceClient(new Uri(Required("BLOB_ENDPOINT")), credential).GetBlobContainerClient(Required("BLOB_CONTAINER"))));
+builder.Services.AddSingleton<IWorkloadClassifier, StubWorkloadClassifier>();
+builder.Services.AddSingleton(new WorkflowSettings(Positive("BATCH_POLL_SECONDS", 10), Positive("WORKFLOW_TIMEOUT_MIN", 15)));
+builder.Services.AddSingleton<WorkflowOperations>();
+builder.Build().Run();

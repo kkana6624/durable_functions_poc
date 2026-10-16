@@ -1,0 +1,24 @@
+subscription_id       = "00000000-0000-0000-0000-000000000000"
+resource_group_name   = "poc-durable-batch"
+create_resource_group = true
+location              = "japaneast"
+name_suffix           = "replaceunique001"
+batch_mode            = "new"
+
+# Only existing image version is read, never changed or given permissions automatically.
+batch_image_source = "gallery"
+gallery_image_version_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/existing-image-rg/providers/Microsoft.Compute/galleries/existinggallery/images/windows/versions/1.0.0"
+batch_node_agent_sku_id = "batch.node.windows amd64"
+batch_vm_size          = "Standard_D2s_v5"
+batch_node_count        = 1
+batch_max_tasks_per_node = 1
+batch_diagnostics_enabled = false
+
+# Alternatively choose batch_image_source = "marketplace", remove gallery_image_version_id,
+# and supply all exact Batch-supported Windows image fields. Never use latest.
+# marketplace_image = {
+#   publisher = "<supported-images publisher>"
+#   offer     = "<supported-images offer>"
+#   sku       = "<supported-images sku>"
+#   version   = "<exact supported-images version>"
+# }

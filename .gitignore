@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+.tools/
+TestResults/
+artifacts/
+**/local.settings.json
+**/.terraform/
+**/*.tfstate*
+**/*.tfvars
+**/*.tfplan
+**/crash.log
+.vs/
+.deploy/
+environments/*.psd1
+!environments/*.example.psd1
+**/*.tfvars.json

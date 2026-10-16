@@ -1,0 +1,13 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "BATCH_ENDPOINT": "https://YOUR-ACCOUNT.YOUR-REGION.batch.azure.com",
+    "BATCH_POOL_ID": "YOUR-EXISTING-WINDOWS-POOL",
+    "BLOB_ENDPOINT": "https://YOUR-STORAGE.blob.core.windows.net",
+    "BLOB_CONTAINER": "poc-results",
+    "BATCH_POLL_SECONDS": "10",
+    "WORKFLOW_TIMEOUT_MIN": "15"
+  }
+}

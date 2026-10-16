@@ -1,0 +1,74 @@
+using Azure;
+using Azure.Compute.Batch;
+
+namespace Poc.Core;
+
+public sealed class AzureBatchGateway(BatchClient client, string poolId) : IBatchGateway
+{
+    private const string FingerprintName = "poc-fingerprint";
+    private const string FingerprintEnvironment = "POC_FINGERPRINT";
+    private static void ValidatePlan(WorkflowPlan plan)
+    {
+        plan.Request.Validate();
+        if (plan.JobId != WorkflowIdentity.JobId(plan.Request.RequestId) || plan.Fingerprint != WorkflowIdentity.Fingerprint(plan.Request, plan.Classification))
+            throw new ArgumentException("Invalid workflow identity.");
+    }
+    public async Task EnsureJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default)
+    {
+        ValidatePlan(plan);
+        if (string.IsNullOrWhiteSpace(poolId)) throw new ArgumentException("Existing pool ID is required.");
+        var create = new BatchJobCreateOptions(plan.JobId, new BatchPoolInfo { PoolId = poolId });
+        create.Metadata.Add(new BatchMetadataItem(FingerprintName, plan.Fingerprint));
+        try { await client.CreateJobAsync(create, cancellationToken: cancellationToken); }
+        catch (RequestFailedException ex) when (ex.Status == 409 && ex.ErrorCode == "JobExists") { }
+        var job = (await client.GetJobAsync(plan.JobId, cancellationToken: cancellationToken)).Value;
+        if (job.PoolInfo.PoolId != poolId || job.Metadata.SingleOrDefault(m => m.Name == FingerprintName)?.Value != plan.Fingerprint)
+            throw new WorkflowConflictException($"Batch job {plan.JobId} belongs to different input or pool.");
+        if (job.State != BatchJobState.Active) throw new WorkflowConflictException($"Batch job {plan.JobId} is not active ({job.State}).");
+    }
+    private static void ValidateSpec(TaskSpec spec)
+    {
+        ValidatePlan(spec.Plan);
+        if (spec.Index < 0 || spec.Index >= spec.Plan.Request.TaskCount) throw new ArgumentOutOfRangeException(nameof(spec));
+    }
+    public async Task EnsureTaskAsync(TaskSpec spec, CancellationToken cancellationToken = default)
+    {
+        ValidateSpec(spec);
+        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+        var create = new BatchTaskCreateOptions(spec.TaskId, command) { Constraints = new BatchTaskConstraints { MaxTaskRetryCount = 0 } };
+        create.EnvironmentSettings.Add(new EnvironmentSetting(FingerprintEnvironment) { Value = spec.Plan.Fingerprint });
+        try { await client.CreateTaskAsync(spec.Plan.JobId, create, cancellationToken: cancellationToken); }
+        catch (RequestFailedException ex) when (ex.Status == 409 && ex.ErrorCode == "TaskExists") { }
+        var task = (await client.GetTaskAsync(spec.Plan.JobId, spec.TaskId, cancellationToken: cancellationToken)).Value;
+        if (task.CommandLine != command || task.Constraints?.MaxTaskRetryCount != 0 ||
+            task.EnvironmentSettings.SingleOrDefault(e => e.Name == FingerprintEnvironment)?.Value != spec.Plan.Fingerprint)
+            throw new WorkflowConflictException($"Batch task {spec.TaskId} belongs to different input.");
+    }
+    public async Task<BatchTaskStatus> GetStatusAsync(TaskSpec spec, CancellationToken cancellationToken = default)
+    {
+        ValidateSpec(spec);
+        var task = (await client.GetTaskAsync(spec.Plan.JobId, spec.TaskId, cancellationToken: cancellationToken)).Value;
+        var completed = task.State == BatchTaskState.Completed;
+        var execution = task.ExecutionInfo;
+        var success = completed && execution?.Result == BatchTaskExecutionResult.Success && execution.ExitCode == 0 && execution.FailureInfo is null;
+        var failure = execution?.FailureInfo;
+        return new(spec.TaskId, task.State.ToString(), completed, success, execution?.ExitCode,
+            success || !completed ? null : failure is null ? $"Result={execution?.Result}; ExitCode={execution?.ExitCode}" : $"{failure.Code}: {failure.Message}");
+    }
+    public async Task<string> ReadResultAsync(TaskSpec spec, CancellationToken cancellationToken = default)
+    {
+        ValidateSpec(spec);
+        // Discover the file under the task root; no hard-coded assumption about slash direction.
+        var matches = new List<string>();
+        await foreach (var file in client.GetTaskFilesAsync(spec.Plan.JobId, spec.TaskId, recursive: true, cancellationToken: cancellationToken))
+        {
+            var normalized = file.Name.Replace('\\', '/');
+            if (file.IsDirectory == false && normalized == "wd/result.txt") matches.Add(file.Name);
+        }
+        if (matches.Count != 1) throw new FileNotFoundException($"Expected wd/result.txt for {spec.TaskId}, found {matches.Count}.");
+        var response = await client.GetTaskFileAsync(spec.Plan.JobId, spec.TaskId, matches[0], ocpRange: "bytes=0-4096", cancellationToken: cancellationToken);
+        var text = response.Value.ToString();
+        if (response.Value.ToMemory().Length > 4096) throw new InvalidDataException("Batch result exceeds PoC size limit.");
+        return text;
+    }
+}

@@ -1,0 +1,18 @@
+# az account show --query id -o tsv
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+# Existing RG for PoC resources. Never create/import the shared RG into state.
+resource_group_name = "existing-poc-rg"
+name_suffix         = "replaceunique001"
+
+# az batch account show -g <batch-rg> -n <account> --query id -o tsv
+batch_account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/existing-batch-rg/providers/Microsoft.Batch/batchAccounts/existing-account"
+# az batch account show -g <batch-rg> -n <account> --query accountEndpoint -o tsv
+# Add https:// if Azure CLI returns only the hostname.
+batch_endpoint = "https://existing-account.japaneast.batch.azure.com"
+batch_pool_id  = "existing-windows-pool"
+
+# Read existing pool deployment/configuration (or Portal > Pool > Image reference).
+# Evidence only: Terraform does not change or grant access to this image.
+gallery_image_version_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/existing-image-rg/providers/Microsoft.Compute/galleries/existinggallery/images/windows/versions/1.0.0"
+batch_poll_seconds       = 10
+workflow_timeout_minutes = 15

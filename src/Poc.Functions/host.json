@@ -1,0 +1,8 @@
+{
+  "version": "2.0",
+  "extensions": { "durableTask": { "hubName": "PocBatchHub", "tracing": { "traceInputsAndOutputs": false } } },
+  "logging": {
+    "logLevel": { "default": "Information", "Host.Results": "Information" },
+    "applicationInsights": { "samplingSettings": { "isEnabled": true, "excludedTypes": "Request" } }
+  }
+}
