@@ -7,6 +7,8 @@ param(
     [switch]$Smoke
 )
 
+. (Join-Path $PSScriptRoot 'Validation.Assertions.ps1')
+
 function Invoke-ValidationHttp {
     param([string]$Uri, [string]$Method = 'Get', [hashtable]$Headers = @{}, [string]$Body)
     try {
@@ -164,27 +166,8 @@ function Invoke-DeploymentValidation {
             }
             $documents[$name] = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
         }
-        $aggregate=$documents.aggregate; $manifest=$documents.manifest
-        if ($aggregate.requestId -ne $requestId -or $manifest.requestId -ne $requestId -or
-            $aggregate.sum -ne 3 -or $manifest.sum -ne 3 -or $aggregate.taskCount -ne 3 -or $manifest.taskCount -ne 3 -or
-            $manifest.status -ne 'Succeeded' -or $aggregate.jobId -ne $manifest.jobId -or
-            $aggregate.fingerprint -ne $manifest.fingerprint -or @($aggregate.taskIds).Count -ne 3 -or @($manifest.taskUris).Count -ne 3) {
-            throw 'Aggregate/manifest identity, count, sum, or success status is inconsistent.'
-        }
-        $expectedIds = @('task-00','task-01','task-02')
-        if (($aggregate.taskIds -join ',') -ne ($expectedIds -join ',')) { throw 'Aggregate task IDs are inconsistent.' }
-        $aggregateUri = [Uri]$manifest.aggregateUri
         $blobRoot = $Outputs.blob_endpoint.TrimEnd('/') + '/' + $Outputs.blob_container_name
-        if ($aggregateUri.Scheme -ne 'https' -or $aggregateUri.AbsoluteUri -ne "$blobRoot/runs/poc-$requestId/final/aggregate.json") {
-            throw 'Manifest aggregate URI is inconsistent.'
-        }
-        for ($index=0; $index -lt 3; $index++) {
-            $taskUri = [Uri]$manifest.taskUris[$index]
-            if ($taskUri.Scheme -ne 'https' -or
-                $taskUri.AbsoluteUri -ne "$blobRoot/runs/poc-$requestId/tasks/$($expectedIds[$index])/result.json") {
-                throw 'Manifest task URI is inconsistent.'
-            }
-        }
+        Assert-PocPublishedDocuments -RequestId $requestId -TaskCount 3 -Aggregate $documents.aggregate -Manifest $documents.manifest -BlobRoot $blobRoot
     }
     finally {
         # The directory is an absolute, freshly generated task-only temporary directory.

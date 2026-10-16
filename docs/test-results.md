@@ -1,5 +1,23 @@
 # PoC 検証結果
 
+## 2026-10-17 独立検証runnerの追加
+
+`Invoke-PocValidation.ps1` を追加し、配置済み環境への検証を配置処理から分離しました。今回もAzure実接続は未実施です。
+
+| 対象 | ローカル結果 |
+|---|---|
+| runnerオフライン試験 | Pass。正常・分類・期待exit 42・409・20並列の判定、404待機上限、401/403、結果改ざん、停止未確認、秘密除外、途中失敗の要約、終了コード0/1/2、空の試験選択拒否 |
+| HTTP並行送信 | ローカルTCPサーバーで、最初の応答前に20接続を確認。実Azureの同時受付成功を意味しない |
+| fingerprint互換 | 実C# `WorkflowIdentity.Fingerprint` の固定値2件（auto/light、heavy/非ゼロ）と一致 |
+| 既存.NET / Release publish | 54 Pass / 0 Fail / 0 Skip、publish成功 |
+| 既存PowerShell / Terraform | 配置試験3組Pass、Terraform Mock main7件・bootstrap1件Pass |
+
+証跡は `artifacts/runner-validation/powershell-runner-tests.log`、`publish.log`、`regression-summary.txt`。設定ファイル不存在を用いたCLI試験でも終了コード1と秘密を含まない要約を確認しました。Git revisionに加え、追跡ファイルとGit非無視の未追跡ファイルの内容から求める `sourceSha256` で未コミット状態を識別します。配置package hashは配置結果ファイル由来で、実hostの読込バイナリを別途実証した値ではありません。
+
+`admission20` は同一instanceへの収束・期待Task数・完了後再送を観測しますが、現在の管理APIだけでは全世代のMain起動履歴を証明できないため、実runnerは `NotRun / AdmissionObservedButExecutionHistoryUnavailable` を返します。Fakeで履歴を与える試験のPassを実Azureの一回起動保証へ繰り上げません。
+
+個人環境は公開endpointで検証を開始する前提とし、VPN/ExpressRouteと共通VNetの境界は[接続設計](network-connectivity-design.md)に記録しました。ネットワークリソースは作成していません。
+
 > [!NOTE]
 > Azure 実環境への接続値・資格情報が未提供のため、現時点での検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しています。Azure 実環境での動作検証は未実施です。
 

@@ -1,5 +1,15 @@
 # プロジェクトメモリ
 
+## 2026-10-17 次期実装で確定した前提
+
+- 本リポジトリは個人検証環境。業務環境ではExpressRouteを想定するが、個人環境で同じ回線・DNS・権限を利用できるとは仮定しない。
+- 今回は独立検証runnerを先行し、接続は現行の公開endpointを使用する。VPNまたは小型WebAppの構築は後続で選定する。
+- 将来のネットワークIaCはVNet・Private Endpoint・DNSとVPN/ExpressRoute接続部分を分離する。既存ExpressRoute回線をアプリIaCへ取り込まない。詳細は[接続設計](network-connectivity-design.md)。
+- 以下の既存記録は過去checkpointであり、現在のHEAD・dirty状態・実試験結果は毎回確認する。実Azure試験は引き続き未実施。
+- `scripts/Invoke-PocValidation.ps1` を実装。単一/3Task、分類、期待exit 42、20並列と再送、異入力409、専用環境の期限停止を判定し、秘密を除いたsummaryと終了コード0/1/2を出力する。現在のAPIでは全世代のMain履歴を証明できないため、20並列は観測後もNotRunとして残す。
+- runnerオフライン試験（実ローカルHTTP20並行送信を含む）、.NET54件、Release publish、既存PowerShell3組、Terraform Mock8件が成功。証跡は `artifacts/runner-validation/`。実行手順はREADME、今回の結果は `docs/test-results.md`。
+- 次は個人用Azure設定・接続方式を確定して現行PoCを実証し、その後、共通ネットワークIaC→認証付きAPI→C++入出力へ進む。runnerは配置やPool設定変更、host停止、権限変更、自動清掃を行わない。
+
 記録日: 2026-10-17  
 本ドキュメントは、これまでの実装・検証の到達点と前提条件をまとめた引き継ぎメモです。作業再開時は、現在の Git ステータスおよび最新のソースコードとあわせて確認してください。
 
@@ -49,7 +59,7 @@
 1. **閉域ネットワーク・IaC 整備**: ExpressRoute / Private DNS、Function / Blob / host Storage（Blob・Queue・Table）、SCM デプロイ経路、Batch 操作・ノード管理の通信設計と Terraform 実装。
 2. **オンプレ向け API と認証・認可**: 認証およびユーザー認可を備えた `start` / `status` / `results` / `cancel` API の実装（ブラウザ側に Function key や Durable 管理 URL を直接返さない構成）。
 3. **実 C++ バイナリの実行経路**: 小規模なシナリオ 1 件を Blob に保存し、固定バージョンの C++ バイナリを Batch で実行して結果を Blob へ出力する一連の経路実装（入力の version / ETag / size / SHA-256 とアプリの version を記録）。
-4. **独立検証ランナーの追加**: 秘密情報を除外した証跡保存や、期待される異常系を自動判定するテストランナーの実装（上記ネットワーク・API 実装と並行作業が可能）。
+4. **独立検証ランナー**: 初版は実装・ローカル検証済み（冒頭の追記参照）。後続は実Azureでの実行と、host復旧・障害注入・履歴観測等のfixture拡充。
 5. **Azure 実環境での信頼性検証**: 同時受付、再送、host 復旧、通信障害、監視期限超過、Job 停止失敗、0 台 Pool からの autoscale の実機検証。
 6. **キャンセル連鎖と出力管理の完成**: ユーザーからのキャンセル要求（現在 Batch への停止連鎖は未実装）と結果公開の競合制御、大容量出力の永続化方式、データの保持・クリーンアップ処理の実装。
 

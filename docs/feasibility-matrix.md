@@ -2,6 +2,8 @@
 
 更新日: 2026-10-17
 
+独立検証runnerを追加し、正常・異常の判定、秘密を除いた証跡、終了コード、ローカルHTTPの20並行送信をオフライン試験で確認しました。既存.NET 54件・publish・配置PowerShell3組・Terraform Mock8件も再確認済みです。Azureの各評価は引き続き未実施です。Mainの全世代の実行履歴を確認できないため、同時受付の厳密な起動一意性はrunnerでも未実証として残します。個人環境と将来の業務環境の接続境界は[共通ネットワーク設計](network-connectivity-design.md)を参照してください。
+
 信頼性改善後のローカル検証（.NET 単体テスト 54 件、Release publish、PowerShell オフライン試験 3 組、Terraform Mock 8 件）はすべて完了しています。一方、Azure 実環境への接続検証は未実施のため、下表ではローカル検証（Fake / メモリ保存）の結果と Azure 実環境での検証状況を分けて記載しています。
 
 - 検証結果の詳細・証跡: [検証結果](test-results.md)、`artifacts/reliability-validation/dotnet-test.log`、`publish.log`

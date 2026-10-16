@@ -2,9 +2,9 @@
 
 作成日: 2026-10-17
 
-現在、ローカル環境での各検証（単体テスト54件、Release publish、PowerShellオフラインテスト3組、Terraform Mockテスト8件）まで完了しています。Azure実環境での試験はこれから実施する段階です。
+前回記録では、ローカル環境での各検証（単体テスト54件、Release publish、PowerShellオフラインテスト3組、Terraform Mockテスト8件）が完了しています。今回を含む最新の検証結果は `docs/test-results.md` を参照してください。Azure実環境での試験はこれから実施する段階です。
 
-> ※本書は今後の実機検証および追加機能の実装計画をまとめたものであり、記載している追加機能は現時点では未実装です。
+> 本書は実機検証と後続実装の計画です。独立runnerのローカル検証と、Azure実接続の合格判定は区別します。閉域ネットワーク・利用者向けAPI・実C++入出力は後続実装です。
 
 ---
 
@@ -15,7 +15,8 @@
   - 通信経路は `ブラウザ → オンプレWebバックエンド → AzureジョブAPI → Durable / Batch / Blob` を想定しています。オンプレミス側のWebUIを新規に作り直すのではなく、既存のWebバックエンドとの接続口（API境界）を整備します。
 
 - **確定している前提とスコープの境界**
-  - **確定事項**: Windows計算ノード上のC++アプリ実行、Blob経由のファイル入出力、金融オプションシミュレーション用のシナリオ入力、およびオンプレミスからAzureへのExpressRoute接続。
+  - **業務環境の前提**: Windows計算ノード上のC++アプリ実行、Blob経由のファイル入出力、金融オプションシミュレーション用のシナリオ入力、およびオンプレミスからAzureへの既存ExpressRoute接続。
+  - **個人検証環境の前提**: 業務環境の回線・DNS・権限を利用できるとは仮定しません。最初は現行の公開endpointでPoCを検証し、将来VPNまたはExpressRouteを共通VNetへの接続部分として差し替えます。設計は [接続方式と共通ネットワーク](network-connectivity-design.md) を参照してください。
   - **未確認・仮定事項**: オンプレミスのWebバックエンドはC#と仮定していますが詳細は未確認です。また、入力/出力の最大サイズ、認証基盤、既存C++アプリのCLI仕様や依存ライブラリも未確定です。
   - **責務の境界**: Azure側は一般的なシナリオ実行基盤として設計し、金融の価格評価モデルやC++計算本体は再実装しません。
 
@@ -30,17 +31,17 @@
 
 | 段階 | 実施内容 | 完了条件 |
 |---|---|---|
-| 1 | ExpressRoute接続・オンプレ連携契約と試験環境を確定 | private接続/DNS/配置経路、シナリオ契約、C++起動契約、認証・状態・取消・結果取得、専用Azure設定が決まる |
-| 2A | 実Azure検証runner・証跡・試験用障害制御 | シナリオ単位で再実行でき、成功・失敗・未実施の要約と秘密を除いた証跡が残る |
-| 2B | データ投入・API境界を実装 | 入力確定後だけ開始可能。同じ入力の再送は同じジョブに対応。WebUIへ管理URLやFunction keyを返さない |
-| 3 | 現行PoCをAzureで実証 | 配置、MI認証、単一Task、3Task、競合、復旧、期限停止の各試験が証跡付きで合格 |
-| 4 | オンプレから実ファイルを用いて通し試験 | 投入→開始→状態照会→結果取得が通り、通信断・再送・WebUI再読込でも整合する |
-| 5 | 取消・出力永続化・運用保守を仕上げ | 開始前/実行中の取消、停止確認失敗、出力公開条件、清掃・保持・障害対応の手順が検証される |
+| 1（今回） | 配置と分離した検証runner・ローカル試験・接続設計 | `Pass / Fail / NotRun`の要約と秘密を除いた証跡。Azure未実施をローカル成功へ置き換えない |
+| 2 | 個人環境の接続方式・専用Azure設定を確定し現行PoCを実証 | 公開endpointで単一Task・3Task・分類・非ゼロ・20並列・再送・409・期限停止を確認。期限試験は専用環境のみ |
+| 3 | 共通ネットワークIaCとVPNまたは既存ExpressRoute接続を整備 | private DNS・Function受信/送信・Storage・SCM・Batchノード管理を実証してから公開アクセスを制限 |
+| 4 | 認証付きAPIとデータ投入境界を実装 | 入力確定後だけ開始可能。同じ入力の再送は同じジョブに対応。管理用秘密をブラウザへ渡さない |
+| 5 | C++入出力とオンプレ通し試験 | 固定versionのバイナリと入出力hashを照合。通信断・再送・再読込でも整合する |
+| 6 | 復旧・障害・取消・出力永続化・運用保守を仕上げ | host復旧、権限変更、通信障害、0台autoscale、取消、保持・清掃を専用環境で実証 |
 
 ### 並列化と直列化の進め方
 
-- **段階2A** と **段階2B** は並列に進めます。
-- **段階3** では、正常系が通った後、競合・分類・データ整合性試験を別々の `requestId` で並列実行できます。
+- runner・ローカル試験と接続設計は並列に進めます。ネットワークIaC、API刷新、C++実計算、利用者取消は今回の実装に含めません。
+- **段階2** では、正常系が通った後、競合・分類・データ整合性試験を別々の `requestId` で並列実行できます。
 - 一方で、host停止・権限変更・障害注入を伴う試験は同一環境内で競合するため直列化して実施します（これらを並列化する場合は、Function・Storage・Task Hubを分離します）。
 
 ---
@@ -48,6 +49,8 @@
 ## 3. 追加実装の範囲
 
 ### 3.1 ExpressRouteと閉域構成
+
+接続方式・IaCの所有境界・DNS・切替順序は [接続方式と共通ネットワーク](network-connectivity-design.md) を正とします。以下は後続実装であり、今回の変更で閉域資源や任意の小型WebAppは作成しません。既存Pool無変更や無停止切替は保証しません。
 
 - **Functionsの閉域化**: 既存回線・private peering・接続先VNetを確認し、Function受信用Private Endpointと送信用VNet Integrationを分けてIaCへ追加します。現在のApp Serviceプラン（B1）は両機能の対応tierであるため、閉域化のみを理由としたプラン変更は行いません（参考: [Private Endpoint](https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint)、[VNet Integration](https://learn.microsoft.com/en-us/azure/app-service/overview-vnet-integration)）。
 - **StorageのPrivate EndpointとDNS**: 入出力Blobに加え、Durable/Entityのhost Storage用Blob・Queue・TableのPrivate EndpointとDNSを設定し、オンプレミスDNSからPrivate Resolver等への転送を整えます（参考: [オンプレ接続構成](https://learn.microsoft.com/en-us/azure/architecture/web-apps/guides/networking/access-multitenant-web-app-from-on-premises)、[Functions Storage](https://learn.microsoft.com/en-us/azure/azure-functions/storage-considerations)）。
@@ -76,9 +79,11 @@
 
 ### 3.4 検証runnerと証跡
 
-- **検証スクリプトの分離**: `scripts/Invoke-PocValidation.ps1` 等を新設し、配置済みoutputsとシナリオを入力とします。インフラ配置と試験実行を分離し、異常系試験で「期待したTask失敗」を試験成功として判定できるようにします。
+- **検証スクリプトの分離**: `scripts/Invoke-PocValidation.ps1` は配置済み `deployment-result.json` とシナリオを入力とします。待機上限・poll間隔の既定は900秒・10秒です。インフラ配置と分離し、期待するexit 42と成功Manifest不在を試験成功として判定します。
+- **初期シナリオと操作境界**: 単一Task、3Task集約、light/heavy/auto分類、非ゼロ終了、同入力20並列・完了後再送、異入力409、監視期限超過を対象とします。runnerはapply・ZIP配置・Pool変更・権限変更・host停止・履歴purge・自動削除を行いません。監視期限試験は専用環境指定と実設定確認を必要とします。
+- **結果契約**: 選択試験すべてPassなら終了コード0、Failがあれば1、FailなしでNotRunがあれば2とします。`summary.json`と読みやすい要約を保存します。20並列はinstance・Task数だけでなくMain履歴を照合し、観測できない場合は1回起動実証済みとしません。
 - **証跡の記録項目**: 試験単位で実行ID、UTC時刻、Git revision/未コミット差分の識別、package hash、秘密を除いた設定、HTTP応答、Durable状態、Batch Job/Task状態、Blob内容、関連ログを保存します。
-- **秘密情報の除外と404上限**: Function key、認証ヘッダー、SAS、Durable管理URLのqueryは保存しません。途中失敗でも結果要約を必ず残します。状態GETの `404` にはリトライ上限を設けて「起動待ち」と「最終的な未起動」を区別します。
+- **秘密情報の除外と404上限**: Function key、認証ヘッダー、SAS、Durable管理URL、生の例外・HTTP本文は保存せず、証跡を許可フィールドから組み立てます。途中失敗でも結果要約を残します。状態GETの `404` は上限付き起動待ちとし、401/403は即時失敗にします。runnerの待機期限到達だけでBatch停止済みとは扱いません。
 - **故障注入と実障害の区別**: 通信timeout / `429` / `503`、停止確認失敗、アップロード中断を試験専用構成で再現します。SDKの試験用transportによる故障注入と、実Azureで発生した障害は結果上で明確に区別します。
 - **Entity中断試験の記録方針**: 通常のhost再起動だけでEntityのcheckpoint前後を厳密に狙い撃ちすることはできないため、制御可能なruntime試験と実Azure再起動試験を組み合わせ、実機で未観測の区間は「未検証」と記録します。なお、試験目的でEntityに外部I/Oを追加することはしません。
 
@@ -111,7 +116,8 @@
 
 ### 試験実施上の補足
 
-- `V00`〜`V03` が残りのクラウド試験の前提となります。
+- 個人環境の公開endpoint試験は`V00`の閉域構成完成を前提にしません。`V01`の配置・認証と正常系を確認してから競合・異常系へ進み、閉域化後に同じジョブ試験を再実行します。
+- 初期runnerは`V02`、`V03`の非ゼロ終了、`V04`、`V07`の正常な期限停止、および分類を対象とします。欠損・改ざん、host復旧、権限変更、通信故障、停止確認失敗、0台autoscale、実C++は後続試験です。Fake故障注入の結果は実Azure障害の実証へ繰り上げません。
 - `V10`〜`V12` はオンプレミス連携契約と追加実装の後に行います。実C++バイナリを用意できるまでは固定のC++試験アプリで入出力経路を検証できますが、業務アプリの実証とは区別します。
 - `V09` 用の0台autoscale Poolがない場合は、専用の試験fixtureを用意します（現Terraformは新規Poolを固定1〜3台で作成する構成のため、そのままでは0台autoscaleの試験には使用できません）。
 
@@ -121,7 +127,7 @@
 
 1. C#を仮定したオンプレミスWebバックエンドの実構成・利用者認証基盤。
 2. シナリオ/出力の典型・最大サイズ、件数、保持期間、C++バイナリ/CLI/依存DLL/検証用期待値。
-3. 既存ExpressRoute private peering/VNet接続、オンプレミスDNS、許可endpoint、Private Endpoint設置先、配置用実行ホスト。
+3. 閉域化時には既存ExpressRouteまたはVPN/VNet接続、端末・オンプレミスDNS、許可endpoint、Private Endpoint設置先、配置用実行ホスト。個人公開endpoint検証では既存ExpressRouteを必須にしません。
 4. 専用PoC subscription/RG、利用可能Poolまたは新規Pool方針、image、quota、配置実行者の認証と権限。
 
 > ※現リポジトリの `environments` ディレクトリにはサンプル設定のみが含まれています。実環境の設定とAzure CLI/認証経路を用意してからAzure試験へ進みます（計画段階ではクラウド資源の作成・停止・削除を実行しません）。

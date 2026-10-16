@@ -8,7 +8,7 @@ $oldDefault=$env:POC_FAKE_DEFAULT
 $oldRequest=$env:POC_FAKE_REQUESTID
 $oldBackend=$env:POC_FAKE_BACKEND
 try {
-    foreach ($file in @('deploy.ps1','Deployment.Common.ps1','Test-Deployment.ps1')) {
+    foreach ($file in @('deploy.ps1','Deployment.Common.ps1','Test-Deployment.ps1','Validation.Assertions.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "../$file") -Destination (Join-Path $temporary "scripts/$file")
     }
     @'

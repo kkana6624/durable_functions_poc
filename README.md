@@ -141,11 +141,42 @@ dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore
 ./scripts/tests/Deployment.Common.Tests.ps1
 ./scripts/tests/Test-Deployment.Tests.ps1
 ./scripts/tests/Deploy.Workflow.Tests.ps1
+./scripts/tests/PocValidation.Tests.ps1
 
 # Terraform mock_provider試験（providerの取得後、Azureへ接続しない）
 terraform -chdir=infra test
 terraform -chdir=infra/bootstrap test
 ```
+
+### 配置済み環境を独立して検証する
+
+`Invoke-PocValidation.ps1` は開発者向けの検証runnerです。`az login` と、配置結果に含まれるsubscriptionのFunction key取得・設定参照、Batch Job/Task参照、Blob読取権限が必要です。配置やPool設定の変更は行わず、HTTP経由で試験Job/Taskを作成します。
+
+```powershell
+# 配置を繰り返さず、まず正常・分類・期待したTask失敗を検証
+./scripts/Invoke-PocValidation.ps1 `
+  -DeploymentResultPath .deploy/poc/<run>/deployment-result.json `
+  -Scenarios single,three,classification,failure `
+  -EvidenceDirectory artifacts/validation/first-run
+
+# 同入力20並列・完了後再送、異入力409
+./scripts/Invoke-PocValidation.ps1 `
+  -DeploymentResultPath .deploy/poc/<run>/deployment-result.json `
+  -Scenarios admission20,conflict
+
+# 監視期限試験: 短いWORKFLOW_TIMEOUT_MINを配置した専用環境のみ
+./scripts/Invoke-PocValidation.ps1 `
+  -DeploymentResultPath .deploy/timeout-poc/<run>/deployment-result.json `
+  -Scenarios timeout -DedicatedEnvironment -TimeoutSeconds 900
+```
+
+既定の試験は `single,three,classification,failure,admission20,conflict`、待機上限900秒、poll間隔10秒です。期限試験は実配置設定を確認し、Task遅延とrunner待機上限で検証できない場合は `NotRun` とします。runnerの待機期限が切れても、計算Jobを停止済みとは扱いません。
+
+`summary.json` と `summary.txt` に試験別の `Pass / Fail / NotRun`、UTC時刻、Git情報、配置package hash、必要な観測値を保存します。既定の保存先は `artifacts/validation/<run>/`、終了コードは全選択試験Passが0、Failありが1、FailなしでNotRunありが2です。秘密を含むURL・キー・生の例外は証跡へ保存しません。同じ出力先を指定すると要約を上書きするため、実行ごとに別ディレクトリを使用してください。
+
+`admission20` は同一instanceへの収束、Task数、完了後再送を観測します。現在の管理APIだけでは全世代のMain起動履歴を証明できないため、観測値を残したうえで `NotRun` とし、厳密な一度だけの起動を実証済みとはしません。試験後も入力・Entity状態・Main履歴を保持し、自動清掃は行いません。
+
+個人環境では現行の公開endpointを使います。VPN/ExpressRouteへの切替と任意の小型WebAppは、[共通ネットワーク設計](docs/network-connectivity-design.md)にまとめた後続実装です。Azure実接続試験の結果とローカルFake成功は区別してください。
 
 - **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
 - **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
