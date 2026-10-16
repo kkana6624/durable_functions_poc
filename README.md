@@ -1,92 +1,168 @@
 # Azure Batch + Durable Functions PoC
 
-既存の Windows Batch Pool に小さな PowerShell Task を投入し、Durable の子オーケストレーションと永続 Timer で待機、Batch File API → Blob → 集約 → Manifest 公開までを検証する PoC です。実装の根拠は [設計書](docs/azure-hpc-modernization-poc-design.md) と [実装指示書](docs/CODEX_IMPLEMENTATION_INSTRUCTIONS.md) です。
+Windows Batch Pool への PowerShell Task 投入から、Durable Functions（子オーケストレーションおよび永続 Timer）による完了待機、Batch File API 経由での結果取得、Blob 保存・集約、Manifest 公開までの一連のワークフローを検証する PoC です。
 
-Azure 実接続の成否は [検証結果](docs/test-results.md) と [実現性評価](docs/feasibility-matrix.md) に記載します。ローカル Fake の成功を実 Pool の成功として扱いません。
+設計の背景と実装要件については、[設計書](docs/azure-hpc-modernization-poc-design.md) および [実装指示書](docs/CODEX_IMPLEMENTATION_INSTRUCTIONS.md) を参照してください。
 
-Batch基盤を含むワンコマンド配置を実装しています。新規PoC用Batch Account / Windows Poolの作成、既存Batch参照、state backendの準備、Functionコード配置、準備完了確認を一つのスクリプトで実行できます。[必要なIaCの洗い出し](docs/one-command-deployment-inventory.md) に実装範囲と条件付き構成を記載しています。
+> [!IMPORTANT]
+> **検証ステータスに関する注記**
+> 現時点ではローカル環境での単体テストおよびオフライン検証（Mock / Fake を用いた試験）のみが完了しており、Azure 実環境でのデプロイ・実接続検証は未実施です。ローカル試験の成功は Azure 実環境（実 Pool の実行ポリシー、実 host の永続化・復旧、権限・クォータ等）の動作を保証するものではありません。実環境での検証状況は [検証結果](docs/test-results.md) と [実現性評価](docs/feasibility-matrix.md) に記録します。
+
+---
 
 ## ワンコマンド配置
 
-Windows PowerShell 5.1以降、.NET 10、Terraform 1.9以降、Azure CLI 2.48.1以降を用意し、`az login`を実行します。配置は下記の設定ファイルに指定したsubscriptionへ行い、CLIの既定subscriptionは変更しません。
+Batch 基盤を含む環境構築からアプリケーション配置までを 1 つのスクリプト（`scripts/deploy.ps1`）で実行できます。実装範囲と条件付き構成の詳細は [必要なIaCの洗い出し](docs/one-command-deployment-inventory.md) を参照してください。
 
-新しい基盤を作る場合は`environments/poc.example.psd1`を`environments/poc.psd1`へコピーし、subscription、リージョン、グローバルに一意な名前suffix、既存Galleryの正確なversion ID、state backend名、配置実行者のobject IDを設定します。新規Galleryを製造する処理は含みません。Marketplace Windows imageを使う場合は`batch_image_source='marketplace'`と正確なimage versionを指定し、Gallery IDを省略します。
+- 新規 PoC 用 Batch Account / Windows Pool の作成、または既存 Batch 環境の参照
+- Terraform state backend の準備（新規作成または既存参照）
+- Function App のビルド・テスト・パッケージングと Entra 認証による ZIP デプロイ
+- デプロイ後の準備完了確認（Pool ノード状態および Functions 検出）
+
+### 1. 事前準備
+
+以下のツールを用意し、`az login` を実行します。デプロイ先は設定ファイル（`.psd1`）に指定したサブスクリプションとなり、Azure CLI の既定サブスクリプションは変更されません。
+
+- Windows PowerShell 5.1 以降
+- .NET 10 SDK
+- Terraform 1.9 以降
+- Azure CLI 2.48.1 以降
+
+**前提条件とスコープ外項目**
+- **事前準備が必要な項目**: Resource Provider の登録、クォータ増枠、VM 容量の確保、Marketplace 利用条件の有効化、Azure Compute Gallery の元イメージ準備（スクリプトでは Provider 登録状況の確認、および Pool の resize エラー・準備期限超過の検出を行います）。
+- **現スクリプトの対象外**: 閉域化構成、UserSubscription 方式、Gallery イメージ自体の製造処理、CI/OIDC 連携。
+
+### 2. 設定ファイルの作成
+
+#### 新規 Batch 基盤を作成する場合 (`batch_mode='new'`)
+`environments/poc.example.psd1` を `environments/poc.psd1` にコピーし、以下の項目を設定します。
+
+- サブスクリプション ID、リージョン、グローバルに一意な名前 suffix
+- 既存 Gallery の正確な image version ID（新規 Gallery を製造する処理は含みません）
+  - Marketplace の Windows イメージを使用する場合は、`batch_image_source='marketplace'` と正確な image version を指定し、Gallery ID は省略します。
+- Terraform state backend 名、デプロイ実行者の Object ID
+
+新規作成される Batch 環境の仕様は以下のとおりです。
+- **構成**: `BatchService` 方式、Entra 認証のみ、公開エンドポイント、`Simplified` 通信の Windows Pool（新規ノード数は 1〜3 台）
+- **並行動作**: 1 台・1 slot 構成の場合、3 つの Task は順次実行され、3 本の監視オーケストレーションは並行して進みます。
+
+#### 既存の Batch 基盤を使用する場合 (`batch_mode='existing'`)
+`environments/existing.example.psd1` をコピーして使用します。
+
+- 既存の Batch Account、Pool、Gallery はすべて参照専用（読み取りのみ）として扱います。
+- リソースグループを新規作成するか既存のものを使用するかは `create_resource_group` で選択します。
+
+### 3. デプロイの実行
 
 ```powershell
+# 通常デプロイ（インフラ構築 + コード配置）
 ./scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1
-```
 
-実行順は、事前確認 → build/test/publish → backend作成または参照 → Terraform plan検査/apply → Pool確認 → Entra認証ZIP配置 → 12 Functions検出です。applyはコマンド内で実行します。`-PlanOnly`はapply・コード配置を行いません。`Backend.Create=true`でもbackend作成済みならmain planまで進み、未作成ならbootstrap planのみを保存します。backend参照の権限不足・通信失敗は不存在と区別して失敗します。
-
-新規Poolは指定全台の準備完了を待ち、ノード一覧は全ページを確認します。既存Poolは存在・参照権限だけを確認するため、0台でもコードを配置できます。`-Smoke`ではTaskを先に投入して自動拡張と完了を待ちます。自動拡張設定の変更は行いません。単一Task smokeの期限は配置設定の`TimeoutSeconds`を使います。
-
-```powershell
-# 保存planの確認のみ
+# 保存 plan の確認のみ（apply およびコード配置を行わない）
 ./scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -PlanOnly
-# 配置後に単一Task smokeと3 Task workflowを実行し、sum=3まで検証
+
+# 配置後に単一 Task smoke と 3 Task workflow を実行し、sum=3 まで検証
 ./scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke
 ```
 
-既存Batchを使う場合は`environments/existing.example.psd1`をコピーして使用します。既存Account、Pool、Galleryは参照専用です。新規RGを作るか既存RGを使うかは`create_resource_group`で選択します。新規Batchは`BatchService`方式、Entra認証のみ、公開endpoint、`Simplified`通信のWindows Poolです。1台・1slotなら3 Taskは順次実行され、3本の監視は並行して進みます。新規ノード数は1〜3台です。
+#### 実行フローとオプションの挙動
+1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → Entra 認証 ZIP 配置 → 12 Functions の検出（`apply` はコマンド内で実行されます）。
+2. **`-PlanOnly` 指定時**: `apply` とコード配置は行いません。`Backend.Create=true` の場合、backend が作成済みであれば main plan の作成まで進み、未作成であれば bootstrap plan のみを保存します。なお、backend 参照時の権限不足や通信失敗は「未作成（不存在）」とは区別してエラー停止します。
+3. **Pool 確認と `-Smoke` 指定時**:
+   - **新規 Pool**: 指定した全台数が準備完了になるまで待機します（ノード一覧は全ページを確認します）。
+   - **既存 Pool**: 存在と参照権限のみを確認するため、ノード数が 0 台の状態でもコードを配置できます。
+   - **`-Smoke` 実行時**: 自動拡張（autoscale）設定自体は変更せず、先に Task を投入して自動拡張と完了を待機します。単一 Task smoke のタイムアウトには配置設定の `TimeoutSeconds` が使用されます。
 
-新規作成には対象RGでのリソース作成権限、RBAC割当権限が必要です。実行者にはBatchデータプレーンのPool/Node参照権限、`-Smoke`にはJob/Task操作、Function key取得、結果Blob参照権限も必要です。Function identityへの権限付与は実装済みですが、実行者自身の既存環境権限を自動で拡張しません。Gallery利用時はPool作成者のイメージ利用権限とリージョンreplicaを準備してください。
+### 4. 必要な権限
 
-ログ、publish出力、ZIP、保存plan、配置結果は`.deploy/<environment>/<実行日時>/`に保存します。bootstrapのlocal stateは`.deploy/<environment>/bootstrap/terraform.tfstate`、アプリのremote stateはbackend containerの`<environment>.tfstate`です。bootstrap stateはbackendの管理に必要なので保管してください。state backendのRG/Storage/Containerには`prevent_destroy`を設定しています。環境名とbackend/対象RG/Batchモード等の対応を記録し、同じ環境名で異なるstateへ誤接続する変更を拒否します。
+Function の Managed Identity に対する権限付与は Terraform 内で実装済みですが、デプロイ実行者自身の権限をスクリプトが自動拡張することはありません。実行者には事前に以下の権限が必要です。
 
-削除・置換を含むplan、既存Batch更新、Gallery変更を検出した場合はapply前に停止します。構成変更で置換が必要な場合は個別の移行として扱います。途中失敗時はリソースを残して原因を示し、同じ設定で再実行できます。Function key、Durable管理URL、認証情報を配置ログには出しません。
+- **インフラ作成時**: 対象リソースグループでのリソース作成権限、RBAC 割当権限（Owner の自動付与は行いません）
+- **Gallery 利用時**: Pool 作成者のイメージ利用権限、および対象リージョンへの replica 配置
+- **Batch 操作**: Batch データプレーンの Pool / Node 参照権限
+- **`-Smoke` 実行時**: 上記に加え、Job / Task 操作権限、Function key 取得権限、結果 Blob 参照権限
 
-Resource Provider登録、quota増枠、VM容量、Marketplace利用条件、Galleryの元イメージ準備は事前条件です。スクリプトはProvider登録状況を確認し、Pool resizeエラーと準備期限超過を検出します。実Azure上の権限・quota・配置・復旧は未検証です。閉域化、UserSubscription方式、Galleryイメージ製造、CI/OIDCは現在の配置スクリプトには含みません。
+### 5. 出力ファイル・State 管理・安全機構
+
+- **出力先**: ログ、`publish` 出力、ZIP、保存 plan、配置結果は `.deploy/<environment>/<実行日時>/` に保存されます。Function key、Durable 管理 URL、認証情報などの秘密情報は配置ログに出力されません。
+- **Terraform State**:
+  - bootstrap の local state: `.deploy/<environment>/bootstrap/terraform.tfstate`（backend の管理に必要なため保管してください）
+  - アプリ環境の remote state: backend container 内の `<environment>.tfstate`
+  - state backend の RG / Storage / Container には `prevent_destroy` を設定しています。また、環境名と backend・対象 RG・Batch モード等の対応を記録し、同一環境名で異なる state へ誤接続する設定変更を拒否します。
+- **変更保護と再実行**:
+  - 削除・置換を含む plan、既存 Batch の更新、Gallery の変更を検出した場合は `apply` 前に停止します（構成変更でリソース置換が必要な場合は個別の移行作業として扱います）。
+  - 途中で失敗した場合は作成済みリソースを残して原因を表示するため、修正後に同じ設定で再実行できます。
+
+---
 
 ## 構成と管理境界
 
 | 対象 | 管理方法 |
 |---|---|
-| Resource Group | 既定は既存`data`参照。`create_resource_group=true`ではPoC専用RGを作成 |
-| Batch Account / Windows Pool | `batch_mode=existing`は参照のみ。`new`はPoC専用基盤を作成 |
-| 既存 Azure Compute Gallery image version | 新規Gallery利用Poolではdata参照してimageへ設定。Gallery自体は変更しない |
+| Resource Group | 既定は既存 `data` 参照。`create_resource_group=true` では PoC 専用 RG を作成 |
+| Batch Account / Windows Pool | `batch_mode=existing` は参照のみ。`new` は PoC 専用基盤を作成 |
+| 既存 Azure Compute Gallery image version | 新規 Gallery 利用 Pool では `data` 参照してイメージへ設定。Gallery 自体は変更しない |
 | PoC Linux Function App / B1 Dedicated plan | Terraform で新規作成。Always On 有効 |
 | PoC Storage / `poc-results` container | Terraform で新規作成。Storage 名は Azure の制約により `poc` + suffix（ハイフンなし） |
 | PoC Application Insights / Log Analytics | Terraform で新規作成 |
 | Function system-assigned identity / RBAC | Terraform で作成。PoC Storage と既存 Batch account に限定 |
-| state backend | 独立bootstrap rootでPoC専用RG/Storage/Containerと実行者Blob権限を作成、または既存backend参照 |
+| state backend | 独立 bootstrap root で PoC 専用 RG / Storage / Container と実行者 Blob 権限を作成、または既存 backend 参照 |
 | PoC Batch Jobs / Tasks / 結果 Blob | Activity / smoke tool で実行時に作成。Terraform 管理外 |
 
-共有 Pool の利用可能ノード、Windows Server / PowerShell 5.1、同時実行の影響を利用者が確認してから実接続試験を実行してください。計算ノードへのアプリ配布、Pool resize、イメージ更新は行いません。
+> [!NOTE]
+> 共有 Pool を使用して実接続試験を行う際は、利用可能なノード数、OS 環境（Windows Server / PowerShell 5.1）、同時実行による他ジョブへの影響を事前に確認してください。計算ノードへのアプリ配布、Pool の resize、イメージ更新は行いません。
 
-## 必要な環境
+---
 
-- .NET 10 SDK、Azure Functions Core Tools v4、Azure CLI、Terraform 1.9 以降。
-- Azure へのログインと既存 Batch の Microsoft Entra 認証、既存 Pool 参照権限。
-- デプロイ実行者には PoC リソース作成権限と指定 scope の RBAC 作成権限。Owner を自動付与しません。Resource Provider は事前登録済みを前提とし、自動登録を無効にしています。
-- ローカル実接続実行者には Batch account の `Azure Batch Job Submitter`、結果 container の Blob データ読書き権限。クラウド host storage をローカル host に使う場合は後述の host 権限も必要です。
+## 必要な環境とホスティング構成
 
-.NET 10 isolated worker と Functions v4 を使用します。[公式 isolated guide](https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-process-guide) では Linux Consumption で .NET 10 を使えないため、この構成は Always On を有効にした Linux Dedicated B1 を選択しています。[hosting guide](https://learn.microsoft.com/en-us/azure/azure-functions/functions-scale) と [AzureRM Function resource](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/linux_function_app.html.markdown) を参照してください。リージョンでの実デプロイは未検証です。
+### 必須ツール・権限
+- **ツール**: .NET 10 SDK、Azure Functions Core Tools v4、Azure CLI、Terraform 1.9 以降
+- **認証・参照権限**: Azure へのログイン、既存 Batch の Microsoft Entra 認証、既存 Pool の参照権限
+- **デプロイ実行者権限**: PoC リソース作成権限、指定スコープの RBAC 作成権限（Resource Provider は事前登録済みを前提とし、Terraform での自動登録は無効化しています）
+- **ローカル実接続の実行者権限**: Batch Account の `Azure Batch Job Submitter`、結果コンテナの Blob データ読み書き権限（クラウド上の host storage をローカル Functions host から使用する場合は、後述の host storage 権限も必要です）
+
+### Function App のホスティング選定理由
+本構成では .NET 10 isolated worker と Azure Functions v4 を使用します。[公式の isolated worker ガイド](https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-process-guide) にあるとおり Linux Consumption プランでは .NET 10 を利用できないため、Always On を有効にした **Linux Dedicated (App Service Plan B1)** を選択しています。詳細は [ホスティングガイド](https://learn.microsoft.com/en-us/azure/azure-functions/functions-scale) および [Terraform AzureRM `linux_function_app` リソース仕様](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/linux_function_app.html.markdown) を参照してください。
+
+---
 
 ## 1. ローカル検証
 
-リポジトリルートで実行します。
+リポジトリルートで以下のコマンドを実行し、Azure に接続せずにビルドとテストを検証できます。
 
 ```powershell
 dotnet restore src/Poc.Functions/Poc.Functions.csproj
 dotnet restore DurableBatchPoc.slnx
 dotnet build DurableBatchPoc.slnx --no-restore
 dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore
+
 # 配置制御のオフライン試験（Azureへ接続しない）
 ./scripts/tests/Deployment.Common.Tests.ps1
 ./scripts/tests/Test-Deployment.Tests.ps1
 ./scripts/tests/Deploy.Workflow.Tests.ps1
+
 # Terraform mock_provider試験（providerの取得後、Azureへ接続しない）
 terraform -chdir=infra test
 terraform -chdir=infra/bootstrap test
 ```
 
-現行 `Azure.Functions.Sdk` の生成ターゲットを準備するため、Function project を先に直接 restore してから solution を restore します。`global.json` は Microsoft.Testing.Platform runner を選択するため、テスト実行時は `--project` を指定します。単体テストは FakeGateway とメモリ上の結果保存を使用し、Azure にアクセスしません。現在の実測結果は `docs/test-results.md` を参照してください。
+- **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
+- **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
+- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。現在のテスト実行結果は [検証結果](docs/test-results.md) を参照してください。
 
-## 2. Terraform の確認と適用
+---
 
-通常は上記の`deploy.ps1`を使用します。以下は既存backendへ手動で接続する場合の手順です。`infra/`はAzureRM remote backendを使うため、先にstate用Storage/Containerと実行者のBlobデータ権限を用意します。backend.hclには`subscription_id`、`resource_group_name`、`storage_account_name`、`container_name`、環境固有の`key`、`use_azuread_auth=true`を記載します。ワンコマンド実行で生成した`.deploy/<environment>/<実行日時>/backend.hcl`も利用できます。
+## 2. Terraform の確認と適用（手動実行手順）
 
-以前のlocal stateを使っている場合は、stateを保存してから同じリソースを対象とするbackendへ`terraform init -migrate-state`で明示移行してください。空のremote stateに接続して再applyすると既存リソースとの衝突が起きます。配置スクリプトは自動importや暗黙のstate移行を行いません。
+通常は前述の `./scripts/deploy.ps1` を使用しますが、既存の backend へ手動で接続して Terraform を実行する場合は以下の手順に従います。
+
+### 事前準備と State 移行の注意点
+- `infra/` は AzureRM remote backend を使用するため、事前に state 用の Storage Account / Container と実行者の Blob データ権限を用意してください。
+- `backend.hcl` には `subscription_id`、`resource_group_name`、`storage_account_name`、`container_name`、環境固有の `key`、`use_azuread_auth=true` を記載します（`deploy.ps1` の実行で生成された `.deploy/<environment>/<実行日時>/backend.hcl` も流用可能です）。
+- 以前の local state を使用している場合は、state をバックアップしたうえで、同一リソースを対象とする backend へ `terraform init -migrate-state` で明示的に移行してください。空の remote state に接続して再 `apply` すると既存リソースとの競合が発生します（配置スクリプトによる自動 `import` や暗黙の state 移行は行われません）。
+
+### Plan と Apply の実行
 
 ```powershell
 az login
@@ -100,18 +176,22 @@ terraform -chdir=infra plan -out=poc.tfplan
 terraform -chdir=infra show poc.tfplan
 ```
 
-`batch_mode=existing`では、Planに既存Batch Account / Pool / Gallery / RGの作成・更新・削除がないことを確認します。既存Batchに対して作るものはFunction identityの`Azure Batch Job Submitter` role assignmentだけです。`batch_mode=new`ではPoC専用Account/Poolも作成されます。新規設定例は`infra/terraform.new.tfvars.example`です。その後、確認済みplanを適用します。
+plan の内容を以下のように確認したうえで、`apply` を実行します。
+- **`batch_mode=existing` の場合**: 既存の Batch Account / Pool / Gallery / RG に対する作成・更新・削除が含まれておらず、既存 Batch への変更が Function Identity に対する `Azure Batch Job Submitter` ロール割り当てのみであることを確認します。
+- **`batch_mode=new` の場合**: PoC 専用の Batch Account / Pool も新規作成対象に含まれます（設定例は `infra/terraform.new.tfvars.example` を参照）。
 
 ```powershell
 terraform -chdir=infra apply poc.tfplan
 terraform -chdir=infra output
 ```
 
-AzureRM provider を 5.10.x に固定し、検証時の 5.10.0 の `.terraform.lock.hcl` を含めています。provider 更新時は lock の差分をレビューしてください。`terraform.tfvars`、state、plan、資格情報、Function 管理 URL のキーを Git に含めません。state はアクセスを制限し、本番利用では暗号化とロック付き remote backend を別途構成してください。
+### プロバイダー管理・セキュリティ・RBAC 仕様
+- **Provider バージョン**: AzureRM provider は `5.10.x` に固定しており、検証時の `5.10.0` の `.terraform.lock.hcl` を同梱しています。provider 更新時は lock ファイルの差分をレビューしてください。
+- **機密情報の保護**: `terraform.tfvars`、state、plan、資格情報、Function 管理 URL のキーは Git にコミットしないでください。state ファイルはアクセスを制限し、本番利用時は暗号化とロックを備えた remote backend を別途構成してください。
+- **Storage の Managed Identity 接続**: Function の host storage は共有キー接続を使用せず（Storage 側でも共有キーは無効化）、`storage_uses_managed_identity` と `AzureWebJobsStorage__accountName` / `__credential=managedidentity` を設定します。PoC Storage スコープに対して、[host storage の必要権限](https://learn.microsoft.com/en-us/azure/azure-functions/manage-connections?tabs=host%2Cidentity)（`Storage Blob Data Owner`）と [Durable Functions の必要権限](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-configure-managed-identity)（`Storage Queue Data Contributor` / `Storage Table Data Contributor`）を付与します。実行結果も同じ PoC Storage に保存するため、追加の Blob 権限は不要です。デプロイ後は RBAC の反映後に Functions host が正常起動することを確認してください。
+- **Batch ロールのスコープ**: [`Azure Batch Job Submitter`](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/compute#azure-batch-job-submitter) は Pool の変更権限を持ちませんが、アカウント内の全 Job にアクセス可能であり、RBAC レベルでの Job ID prefix による制限はできません。PoC 用の `poc-` prefix 制限はアプリケーション側で実施します。共有 Batch Account へ適用する場合は、このスコープの権限付与が認められる環境で実施してください。
 
-Function の host storage は鍵接続を使わず `storage_uses_managed_identity` と `AzureWebJobsStorage__accountName` / `__credential=managedidentity` を設定します。共有キーは Storage 側でも無効です。[host storage の権限](https://learn.microsoft.com/en-us/azure/azure-functions/manage-connections?tabs=host%2Cidentity) に従う Blob Data Owner と、[Durable の権限](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-configure-managed-identity) に従う Queue / Table Data Contributor を PoC Storage scope に付与します。結果も同じ PoC Storage に保存するため追加 Blob 権限は不要です。RBAC の反映後に host が正常起動することを確認してください。
-
-[Azure Batch Job Submitter](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/compute#azure-batch-job-submitter) は Pool 変更権限を持ちませんが、account 内の jobs にアクセスでき、ID prefix による認可制限はありません。PoC prefix はアプリで制限します。共有 account への適用はこの scope の権限を認められる環境で行ってください。
+---
 
 ## 3. 設定
 
@@ -119,7 +199,7 @@ Function の host storage は鍵接続を使わず `storage_uses_managed_identit
 |---|---|
 | `FUNCTIONS_WORKER_RUNTIME` | `dotnet-isolated` |
 | `AzureWebJobsStorage__accountName` | PoC host storage 名 |
-| `AzureWebJobsStorage__credential` | Azure は `managedidentity`。ローカル CLI 資格情報では設定しない |
+| `AzureWebJobsStorage__credential` | Azure 環境では `managedidentity`。ローカルで CLI 資格情報を使う場合は設定しない |
 | `BATCH_ENDPOINT` | 既存 account の `https://...batch.azure.com` |
 | `BATCH_POOL_ID` | 既存 Windows Pool ID |
 | `BLOB_ENDPOINT` | PoC Blob service URI |
@@ -127,13 +207,14 @@ Function の host storage は鍵接続を使わず `storage_uses_managed_identit
 | `BATCH_POLL_SECONDS` | `10` |
 | `WORKFLOW_TIMEOUT_MIN` | `15` |
 
-SDK 認証は `DefaultAzureCredential` です。Azure では system-assigned Managed Identity、ローカルは `az login` の開発者資格情報等を使います。キーや SAS をソースに埋め込みません。
+- **認証方式**: SDK の認証には `DefaultAzureCredential` を使用します（Azure 上では System-assigned Managed Identity、ローカル実行時は `az login` の開発者資格情報などを使用）。キーや SAS トークンはソースコードに埋め込みません。
+- **ローカル実行設定**: ローカル実行時は `src/Poc.Functions/local.settings.json.example` を `local.settings.json` にコピーして上記項目を設定します。ローカルの host storage に Azurite を使用する場合は、Azurite を起動して `AzureWebJobsStorage=UseDevelopmentStorage=true` を設定し、`AzureWebJobsStorage__*` の項目を削除してください（結果保存用の `BLOB_ENDPOINT` は実 PoC Storage のままにします）。
 
-実行時は `src/Poc.Functions/local.settings.json.example` を `local.settings.json` にコピーし、上記を設定します。ローカル host storage に Azurite を使う場合は Azurite を起動し、`AzureWebJobsStorage=UseDevelopmentStorage=true` を設定します。その場合は `AzureWebJobsStorage__*` を削除し、結果用 `BLOB_ENDPOINT` は実 PoC Storage のままにします。
+---
 
-## 4. Step A: 既存 Windows Pool の smoke
+## 4. Step A: 既存 Windows Pool の smoke テスト
 
-最初に endpoint と Pool ID を設定し、単一 Task のコマンド実行と `wd/result.txt` の取得を確認します。
+まず Batch エンドポイントと Pool ID を環境変数に設定し、単一 Task のコマンド実行と `wd/result.txt` の取得が成功することを確認します。
 
 ```powershell
 $env:BATCH_ENDPOINT = 'https://<account>.<region>.batch.azure.com'
@@ -141,13 +222,17 @@ $env:BATCH_POOL_ID = '<existing-windows-pool>'
 dotnet run --project tools/BatchSmoke
 ```
 
-ログに Job ID、Task ID、状態、ファイル名、取得値が出ることを確認し、`artifacts/` 以下のログへ保存します。smoke の成功前に F01 を Pass としません。SDK は [Azure.Compute.Batch 現行ガイド](https://learn.microsoft.com/en-us/dotnet/api/overview/azure/compute.batch-readme) の `BatchClient` と Entra 認証を使用し、旧 `Microsoft.Azure.Batch` サンプルは混在させません。
+- **確認内容**: ログに Job ID、Task ID、状態、ファイル名、取得値が出力されることを確認し、`artifacts/` 配下にログを保存します。この smoke テストが成功するまでは、実現性評価の `F01` を Pass とは扱いません。
+- **使用 SDK**: [Azure.Compute.Batch の現行ガイド](https://learn.microsoft.com/en-us/dotnet/api/overview/azure/compute.batch-readme) に従い、`BatchClient` と Entra 認証を使用します（旧 `Microsoft.Azure.Batch` のコードは混在させません）。
+- **コマンド仕様**: 暗黙のシェル解釈に依存しないよう `cmd /c powershell.exe -NoProfile -NonInteractive -Command "..."` を明示し、整数の待機時間と固定出力のみを埋め込みます（[Batch コマンド仕様](https://learn.microsoft.com/en-us/azure/batch/jobs-and-tasks) および [Task File API](https://learn.microsoft.com/en-us/rest/api/batchservice/tasks/get-task-file) を参照）。なお、ローカル Windows 上でのクォーティング確認だけでなく、実 Pool 上の PowerShell 実行ポリシー等で正常に動作するかをこのステップで確認します。
 
-コマンドは暗黙 shell に依存せず `cmd /c powershell.exe -NoProfile -NonInteractive -Command "..."` を明示し、整数の待機時間と固定出力のみを挿入します。[Batch コマンド仕様](https://learn.microsoft.com/en-us/azure/batch/jobs-and-tasks) と [Task File API](https://learn.microsoft.com/en-us/rest/api/batchservice/tasks/get-task-file) を参照してください。ローカル Windows での quoting 成功だけでは実 Pool の実行ポリシーまで保証しません。
+---
 
-## 5. Step B: 起動、照会、Blob 確認
+## 5. Step B: 起動、状態照会、Blob 確認
 
-ローカルで実接続する場合:
+### 1. Functions の起動またはデプロイ
+
+**ローカルから実 Azure リソースへ接続して起動する場合:**
 
 ```powershell
 Push-Location src/Poc.Functions
@@ -155,7 +240,8 @@ func start
 Pop-Location
 ```
 
-Azure にデプロイする場合は Terraform 適用後、publish ディレクトリの中身を zip にして Azure CLI の Entra 認証で配布します。host.json が zip 直下にある必要があります。
+**Azure Function App へ手動で ZIP デプロイする場合:**
+Terraform 適用後、`publish` ディレクトリの中身を ZIP 化して Azure CLI の Entra 認証でデプロイします（`host.json` が ZIP のルート直下に配置されている必要があります）。
 
 ```powershell
 dotnet publish src/Poc.Functions/Poc.Functions.csproj -c Release -o artifacts/publish
@@ -164,7 +250,9 @@ $functionName = terraform -chdir=infra output -raw function_app_name
 az functionapp deployment source config-zip --resource-group <poc-resource-group> --name $functionName --src artifacts/functions.zip
 ```
 
-要求例。ローカルの URL を Azure の `workflow_url` に変更する際は Function key を `x-functions-key` header へ渡します。key と返却される管理 URL はログへ公開しないでください。
+### 2. ワークフローの開始と状態照会
+
+以下はローカルエンドポイントへのリクエスト例です。Azure 上の `workflow_url` に対して実行する際は、Function key を `x-functions-key` ヘッダーに指定してください（Function key やレスポンスに含まれる Durable 管理 URL はログに記録・公開しないでください）。
 
 ```powershell
 $body = @{
@@ -177,64 +265,107 @@ $body = @{
 } | ConvertTo-Json
 $started = Invoke-RestMethod -Method Post -Uri 'http://localhost:7071/api/workflows' -ContentType 'application/json' -Body $body
 $started
-# 応答中の statusQueryGetUri を使用
+# 応答中の statusQueryGetUri を使用して状態を照会
 Invoke-RestMethod -Uri $started.statusQueryGetUri
 ```
 
-`taskCount` は 1〜3、`classification` は `light` / `heavy` / `auto` です。`runs/poc-<requestId>/request.json`を条件付き作成して入力を確定し、異なる入力はHTTP 409にします。同じ入力の同時受付・再送は同じDurable Entityへ通知し、Entityが起動済み状態と起動指示を永続化します。HTTP 202は通知の受理を表し、実インスタンス登録まで状態URLが一時404になる場合は再照会してください。受付確認中の一時障害は503と`Retry-After`を返します。同じrequestIdと入力で再送できます。
+#### パラメータと受付制御（冪等性・重複抑止）の仕様
+- **入力パラメータ**: `taskCount` は `1`〜`3`、`classification` は `light` / `heavy` / `auto` を指定できます。
+- **入力の確定と競合検出**: リクエスト受付時に `runs/poc-<requestId>/request.json` を条件付き作成して入力内容を確定します。同一 `requestId` で異なる入力パラメータが送信された場合は `HTTP 409 (Conflict)` を返します。
+- **同時受付・再送時の動作**: 同一 `requestId` かつ同一入力の同時リクエストや再送は、同じ Durable Entity へ通知されます。Entity が「起動済み状態」と「Main オーケストレーションの起動指示」を永続化することで重複起動を防ぎます。
+- **ステータスコードと再試行**:
+  - `HTTP 202 (Accepted)` は Durable Entity への通知受理を表します。Main オーケストレーションの実インスタンスが登録されるまでの間、状態照会 URL（`statusQueryGetUri`）が一時的に `404` を返す場合は、少し待ってから再照会してください。
+  - 受付確認中の一時的な障害時は `HTTP 503` と `Retry-After` ヘッダーを返します。その場合は同じ `requestId` と入力内容で再送できます。
 
-成功時は PoC container 内の `runs/poc-<requestId>/` に Task 結果、`final/aggregate.json`、`final/manifest.json` が存在します。3 Task で各 value が 1 なら `sum=3` / `taskCount=3`。Job ID は requestId のハッシュから決定的に導出します。清掃時は実際のログ / Durable 出力の ID と prefix を確認します。
+### 3. 実行結果 Blob の確認
+
+ワークフローが正常完了すると、PoC コンテナ（`poc-results`）内の `runs/poc-<requestId>/` 配下に各 Task の結果、`final/aggregate.json`、および `final/manifest.json` が作成されます。
+
+- 3 つの Task がそれぞれ値 `1` を出力した場合、`sum=3` / `taskCount=3` となります。
+- Batch の Job ID は `requestId` のハッシュから決定的に導出されます（後の清掃作業では、実際のログや Durable 出力に記録された ID と prefix を確認して使用します）。
 
 ```powershell
 $storageName = terraform -chdir=infra output -raw storage_account_name
 az storage blob list --account-name $storageName --container-name poc-results --auth-mode login --query '[].name' -o table
-# 出力で確認した完全な Blob 名を指定する
+# 出力で確認した完全な Blob 名を指定してダウンロード
 az storage blob download --account-name $storageName --container-name poc-results --name '<run-prefix>/final/manifest.json' --file artifacts/manifest.json --auth-mode login
 ```
 
+---
+
 ## 6. Step C: 故障と再開の試験
 
-- 非ゼロ終了: 新しい requestId と `failTaskIndex=1` で実行。ほかの Task は自然終了を待ち、親が失敗し aggregate / manifest を公開しないことを確認。
-- Timer: `classification=heavy` と長い待機時間を指定。HTTP が 202 で返り、継続中の状態を照会できることを確認。
-- 再起動: 上の待機中に `az functionapp restart --resource-group <poc-resource-group> --name <poc-function-name>` を実行。PoC 専用 Function のみに限定し、共有 Pool / node は再起動しない。再開後の instance ID、Activity 履歴、manifest を保存。
-- 結果欠損: FakeGateway で Task ファイル取得例外を模擬し成功誤認しないことを検証。実ノードのファイル削除は既定手順に含めない。
-- 期限超過: `WORKFLOW_TIMEOUT_MIN` を待機時間より短くした専用試験で TimedOut と未公開を確認。親は当該PoC JobのID・Pool・fingerprintを照合してJobを終端化し、最大2分間、完了を確認します。`customStatus.termination`と`terminationError`で停止確認結果を確認してください。停止要求の成功と停止完了は区別します。
+各異常系・再開シナリオの検証手順は以下のとおりです。
 
-Application Insights では instance ID、Job ID、Task ID を手掛かりに Activity ログを取得します。状態照会結果、Batch 状態、Blob 一覧、試験時間とログの場所を `docs/test-results.md` に記録してください。
+- **非ゼロ終了（Task 失敗）**: 新しい `requestId` と `failTaskIndex=1` を指定して実行します。他の兄弟 Task の自然終了を待ったうえで親オーケストレーションが失敗（Failed）となり、`aggregate.json` / `manifest.json` が公開されないことを確認します。
+- **永続 Timer 待機**: `classification=heavy` と長い待機時間を指定して実行し、`HTTP 202` が返ること、および実行継続中のステータスを照会できることを確認します。
+- **Function App 再起動からの再開**: 上記の Timer 待機中に `az functionapp restart --resource-group <poc-resource-group> --name <poc-function-name>` を実行します（再起動対象は PoC 専用 Function App のみに限定し、共有 Pool や計算ノードは再起動しません）。再開後の instance ID、Activity 履歴、最終的な `manifest.json` を保存します。
+- **結果ファイルの欠損**: `FakeGateway` で Task ファイル取得時の例外を模擬し、成功と誤認しないことを検証します（実ノード上のファイルを直接削除する操作は既定手順には含めません）。
+- **監視期限超過（タイムアウト）**: `WORKFLOW_TIMEOUT_MIN` を Task の待機時間より短く設定した専用試験を実行し、オーケストレーションが `TimedOut` となり結果が未公開であることを確認します。
+  - 期限超過時、親オーケストレーションは対象 PoC Job の ID・Pool・fingerprint を照合して Job を終端化（Terminate）し、最大 2 分間、停止完了を確認します。
+  - 停止要求の送信成功と実際の停止完了は区別して扱われます。ステータス照会の `customStatus.termination` および `terminationError` で停止確認の結果を確認してください。
 
-## 7. 清掃
+Application Insights では、`instanceId`、`Job ID`、`Task ID` を手掛かりに Activity の実行ログを追跡できます。状態照会結果、Batch 状態、Blob 一覧、試験時刻、およびログの保存場所を [検証結果](docs/test-results.md) に記録してください。
 
-先に Durable の対象試験が終端へ到達したことを確認します。期限超過時はJob停止完了も確認し、停止確認に失敗した場合は当該PoC Jobを手動確認します。確認済みのPoC Jobだけを削除し、既存Poolやnodeは停止しません。
+---
+
+## 7. 清掃（クリーンアップ）
+
+清掃を行う前に、対象の Durable オーケストレーションが終端状態（Completed / Failed / Terminated 等）に到達していることを確認してください。期限超過試験の後は Job の停止完了も確認し、自動での停止確認に失敗していた場合は対象の PoC Job の状態を手動で確認します。
+
+### 1. Batch Job の個別削除（既存 Account 利用時）
+確認済みの PoC Job（`poc-` prefix）のみを 1 件ずつ削除します。既存の共有 Pool や計算ノードは停止しません。
 
 ```powershell
-# Azure CLI Batch data-plane login。アカウント鍵ではなく Entra token を使用
+# Azure CLI Batch data-plane login（アカウント共有鍵ではなく Entra token を使用）
 az batch account login --resource-group <existing-batch-rg> --name <existing-batch-account> --auth-mode aad
 $pocJobId = '<実行ログに記録された完全なpoc-Job-ID>'
 if (-not $pocJobId.StartsWith('poc-', [StringComparison]::Ordinal)) { throw 'PoC Job ID のみ削除可能' }
 az batch job show --job-id $pocJobId
-# 表示を確認後、対象の一件だけ削除
+# 表示内容を確認後、対象の 1 件のみを削除
 az batch job delete --job-id $pocJobId --yes
 ```
 
-Blob の個別清掃は PoC 専用 `poc-results` 内で、実行出力の完全な run prefix と一致する `poc-` 対象に限定します。共有コンテナへのワイルドカード削除は行いません。PoC 全体を破棄する場合は次の destroy plan で PoC 作成リソースとその RBAC のみが対象であることを確認します。
+### 2. 結果 Blob の個別清掃
+Blob を個別に削除する場合は、PoC 専用コンテナ `poc-results` 内で、実行出力に記録された完全な run prefix（`poc-` 対象）に一致するものだけに限定します。共有コンテナに対するワイルドカード削除は行いません。
+
+### 3. PoC リソース全体の破棄（Terraform Destroy）
+PoC 環境全体を破棄する場合は、事前に必要な証跡（PoC Storage 内の状態履歴や結果 Blob）を保存したうえで、以下の手順で destroy plan を作成・確認してから適用します。
 
 ```powershell
 terraform -chdir=infra plan -destroy -out=poc-destroy.tfplan
 terraform -chdir=infra show poc-destroy.tfplan
-# PoC Storage の状態履歴と結果も消えるため、必要な証跡を先に保存
+# PoC Storage の状態履歴と結果も消えるため、必要な証跡を先に保存してから実行
 terraform -chdir=infra apply poc-destroy.tfplan
 ```
 
-既存参照のResource Group、Batch Account、Pool、Galleryはdestroy対象外です。新規作成モードではPoC専用RGとBatch Account/Poolもdestroy対象になります。環境のbackend設定とtfvarsを指定したdestroy planで対象を確認してください。Batch JobはTerraform管理外ですが、新規Accountを削除すればその中のJobも失われます。既存Accountでは上記の一件削除で清掃します。state backendは独立rootで`prevent_destroy`を設定しており、アプリ環境のdestroyに含めません。
+- **削除対象の範囲**:
+  - `batch_mode=existing`（既存参照モード）では、既存の Resource Group、Batch Account、Pool、Gallery は destroy 対象外となり、PoC で作成したリソースと RBAC のみが削除されます。
+  - `batch_mode=new`（新規作成モード）では、PoC 専用 RG と Batch Account / Pool も destroy 対象に含まれます（Batch Job 自体は Terraform 管理外ですが、新規 Batch Account を削除すれば内部の Job もあわせて削除されます）。
+  - 実行時は対象環境の backend 設定と `tfvars` を指定した destroy plan で削除対象を必ず確認してください。
+- **State Backend の保護**: state backend は独立した bootstrap root で管理されており、`prevent_destroy` が設定されているため、アプリ環境の destroy には含まれません。
 
-## 制限と次の検証
+---
 
-Activityはat-least-once実行です。安定したJob / Task ID、入力照合、Blobの条件付き公開で再実行に対応し、一時的な通信障害・408/429/500/502/503/504だけを最大3回試行します。待機は5秒・10秒で、監視Activityは共有期限を超えて再試行しません。SDK側は再試行1回、通信試行のNetworkTimeoutは10秒です。入力不正・権限不足・構成競合・結果不整合はDurableで再試行しません。Batch Task自体のretryは0を基本としますが、ノード復旧時の再実行は残るため、計算のexactly-onceは保証しません。
+## 制限事項と信頼性設計の前提
 
-監視期限は分類完了後から親子で共有します。Durable Timerは実行中Activityを取り消せないため、期限到達時のTask作成とJob停止の競合はBatchのJob終端状態で制御します。Job作成だけは、後からJobが作られて停止を逃れることを防ぐため完了を待ちます。Batchの`MaxWallClockTime`も設定してhost停止中の安全網にしますが、こちらはJob作成時起算であり監視期限とは異なります。通信・Activityの実行を含む厳密な実時間上限ではありません。通常のTask失敗は兄弟の終了を待ち、利用者によるキャンセルのBatch連鎖は未実装です。
+本 PoC におけるリトライ、タイムアウト、重複抑止の設計根拠と公式ドキュメントの確認結果は [信頼性改善の設計](docs/workflow-reliability.md) にまとめています。運用・評価時は以下の仕様と制限事項に留意してください。
 
-受付の重複抑止は入力Blob、Entity状態、Mainインスタンス履歴を保持して本APIを使うことが前提です。これらを個別に削除してIDを再利用する運用や、管理APIから同じIDを直接起動する操作は対象外です。既存インスタンスは入力照合して再利用しますが、旧starterとの同時稼働は避け、既存処理が終了してからこの版を配置してください。現在のMock試験は実hostの永続化・復旧を実証するものではありません。
+### 1. 再試行（リトライ）と実行保証
+- **Activity の再実行耐性**: Durable Activity は at-least-once（最低 1 回）実行です。決定的な Job / Task ID、入力内容の照合、Blob の条件付き公開（If-None-Match 等）を組み合わせることで再実行時の安全性を確保しています。
+- **リトライ対象と回数**: 一時的な通信障害および HTTP `408` / `429` / `500` / `502` / `503` / `504` のみを対象として、Durable 側で最大 3 回試行します（待機間隔は 5 秒・10 秒。監視 Activity は親子共有の監視期限を超えて再試行しません）。SDK 側のリトライは 1 回、各通信試行の `NetworkTimeout` は 10 秒に設定しています。
+- **リトライ非対象**: 入力不正、権限不足、構成競合、結果不整合などの恒久的エラーは Durable では再試行しません。
+- **Task の実行保証**: Batch Task 自体の retry 回数は `0` を基本としていますが、計算ノード障害からの復旧に伴う再実行は発生し得るため、計算処理の厳密な **exactly-once（1 回限り実行）は保証しません**。
 
-設計根拠と公式資料の確認結果は[信頼性改善の設計](docs/workflow-reliability.md)に記録しています。
+### 2. タイムアウト制御とキャンセルの制限
+- **監視期限の共有と競合制御**: ワークフローの監視期限は、分類（classification）完了後から親オーケストレーションと子オーケストレーションの間で共有されます。Durable Timer は実行中の Activity を物理的に中断できないため、期限到達時の Task 作成と Job 停止の競合は、Batch 側の Job 終端状態（Terminating / Completed）によって制御します。ただし、**Job 作成 Activity だけは、停止処理の後に遅れて Job が作成され停止を逃れる事態を防ぐため、完了を待ってから停止処理へ進みます**。
+- **`MaxWallClockTime` の位置づけ**: Functions host が停止している間の安全網として Batch Job にも `MaxWallClockTime` を設定していますが、こちらは「Job 作成時点」からの起算であり、オーケストレーションの監視期限や通信・Activity 実行時間を含めた厳密な実時間上限とは異なります。
+- **キャンセル連鎖の未実装**: 通常の Task 失敗時は他の兄弟 Task の終了を待機します。また、利用者からのキャンセル要求を Batch Job / Task の停止へ連鎖させる機能は現在未実装です。
 
-Task File API による転送は数 KB 以下の小結果専用です。ノードローカルファイルはノード障害や保持期限で失われます。本番大容量出力は Batch OutputFiles / ノードからの直接永続化 / 修復を別途検討します。LSF/HPC Pack の完全代替、300 ノード性能、Fair Share、Backfilling、MPI、業務ライセンスは検証していません。
+### 3. 受付の重複抑止の前提条件
+- **状態保持の前提**: 同一 `requestId` に対する受付の重複抑止は、入力 Blob（`request.json`）、Durable Entity の状態、および Main オーケストレーションのインスタンス履歴が保持された状態で本 API を経由することを前提としています。これらを個別に削除（purge）して同じ ID を再利用する運用や、Durable の管理 API から同じインスタンス ID を直接起動する操作は保証対象外です。
+- **デプロイ時の注意**: 既存のインスタンスが存在する場合は入力内容を照合して再利用しますが、旧バージョンの starter との同時稼働は避け、実行中の処理がすべて終了してから本バージョンをデプロイしてください。
+
+### 4. ファイル転送サイズと本 PoC の評価スコープ外項目
+- **結果ファイルのサイズ制限**: Batch の Task File API を用いた結果取得は、数 KB 以下の小さな結果データ専用です。また、計算ノードのローカルファイルはノード障害や保持期限切れによって失われる可能性があります。本番環境で大容量の出力を扱う場合は、Batch の `OutputFiles` 機能や計算ノードからの直接 Blob 永続化、および失敗時の修復機構を別途検討する必要があります。
+- **未検証の領域**: LSF / HPC Pack の完全代替可否、300 ノード規模での性能検証、Fair Share スケジューリング、Backfilling、MPI ジョブ、商用業務アプリケーションのライセンス管理については本 PoC の検証対象外です。

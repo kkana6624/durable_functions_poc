@@ -1,53 +1,62 @@
 # プロジェクトメモリ
 
-記録日: 2026-10-17。会話から引き継ぐ前提と作業到達点。再開時はGit状態と現行コードを確認する。
+記録日: 2026-10-17  
+本ドキュメントは、これまでの実装・検証の到達点と前提条件をまとめた引き継ぎメモです。作業再開時は、現在の Git ステータスおよび最新のソースコードとあわせて確認してください。
 
 ## 目的と運用前提
 
-- リポジトリ: `D:\durable_functions_poc`。Azure Batch + Durable Functionsによる非同期計算ワークフローのPoC。
-- 利用者はオンプレWebUIからシナリオ投入とジョブ開始を行う。
-- 計算アプリはWindows計算ノード上のC++。WebバックエンドはおそらくC#だが未確定。
-- 業務は金融領域のオプションシミュレーション。シナリオ入力と結果はBlob経由。業務詳細は一般論で進めてよい。
-- オンプレとAzureの接続はExpressRoute。既存回線を前提にprivate接続・DNS・認証・配置経路を整える。
-- 既存C++の金融計算モデルを再実装する依頼ではない。現在のTaskはsleep後に整数1を出すダミー処理。
+- **対象リポジトリ**: `D:\durable_functions_poc`（Azure Batch + Durable Functions による非同期計算ワークフローの PoC）
+- **利用形態**: ユーザーはオンプレミス環境の Web UI からシナリオ投入およびジョブ開始を行う。
+- **アプリケーション構成**: 計算処理本体は Windows 計算ノード上で動作する C++ アプリケーション。Web バックエンドは C# が想定されるが未確定。
+- **業務領域**: 金融領域のオプションシミュレーション。シナリオ入力と計算結果は Azure Blob Storage 経由で受け渡す（PoC 段階では業務ロジックの詳細には踏み込まず、一般的な非同期計算ワークフローとして扱う）。
+- **ネットワーク前提**: オンプレミスと Azure 間は ExpressRoute で接続されており、既存回線を前提に閉域接続（Private Endpoint 等）・DNS・認証・デプロイ経路を整備する。
+- **PoC のスコープ**: 既存の C++ 金融計算モデルの再実装はスコープ外。現在の Batch Task は一定時間 `sleep` した後に整数 `1` を出力するダミー処理としている。
 
 ## コミットと検証済み範囲
 
-- 最新の依頼済みコミット: `7c0027b` — `Improve workflow reliability and deployment validation`。24ファイル、実装・テスト・設計・残作業計画を含む。
-- ローカル.NETテスト54件成功、Release publish成功、PowerShellオフライン試験3組成功、Terraform Mock main7件+bootstrap1件成功。
-- 証跡: `artifacts/reliability-validation/dotnet-test.log`、`publish.log`。artifactsはGit管理外。
-- Azure実環境の配置、認証、Entity復旧、実Batch停止は未検証。ローカル成功を実Azure成功として扱わない。
+- **最新コミット**: `7c0027b` — `Improve workflow reliability and deployment validation`（計 24 ファイル：実装・単体テスト・設計ドキュメント・残作業計画を含む）
+- **ローカル検証結果**:
+  - .NET 単体テスト: 54 件 Pass
+  - Release publish: 成功
+  - PowerShell オフライン試験: 3 組成功
+  - Terraform Mock 試験: main 7 件 + bootstrap 1 件成功
+  - 証跡ログ: `artifacts/reliability-validation/dotnet-test.log`、`publish.log`（`artifacts/` は Git 管理外）
+- **未検証範囲**: Azure 実環境へのデプロイ、Entra 認証・RBAC、Durable Entity の実環境復旧、実 Batch 上での Job 停止は未実施。
 
-## 実装済みの改善
+## 実装済みの改善内容
 
-- backend作成済みなら`Backend.Create=true`の`-PlanOnly`でもmain計画へ進行。存在確認エラーと不存在を区別。
-- 既存Poolは0台でもコード配置可能。新規Poolは全指定台数の準備確認、ノード一覧のpagination対応。
-- immutable入力BlobとDurable Entityで同一requestIdの入力競合と起動を制御。202はEntity通知受理、Main登録前の状態GET404は一時待機。
-- Activity一時障害だけを最大3試行、Durable待機5/10秒。SDKのAggregateExceptionと通信timeout、呼出元cancelを区別し、CancellationTokenをSDKまで伝播。
-- 親子共有の監視期限。期限超過時にJob/Pool/fingerprint/ETagを照合して停止し、最大2分で完了確認。停止未確認はcustomStatusへ記録、Manifest非公開。
-- Batch Job MaxWallClockTimeはhost停止中の安全網。Job作成時起算で、監視期限や全体の厳密な実時間上限とは異なる。
+- **Terraform state backend の事前確認**: `Backend.Create=true` かつ `-PlanOnly` 指定時でも、backend が作成済みであれば main の `terraform plan` まで進行するように改善。また、backend の「未作成（不存在）」と「参照エラー（権限不足や通信失敗）」を明確に区別。
+- **Batch Pool のノード数チェックとページネーション**: 既存 Pool 利用時はノード数 0 台（autoscale 待機状態など）でもデプロイを継続可能とし、新規 Pool 作成時は指定台数すべての準備完了を待機するよう実装。ノード一覧取得時の pagination にも対応。
+- **同一 `requestId` の排他制御と冪等な受付**: immutable な入力 Blob と Durable Entity を組み合わせ、同一 `requestId` に対する入力内容の競合検出（409）と Orchestrator 起動の直列化を実装。HTTP 202 応答は「Entity への起動通知の受理」を意味し、Main Orchestrator のインスタンス登録が完了するまでの間に状態照会（GET）が 404 を返した場合は、クライアント側で一時待機して再照会する設計としている。
+- **Activity のリトライ制御と例外分類**: 一時障害（Transient Fault）のみを対象に最大 3 回試行（Durable タイマー待機 5 秒 / 10 秒）。SDK が投げる `AggregateException` や通信タイムアウトと、呼び出し元によるキャンセル要求を区別し、`CancellationToken` を SDK API まで伝播。
+- **親子共有の監視期限（Deadline）と Batch Job 停止**: 親・子 Orchestrator 間で共有する監視期限を導入。期限超過時は Job / Pool / fingerprint / ETag を照合したうえで Batch Job に停止要求を送り、最大 2 分間停止完了を確認する。停止完了を確認できなかった場合は `customStatus` に記録し、Manifest の公開を抑止する。
+- **Batch Job の `MaxWallClockTime`**: Durable Functions host が停止している間のセーフティネットとして設定。ただし起算点が「Job 作成時刻」となるため、ワークフロー全体の監視期限や厳密な実時間上限とは役割が異なる。
 
-## 調査で判明した重要な制約
+## 調査で判明した技術的制約
 
-- GetInstance→Scheduleは原子的ではない。重複拒否オプションだけで厳密な同時受付を保証しない。
-- SDK1.24.1のEntity起動経路はDedupeStatusesを転送しない。Entity状態と起動Actionのdurable batchを使用する。
-- Timerは実行中Activityを物理キャンセルしない。Job作成は後発作成を防ぐため完了を待つ。
-- 受付保証は入力Blob・Entity状態・Main履歴保持が前提。個別purge、同IDの直接管理API起動、旧starterとの同時稼働は保証外。
-- 通常のFunction再起動だけではEntity checkpoint直前/直後に停止した証明にならない。
+- **`GetInstance` → `Schedule` の非原子性**: 既存インスタンスの確認から起動までの処理はアトミックではないため、Orchestrator の重複排除オプション（DedupeStatuses）だけでは同時リクエストの重複受付を厳密には防げない。
+- **Durable SDK 1.24.1 における Entity からの起動制限**: Entity 内から Orchestrator を起動する経路では `DedupeStatuses` が転送されない。そのため、Entity の状態更新と Orchestrator 起動アクションが単一の durable batch として永続化される仕組みを利用して排他制御を行っている。
+- **Durable Timer と実行中 Activity の関係**: Orchestrator 側で Timer が発火しても、すでに実行中の Activity は物理的にはキャンセルされない。そのため、Job 作成 Activity の実行中に期限を迎えた場合は、遅れて孤立 Job が作成されるのを防ぐため Activity の完了を待ってから後続処理へ進む。
+- **一意性保証の前提条件**: 同一 `requestId` の受付保証は「入力 Blob」「Entity 状態」「Main Orchestrator の実行履歴」が保持されていることを前提とする。個別の履歴パージ（Purge）、管理 API からの直接インスタンス起動、旧バージョンの starter との並行稼働時は保証対象外となる。
+- **障害注入試験の限界**: 通常の Function App 再起動だけでは、「Entity の checkpoint 直前・直後にプロセスが落ちたケース」の厳密な実証にはならない。
 
-## 次の作業
+## 次の作業（残タスク）
 
-現行計画: `docs/remaining-validation-and-implementation-plan.md`。根拠: `docs/workflow-reliability.md`。結果: `docs/test-results.md`と`docs/feasibility-matrix.md`。
+- 全体計画: `docs/remaining-validation-and-implementation-plan.md`
+- 設計根拠: `docs/workflow-reliability.md`
+- 検証結果・評価表: `docs/test-results.md`、`docs/feasibility-matrix.md`
 
-1. ExpressRoute/private DNS、Function/Blob/host Storage(Blob・Queue・Table)、SCM配置経路、Batch操作・node管理の通信設計とIaC。
-2. オンプレ向け認証・利用者認可付きstart/status/results/cancel API。ブラウザへFunction keyやDurable管理URLを返さない。
-3. 小さなシナリオ1件をBlobへ確定し、固定版C++を実行してBlobへ出力する経路。入力version/ETag/size/SHA-256とアプリversionを記録。
-4. 独立検証runner、秘密を除いた証跡、期待した異常を判定する試験を追加。ネットワーク/API実装と並列化可能。
-5. 実Azureの同時受付・再送・host復旧・通信障害・監視期限・停止失敗・0台autoscaleを検証。
-6. 利用者取消と結果公開の競合、出力永続化、保持・清掃を仕上げる。現在は利用者キャンセルのBatch連鎖は未実装。
+1. **閉域ネットワーク・IaC 整備**: ExpressRoute / Private DNS、Function / Blob / host Storage（Blob・Queue・Table）、SCM デプロイ経路、Batch 操作・ノード管理の通信設計と Terraform 実装。
+2. **オンプレ向け API と認証・認可**: 認証およびユーザー認可を備えた `start` / `status` / `results` / `cancel` API の実装（ブラウザ側に Function key や Durable 管理 URL を直接返さない構成）。
+3. **実 C++ バイナリの実行経路**: 小規模なシナリオ 1 件を Blob に保存し、固定バージョンの C++ バイナリを Batch で実行して結果を Blob へ出力する一連の経路実装（入力の version / ETag / size / SHA-256 とアプリの version を記録）。
+4. **独立検証ランナーの追加**: 秘密情報を除外した証跡保存や、期待される異常系を自動判定するテストランナーの実装（上記ネットワーク・API 実装と並行作業が可能）。
+5. **Azure 実環境での信頼性検証**: 同時受付、再送、host 復旧、通信障害、監視期限超過、Job 停止失敗、0 台 Pool からの autoscale の実機検証。
+6. **キャンセル連鎖と出力管理の完成**: ユーザーからのキャンセル要求（現在 Batch への停止連鎖は未実装）と結果公開の競合制御、大容量出力の永続化方式、データの保持・クリーンアップ処理の実装。
 
-実環境設定は現時点でサンプルのみ。Azure接続条件・実設定・実行権限・C++バイナリ/CLI/依存DLL/期待値は実装/実証前に確認する。追加API・閉域IaC・実ファイル計算はまだ計画段階。
+※ 現時点の構成ファイルはサンプル値のみのため、実装・実機検証の前に Azure 接続情報、実環境パラメータ、実行権限、C++ バイナリ一式（CLI 引数・依存 DLL・期待出力）を確認する必要がある。
 
-## ユーザーの作業希望
+## 開発・調査の進め方（ユーザー方針）
 
-公式ドキュメントを参照し、調査専用エージェントを利用する。独立した実装はサブエージェントで並列化し、論理破綻や保証できない点は随時報告する。
+- Azure の仕様や SDK の挙動は公式ドキュメントを一次情報として確認し、調査専任のサブエージェントを活用する。
+- 独立して進められる実装・検証タスクはサブエージェントで並列化する。
+- 設計上の矛盾や技術的に保証できないエッジケースが見つかった場合は、隠さず随時報告する。

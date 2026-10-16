@@ -1,6 +1,11 @@
 # 実現性評価
 
-2026-10-17。信頼性改善後の54単体テスト、Release publish、PowerShellオフライン3組、Terraform Mock8件が成功し、Azure実接続は未実施です。Fakeとメモリ上の保存先による検証を、実Pool / Durable host / Blob serviceによる実証と分けて記録します。証跡は[検証結果](test-results.md)、`artifacts/reliability-validation/dotnet-test.log`と`publish.log`です。変更の根拠は[信頼性改善の設計](workflow-reliability.md)を参照してください。
+更新日: 2026-10-17
+
+信頼性改善後のローカル検証（.NET 単体テスト 54 件、Release publish、PowerShell オフライン試験 3 組、Terraform Mock 8 件）はすべて完了しています。一方、Azure 実環境への接続検証は未実施のため、下表ではローカル検証（Fake / メモリ保存）の結果と Azure 実環境での検証状況を分けて記載しています。
+
+- 検証結果の詳細・証跡: [検証結果](test-results.md)、`artifacts/reliability-validation/dotnet-test.log`、`publish.log`
+- 設計および改善内容の根拠: [信頼性改善の設計](workflow-reliability.md)
 
 | 検証 | 実装 / 評価対象 | ローカル結果 | Azure 実接続結果 | 残る確認・制限 |
 |---|---|---|---|---|
@@ -19,6 +24,7 @@
 | LSF / HPC Pack の完全代替 | スケジューラ互換、Fair Share、Backfilling | Not tested | Not tested | 今回の非スコープ |
 | 数百台性能・価格 / MPI / HA | 本番負荷と障害条件 | Not tested | Not tested | 今回の非スコープ |
 
-Durable に委ねる候補は状態遷移、待機の継続、並行処理の合流、履歴による復旧です。これらにより独自状態 DB、常駐ポーラ、共有カウンタの実装を減らす設計ですが、削減効果と再起動復旧の実証は実接続試験後に結論を更新します。PoC 成功だけでは LSF/HPC Pack の完全置換を主張できません。
+## 評価まとめ
 
-ワンコマンド配置の追加資材はTerraform Mock 8件とPowerShellオフライン3組が成功しています。新規Batch Account/Pool作成の分岐、bootstrap state、配置順、対象subscription固定、任意smokeへの接続をローカルで確認しました。Azureへの実配置とノード割当、権限反映、ZIP配置は引き続きNot testedです。詳細は[検証結果](test-results.md)を参照してください。
+- **Durable Functions への責務委譲**: 状態遷移、非同期待機の継続、並行処理の待ち合わせ（Fan-in）、実行履歴からの復旧を Durable Functions に委ねることで、独自の状態管理 DB や常駐ポーリング処理、共有カウンタの自前実装を削減する設計としています。実際のコード削減効果や host 再起動からの復旧動作については、Azure 実接続試験の完了後に最終評価を更新します。なお、本 PoC は非同期ワークフロー制御の検証を目的としており、LSF や HPC Pack のスケジューラ機能すべてを代替するものではありません。
+- **ワンコマンド配置資材の検証状況**: Terraform Mock 8 件と PowerShell オフライン試験 3 組により、新規 Batch Account / Pool 作成時の条件分岐、bootstrap state の扱い、リソース配置順序、対象サブスクリプションの固定、任意実行の smoke テスト連携までローカルで確認済みです。Azure 実環境へのデプロイ、計算ノードの割り当て、RBAC 権限の反映、ZIP デプロイについては引き続き `Not tested` です（詳細は[検証結果](test-results.md)を参照）。

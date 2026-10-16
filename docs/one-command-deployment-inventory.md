@@ -1,92 +1,97 @@
-# ワンコマンド配置に必要なIaCの洗い出し
+# ワンコマンドデプロイに必要なIaC構成の整理
 
-調査・実装日: 2026-10-16。現行コードと AzureRM 5.10.0 の実 provider schema、Microsoft / HashiCorp 公式資料を確認した構成案。
+調査・実装日: 2026-10-16（現行コード、AzureRM 5.10.0 の実 provider schema、および Microsoft / HashiCorp 公式ドキュメントに基づき構成を策定）
 
-現在は最小構成を実装済み: `infra/batch.tf`（新規BatchService AccountとWindows Pool）、新規RGオプション、Gallery/Marketplace参照、`infra/bootstrap/`（state backend）、`scripts/deploy.ps1`（build→IaC→ZIP配置）、`scripts/Test-Deployment.ps1`（準備完了・任意smoke）。設定例は`environments/`にある。Azure実配置は未実施。
+現在は以下の最小構成を実装済みです（Azure実環境へのデプロイは未実施）。
+- `infra/batch.tf`（新規 `BatchService` Account と Windows Pool の作成、新規RG作成オプション、Gallery / Marketplace イメージ参照）
+- `infra/bootstrap/`（Terraform state backend 構築用）
+- `scripts/deploy.ps1`（ビルド → IaC適用 → ZIPデプロイの一括実行）
+- `scripts/Test-Deployment.ps1`（リソースの準備完了確認および任意のスモークテスト）
+- `environments/`（環境別の設定ファイル例）
 
-以下の洗い出し表は元の構成案を残している。閉域化、UserSubscription、Galleryイメージ製造、CI/OIDCの条件付き資材は未実装。Terraformの新規Batch/既存参照を切り替える変数名は`batch_mode`。
+本ドキュメントの洗い出し表には、初期検討時の構成案も含めています。閉域網対応、`UserSubscription` モード、Galleryイメージのビルド工程、CI/OIDC 連携といった条件付き資材は現時点では未実装です。なお、Terraform で Batch リソースの新規作成と既存参照を切り替える変数名は `batch_mode` としています。
 
 ## 目標と管理境界
 
-設定ファイルを一度用意し、Azure認証済みの環境から一つのコマンドで、ビルド・Terraform・Functionコード配置・起動確認まで行う。初期ログイン、権限の承認、quota増枠の承認、カスタムイメージの元データ準備は前提条件として扱う。
+環境設定ファイルをあらかじめ用意しておくことで、Azure認証済みの端末から1コマンドを実行するだけで、アプリケーションのビルド、Terraform によるインフラ構築、Function App へのコード配置、起動確認までを一貫して完了できることを目指します。なお、初期ログイン、各種権限の承認、クォータ上限の引き上げ申請、およびカスタムイメージの元データの準備は、コマンド実行前の前提条件とします。
 
-実装したインターフェース（Azure認証と環境設定後）:
+実装済みの実行インターフェース（Azure認証および環境設定ファイル準備後）:
 
 ```powershell
 ./scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1
 ```
 
-既存設計は Batch Account / Pool / Gallery を参照専用としている。新しい要望に対応するため、既存資材を維持する `existing` モードと、PoC専用基盤を作る `new` モードを追加する案とする。既存Batchを自動importしたり、同じ名前で作り直したりしない。モード間の変更も通常更新として扱わず、planで置換・削除を明示する。
+当初の設計では、既存の Batch Account / Pool / Gallery を参照のみ行う前提としていました。これに対し、環境を一から構築したいケースにも対応できるよう、既存リソースを参照する `existing` モードと、PoC専用の環境を新規構築する `new` モードを選択できる構成としています。事故防止のため、既存の Batch リソースを自動的に Terraform state へ import したり、同名で再作成したりする処理は行いません。また、モード間の切り替えも通常の更新としては扱わず、`terraform plan` の段階で置換・削除対象となることを明示します。
 
 ## IaC対象の一覧
 
-「必須」は新しいPoC一式を作るために管理が必要なもの。「条件付き」は利用する機能・ネットワーク方式で必要になるもの。
+「必須」は新規にPoC環境一式を構築するうえで管理が不可欠なリソース、「条件付き」は採用する機能やネットワーク要件に応じて追加が必要になるリソースです。
 
 | 分類 | 対象 / 主なTerraform資材 | 現状 | 追加・変更内容 |
 |---|---|---|---|
-| 必須 | Resource Group / `azurerm_resource_group` | 既存RGのみ参照 | PoC専用RG新規作成と既存RG参照を選択可能にする。locationを明示 |
-| 必須 | Batch Account / `azurerm_batch_account` | ID/endpoint変数のみ | 新規Account、割当方式、Entra認証、公開アクセス設定。endpoint/IDをFunctionsへ自動接続 |
-| 必須 | Windows Pool / `azurerm_batch_pool` | Pool ID変数のみ | VM size、node-agent SKU、イメージ、専用ノード数、slots、通信方式、resize期限を管理 |
-| 必須 | Windowsイメージ参照 / Poolの`storage_image_reference` | Gallery IDをoutputするだけ | 実際にPoolのimage IDへ接続。Gallery版はversion固定、Marketplace版はpublisher/offer/SKU/versionを指定 |
-| 必須 | Function App / Service Plan | 実装済み | 新規/既存Batchから解決した値をapp settingsへ渡す。設定ファイルとの値重複をなくす |
-| 必須 | Durable・結果Storage / Container | 実装済み | host Blob/Queue/Table、結果containerを維持。実行主体の初期データアクセス権限を確認 |
-| 必須 | Managed Identity / RBAC | Function権限のみ実装済み | Function→Batch/Storageに加え、IaC実行主体→Pool作成/イメージ利用を整理 |
-| 必須 | Insights / Log Analytics | 実装済み | Batch診断設定を追加しログ集約。利用可能な診断カテゴリを確認して指定 |
-| 必須 | Terraform state / bootstrap | local state | ワンコマンドで再利用できるstateの場所を固定。共有実行ならremote backendのStorage/Containerと実行主体RBACを別stateで管理 |
-| 必須 | アプリ成果物の配置 | README手動手順 | build/publish、ZIP、Entra認証でのコード配置、配置結果検出をスクリプト化。Terraformとは別工程 |
-| 条件付き | VNet / Subnet / NSG / UDR / NAT | 未実装 | VNetを使うPoolの通信経路を管理。NAT等は選択した外向き接続方式に応じて追加 |
-| 条件付き | Private Endpoint / Private DNS / Function VNet Integration | 未実装 | 閉域化時、Batch `batchAccount`と`nodeManagement`を区別。Storage blob/queue/table、Function/SCMへの到達性も設計 |
-| 条件付き | Gallery / Image Definition / Image Version | 既存参照のみ | イメージも新規作成する場合は`azurerm_shared_image_gallery` / `azurerm_shared_image` / `azurerm_shared_image_version`。元イメージ取得・構築工程も必要 |
-| 条件付き | Key Vault / Batchサービス権限 | 未実装 | `UserSubscription`割当方式を採用する場合に追加。標準`BatchService`構成に一律追加しない |
-| 条件付き | Pool User Assigned Identity / AutoStorage | 未実装 | resource files、application packages、OutputFiles、ノードからStorageへ直接アクセスする場合に追加。現在のダミーTaskでは不要 |
-| 条件付き | CI/CD実行Identity / OIDC | 未実装 | GitHub Actions等から実行する場合に追加。ローカルCLI実行とは権限主体を分離 |
+| 必須 | Resource Group / `azurerm_resource_group` | 既存RGのみ参照 | PoC専用RGの新規作成と既存RGの参照を選択可能にし、`location` を明示する |
+| 必須 | Batch Account / `azurerm_batch_account` | ID/endpoint変数のみ | 新規Account作成、割当方式、Entra認証、公開アクセス設定を構成し、endpoint/IDをFunctionsへ自動連携する |
+| 必須 | Windows Pool / `azurerm_batch_pool` | Pool ID変数のみ | VM size、node-agent SKU、イメージ、専用ノード数、slots、通信方式、resize期限を管理する |
+| 必須 | Windowsイメージ参照 / Poolの`storage_image_reference` | Gallery IDをoutputするだけ | Poolのimage IDへ実際に接続する。Gallery版はversion固定、Marketplace版はpublisher/offer/SKU/versionを指定する |
+| 必須 | Function App / Service Plan | 実装済み | 新規または既存Batchから解決した値をapp settingsへ引き渡し、設定ファイルとの二重定義をなくす |
+| 必須 | Durable・結果Storage / Container | 実装済み | host用のBlob/Queue/Tableと結果格納用containerを維持し、実行主体の初期データアクセス権限を確認する |
+| 必須 | Managed Identity / RBAC | Function権限のみ実装済み | FunctionからBatch/Storageへの権限に加え、IaC実行主体によるPool作成・イメージ参照の権限を整理する |
+| 必須 | Insights / Log Analytics | 実装済み | Batchの診断設定を追加してログを集約する。利用可能な診断カテゴリを確認のうえ指定する |
+| 必須 | Terraform state / bootstrap | local state | ワンコマンド実行で再利用できるようstateの保存先を固定する。複数人で共有する場合はremote backendのStorage/Containerと実行主体RBACを別stateで管理する |
+| 必須 | アプリ成果物の配置 | README手動手順 | build/publish、ZIP化、Entra認証を用いたコード配置、配置結果の確認までをスクリプト化する（Terraformとは別工程として実行） |
+| 条件付き | VNet / Subnet / NSG / UDR / NAT | 未実装 | VNet接続Poolの通信経路を管理する。NAT等は採用するアウトバウンド通信方式に応じて追加する |
+| 条件付き | Private Endpoint / Private DNS / Function VNet Integration | 未実装 | 閉域化時にBatchの `batchAccount` と `nodeManagement` を区別して構成する。Storageのblob/queue/tableおよびFunction/SCMへの到達性もあわせて設計する |
+| 条件付き | Gallery / Image Definition / Image Version | 既存参照のみ | イメージ自体も新規作成する場合は `azurerm_shared_image_gallery` / `azurerm_shared_image` / `azurerm_shared_image_version` を追加する（元イメージの取得・ビルド工程も別途必要） |
+| 条件付き | Key Vault / Batchサービス権限 | 未実装 | `UserSubscription` 割当方式を採用する場合に追加する。標準の `BatchService` 構成には含めない |
+| 条件付き | Pool User Assigned Identity / AutoStorage | 未実装 | resource files、application packages、OutputFiles、または計算ノードからStorageへ直接アクセスする場合に追加する（現在のダミーTask構成では不要） |
+| 条件付き | CI/CD実行Identity / OIDC | 未実装 | GitHub Actions等から自動実行する場合に追加し、ローカルCLI実行時とは権限主体を分離する |
 
-Batch Account / PoolはAzureRMで管理可能。VM・NIC・OSディスク等の実体はPoolに従ってBatchが払い出すため、個別VMをTerraformで二重管理しない。provider schemaで `storage_image_reference.id`、`fixed_scale`、`target_node_communication_mode`、`network_configuration` を確認済み。[Batch Pool定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_pool.html.markdown)、[Batch Account定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_account.html.markdown)
+Batch Account と Pool は AzureRM プロバイダーで管理できます。計算ノードの実体である VM・NIC・OSディスク等は Pool の設定に従って Batch サービス側が動的に払い出すため、Terraform 側で個別 VM リソースとして重複管理する必要はありません。なお、provider schema にて `storage_image_reference.id`、`fixed_scale`、`target_node_communication_mode`、`network_configuration` が利用できることを確認済みです（参照: [Batch Pool定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_pool.html.markdown)、[Batch Account定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_account.html.markdown)）。
 
-## Batchで確定が必要な事項
+## Batch構成で確定が必要な事項
 
-最小PoC案は、専用Batch Account、Windows Pool 1個、専用ノード1台、1ノード1slot、固定scale、`Simplified`通信方式とする。3 Taskは並行に監視するが、この設定では計算実行は順番になる。同時に3 Taskを実行したい場合は3台または3slotsへ変更する。VM SKUはリージョンの対応イメージ・quota・容量を確認して選定する。
+最小PoC構成では、専用の Batch Account に Windows Pool を1つ作成し、専用ノード1台・1ノードあたり1 slot・固定スケール（fixed scale）・`Simplified` 通信モードを採用します。ワークフロー側では3つの Task を並行して監視しますが、このノード設定では計算処理自体は1つずつ順次実行されます。3つの Task を同時に並列実行したい場合は、専用ノード数を3台にするか、1ノードあたり3 slots へ設定を変更します。VM SKU については、対象リージョンにおけるイメージの対応状況、クォータ残量、およびキャパシティを確認したうえで選定します。
 
 ### 割当方式
 
-- `BatchService`: 最小PoCの第一候補。Batch管理サブスクリプション側で計算リソースを割り当てる。
-- `UserSubscription`: VM等を利用者のサブスクリプションに置く要件がある場合に採用。Key Vault、BatchサービスprincipalへのAzure Batch Service Orchestration Role等が増える。subscription bootstrapをアプリ配置から切り分ける。
+- `BatchService`: 最小PoCにおける第一候補です。Batch サービスが管理するサブスクリプション側で計算ノードが割り当てられます。
+- `UserSubscription`: 計算ノードの VM 等をユーザー自身のサブスクリプション内に配置する要件がある場合に採用します。Key Vault の準備や、Batch サービスプリンシパルに対する `Azure Batch Service Orchestration Role` の付与などが追加で必要になるため、サブスクリプションの初期セットアップ（bootstrap）はアプリ配置工程から切り分けます。
 
-詳細は [Account作成とUserSubscription前提](https://learn.microsoft.com/en-us/azure/batch/batch-account-create-portal) を参照。FunctionのJob Submitter権限は、Terraform実行主体のPool作成権限の代わりにはならない。
+前提条件の詳細は [Account作成とUserSubscription前提](https://learn.microsoft.com/en-us/azure/batch/batch-account-create-portal) を参照してください。なお、Function App に付与するジョブ投入権限（Job Submitter 相当）と、Terraform の実行主体が Pool を作成するための権限は別物であるため、それぞれ適切に付与する必要があります。
 
 ### Windowsイメージ
 
-既存Gallery versionを利用する場合、generalized image、Batch対応OS/node-agentの組合せ、Batchリージョンへのreplica、作成主体の権限を検証する。Batch専用公式資料では通常のReaderだけでは不十分で、`Microsoft.Compute/disks/beginGetAccess/action`が必要とされているため、Readerだけを自動設定して完了扱いしない。[GalleryイメージによるPool作成](https://learn.microsoft.com/en-us/azure/batch/batch-sig-images)
+既存の Azure Compute Gallery イメージバージョンを利用する場合は、一般化（generalized）済みであること、Batch 対応 OS と node-agent SKU の組み合わせが正しいこと、Batch と同一リージョンへレプリケーションされていること、および Pool 作成主体の権限を事前に確認します。Microsoft の公式ドキュメントに記載されているとおり、Gallery イメージから Batch Pool を作成する際は通常の `Reader` ロールだけでは権限が不足し、`Microsoft.Compute/disks/beginGetAccess/action` 権限が必要となります。そのため、IaC で `Reader` のみを自動付与して完了とするのではなく、必要なカスタムロールまたは適切な組み込みロールが確実に割り当てられていることを確認します（参照: [GalleryイメージによるPool作成](https://learn.microsoft.com/en-us/azure/batch/batch-sig-images)）。
 
-イメージまで新規作成するなら、Galleryの箱だけでは不十分。元のmanaged image / snapshot / VHD、またはAzure VM Image Builder等によるWindowsイメージ作成工程をIaC/ビルド資材に追加する。PowerShellダミーTaskのみのPoCには、Batch対応Marketplace Windows imageを直接使う構成も候補とする。元データのない既存HPCイメージをTerraformだけで再現できるとは扱わない。
+もしカスタムイメージ自体も新規に作成する場合は、Terraform で Gallery の枠組みを用意するだけでは完結しません。元となる managed image / snapshot / VHD の準備や、Azure VM Image Builder 等を用いた Windows イメージのビルド工程を別途構築する必要があります。一方、PowerShell のダミー Task のみを動かす最小 PoC であれば、Batch 対応の Marketplace Windows イメージを直接指定する構成も有力な選択肢となります。既存のカスタム HPC イメージの元データが存在しない場合は Terraform だけで環境を再現することはできないため、どのイメージソースを利用するかを事前に明確にしておきます。
 
 ### ネットワーク
 
-最小構成でも、Function→Batch API、Function→Storage、Pool→Batch node managementの経路を確認する。新規Poolには`Simplified`を明示する。[Simplified通信要件](https://learn.microsoft.com/en-us/azure/batch/simplified-compute-node-communication)
+最小構成であっても、Function App から Batch API、Function App から Storage、および Pool から Batch node management への通信経路が確保されていることを確認します。新規作成する Pool には `Simplified` 通信モードを明示的に指定します（参照: [Simplified通信要件](https://learn.microsoft.com/en-us/azure/batch/simplified-compute-node-communication)）。
 
-閉域構成ではVNet内にPool用、Function統合用、Private Endpoint用のSubnetを分ける。Batch API用`batchAccount`とノード管理用`nodeManagement`のPrivate Endpoint、Private DNSとVNet linkを管理する。Storageのblob/queue/tableも必要な経路を用意する。配置マシン/CI runnerからFunction SCMとTerraformが操作するデータプレーンへ到達できるようにする。
+閉域網構成とする場合は、VNet 内に Pool 用、Function VNet 統合用、Private Endpoint 用の各 Subnet を分割して配置します。そのうえで、Batch API 用の `batchAccount` とノード管理用の `nodeManagement` の両方の Private Endpoint、および対応する Private DNS ゾーンと VNet リンクを管理します。Storage の blob / queue / table についても同様にプライベート経路を用意し、デプロイ実行端末や CI runner から Function App の SCM エンドポイントおよび Terraform が操作する各データプレーンへ到達できるよう設計します。
 
-Poolのpublic IPを無効にするだけでは通信は完成しない。nodeManagement Private EndpointとDNSを構成し、追加の外部通信が必要ならNAT/Firewall等を設計する。Microsoftのno-public-IP資料にはNAT代替の説明とPrivate Endpoint必須の注記が混在するため、閉域案はnodeManagement PEを含めて実機検証する。[Public IPなしPool](https://learn.microsoft.com/en-us/azure/batch/simplified-node-communication-pool-no-public-ip)
+なお、Pool の Public IP を無効化するだけでは計算ノードの通信は成立しません。`nodeManagement` 用の Private Endpoint と名前解決（DNS）を構成し、さらに外部へのアウトバウンド通信が必要な場合は NAT Gateway や Azure Firewall 等の経路もあわせて設計する必要があります。Public IP なし Pool に関する Microsoft 公式ドキュメントでは、NAT 等によるアウトバウンド経路の説明と Private Endpoint 必須の注記が混在しているため、閉域網を採用する際は `nodeManagement` の Private Endpoint を含めて実機で疎通を検証します（参照: [Public IPなしPool](https://learn.microsoft.com/en-us/azure/batch/simplified-node-communication-pool-no-public-ip)）。
 
 ## ワンコマンド実行でまとめる工程
 
-1. .NET / Terraform / Azure CLIのバージョン、ログイン、対象subscription、設定ファイルを確認。
-2. 必要Resource Providerの登録状況、RBAC、Gallery、VM/Batch quota、ネットワーク到達性を事前確認。不足時は理由を示して停止。
-3. restore / build / test / publishとZIP作成。ZIP直下のhost.jsonと拡張機能ディレクトリを確認。
-4. state backendを準備または参照し、Terraform init / validate / plan。既存モードでは共有Batch資材への変更がないことを機械的に確認。
-5. 保存済みplanをapplyし、Account endpoint、Pool ID、Function名、Blob URIをoutputから取得。
-6. RBAC反映を待ち、新規Poolは指定全台の準備完了を期限・リトライ・resize error検出付きで待つ。既存Poolは存在・参照権限を確認し、0台でも配置を進める。SmokeはTask投入後に自動拡張・完了を待つ。
-7. FunctionコードをEntra認証でZIP配置し、配置完了・Functions検出を確認。
-8. 検証オプション有効時は単一Batch smoke→HTTP workflow→manifest/sum=3確認。試験結果を配置結果と区別して保存。
-9. 環境名、state key、成果物hash、配置先ID、結果、ログの場所を表示。Function keyや管理URLの秘密は表示・保存しない。
+1. .NET SDK / Terraform / Azure CLI のバージョン、Azure ログイン状態、対象サブスクリプション、および設定ファイルの内容を確認する。
+2. 必要な Resource Provider の登録状況、RBAC、Gallery イメージ、VM / Batch クォータ、ネットワーク到達性を事前チェックし、不足がある場合は理由を表示して処理を停止する。
+3. アプリケーションの `restore` / `build` / `test` / `publish` を実行してデプロイ用 ZIP を作成し、ZIP 直下に `host.json` と拡張機能ディレクトリが含まれていることを確認する。
+4. Terraform の state backend を準備または参照し、`init` / `validate` / `plan` を実行する。既存参照モード（`existing`）の場合は、共有 Batch リソースへの変更が含まれていないことを機械的にチェックする。
+5. 保存済みの plan ファイルを `apply` し、Batch Account endpoint、Pool ID、Function App 名、Blob URI 等を Terraform output から取得する。
+6. RBAC の反映を待機したのち、新規 Pool モードでは指定台数のノードが準備完了になるまでタイムアウト・リトライ・resize error 検出付きで待機する。既存 Pool モードでは Pool の存在と参照権限のみを確認し、稼働ノード数が 0 台でもアプリ配置へ進む（スモークテスト実行時は Task 投入後のオートスケールおよび完了を待機する）。
+7. Entra 認証を用いて Function App へ ZIP パッケージをデプロイし、デプロイ完了と各 Function の認識状態を確認する。
+8. 検証オプション指定時は、単一 Batch Task のスモークテスト → HTTP トリガーによるワークフロー起動 → `manifest.json` の生成および `sum=3` の確認までを実行し、テスト結果をデプロイ結果とは区別して保存する。
+9. 最後に環境名、state key、成果物ハッシュ、デプロイ先リソースID、実行結果、およびログの出力先を表示する（Function key や管理用URLに含まれるシークレット等は画面表示・ファイル保存ともに抑止する）。
 
-一つのコマンドでも、標準ではplan確認後にapplyへ進む。無人CIは事前レビューされた変更・設定に対する明示オプションで実行する。途中失敗は非ゼロ終了し、作成済みリソースは調査・再実行できる状態で保持する。既存Poolには破壊的なロールバックを行わない。
+ワンコマンド実行であっても、標準動作では `terraform plan` の内容を確認したうえで `apply` へ進むフローとします。CI 等で無人実行する場合は、事前にレビューされた設定・変更に対して明示的な承認オプションを渡して実行します。途中でエラーが発生した場合は非ゼロの終了コードで停止し、原因調査や再実行ができるよう作成済みリソースはそのまま保持します。また、既存 Pool に対して破壊的なロールバック処理は行いません。
 
-ZIP配置はIaCとは異なる成果物配置工程だが、同じスクリプトから呼べる。現在のBasic認証無効設定を維持し、Entra対応のAzure CLIまたはSCM ZIP APIを使う。[Functions ZIP配置とEntra認証](https://learn.microsoft.com/en-us/azure/azure-functions/deployment-zip-push)
+Function App への ZIP 配置は IaC（Terraform）とは別工程のアプリケーションデプロイ処理ですが、同一のデプロイスクリプト内から連続して呼び出せるようにしています。セキュリティ維持のため現在の Basic 認証無効化設定はそのまま維持し、Entra 認証に対応した Azure CLI コマンドまたは SCM ZIP API を使用してデプロイします（参照: [Functions ZIP配置とEntra認証](https://learn.microsoft.com/en-us/azure/azure-functions/deployment-zip-push)）。
 
-Quota増枠の承認、組織ポリシーの変更、利用規約同意、未提供のカスタムイメージ生成元はワンコマンド内で無条件に解決できない。新規Batchではcore quotaが0の場合もあるため、Account作成成功とPool実行可能を分けて判定する。[Batchのquota](https://learn.microsoft.com/en-us/azure/batch/batch-quota-limit)
+なお、クォータ上限の引き上げ承認、組織ポリシーの変更、Marketplace イメージの利用規約同意、および未提供のカスタムイメージ元データの用意については、スクリプトの自動処理だけでは完結できません。特に新規作成した Batch Account では初期のコア数クォータが 0 に設定されているケースもあるため、Batch Account の作成成功と Pool の実稼働可否は切り分けて判定します（参照: [Batchのquota](https://learn.microsoft.com/en-us/azure/batch/batch-quota-limit)）。
 
-## 追加する資材案と入力
+## ディレクトリ構成案と入力パラメータ
 
 ```text
 infra/bootstrap/           # 共有実行時のstate backend
@@ -99,8 +104,12 @@ scripts/deploy.ps1          # build→IaC→コード配置→確認
 scripts/Test-Deployment.ps1 # readiness、smoke、結果照合
 ```
 
-入力はsubscription/tenant、RG新規・既存、location、名前suffix、Batch新規・既存、allocation mode、VM SKU、台数/slots、image source/version/node-agent SKU、公開・閉域、Subnet/DNS、state backend、実行主体、smoke有無。既存モードだけAccount/Pool ID等を要求し、新規モードではTerraform outputを使う。
+設定ファイルで受け取る主な入力パラメータは、subscription / tenant、RGの新規作成・既存利用の別、location、リソース名 suffix、Batchの新規作成・既存利用の別（`batch_mode`）、allocation mode、VM SKU、ノード台数 / slots、image source / version / node-agent SKU、公開・閉域の別、Subnet / DNS 設定、state backend 設定、実行主体、およびスモークテスト実行の有無です。Batch Account ID や Pool ID 等の直接指定は既存参照モード（`existing`）のときのみ必須とし、新規作成モード（`new`）では Terraform の output から自動的に引き継ぎます。
 
-実装順は、(1)専用BatchService Account + Windows Pool + 新規RGオプション、(2)deployment scriptと自動設定接続、(3)state bootstrap、(4)選択された閉域化・Gallery構築・UserSubscription対応とする。設定が確定していない条件付き構成を、必須の高コスト資材として一律作成しない。
+実装の優先順位は以下の4段階とします。要件が確定していない条件付きの構成要素（閉域網や `UserSubscription` 用リソースなど）は、コストや管理負荷の増大を避けるため初期構成には含めず、要件確定後に順次追加する方針とします。
+1. 専用 `BatchService` Account + Windows Pool + 新規 RG 作成オプション
+2. デプロイスクリプト（`scripts/deploy.ps1`）と設定値の自動連携
+3. リモート state 用の bootstrap 構成
+4. 要件に応じた閉域網対応・Gallery イメージ構築・`UserSubscription` モードへの対応
 
-現行PoCのBatch Job / Taskは引き続きHTTP実行時にアプリが作成する。配置だけで業務ワークフローを開始せず、smokeを選択した場合のみPoC用Jobを作成する。
+なお、本PoCにおける Batch Job および Task は、従来どおり HTTP リクエスト実行時にアプリケーション側から動的に作成します。インフラとアプリのデプロイ処理だけで業務ワークフローが自動実行されることはなく、スモークテストのオプションを明示的に有効にした場合のみ検証用の PoC Job を投入します。

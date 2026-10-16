@@ -1,8 +1,11 @@
 # PoC 検証結果
 
+> [!NOTE]
+> Azure 実環境への接続値・資格情報が未提供のため、現時点での検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しています。Azure 実環境での動作検証は未実施です。
+
 ## 2026-10-17 信頼性改善後の再検証
 
-Azure実接続は引き続き未実施。下の2026-10-16の30件は初版の履歴で、現在の結果は次のとおりです。
+信頼性改善を反映した再検証の結果は以下のとおりです（後述の 2026-10-16 時点の 30 件は初版時点の記録です）。
 
 | 対象 | 結果 |
 |---|---|
@@ -11,13 +14,47 @@ Azure実接続は引き続き未実施。下の2026-10-16の30件は初版の履
 | PowerShellオフライン試験 | Deployment.Common / Test-Deployment / Deploy.Workflowの3組成功 |
 | Terraform Mock | main 7件、bootstrap 1件成功 |
 
-追加検証は同入力の同時受付、異入力の競合、通知応答喪失後の再送、既存インスタンスの再利用、Entity状態再読み込み後の起動抑止、一時障害の再試行上限と期限、SDKの複合例外と通信timeout、呼出元cancelの非再試行、長時間Activity中の期限到達、停止対象照合、停止要求の再実行、自然完了との競合、停止確認失敗時の未公開を対象とします。
+### 単体テスト（Fake / Mock）での追加検証項目
 
-配置試験では作成済みbackendのPlanOnly、backend不存在と参照エラーの区別、既存0台Pool、新規全台準備、node pagination、12 Functions検出、状態GET404待機と401/403失敗を確認しました。いずれもFake/Mockです。Entityの実checkpoint、host中断復旧、Blobサービスでの同時条件付き書き込み、実Batchの停止は未実証です。[設計と公式資料](workflow-reliability.md)に根拠と残るAzure試験を記載します。
+- **受付・重複起動の抑止**
+  - 同一入力の同時受付
+  - 異なる入力での競合検出（409）
+  - 通知応答が失われた後の再送
+  - 既存インスタンスの再利用
+  - Entity 状態の再読み込み後における重複起動の抑止
+- **一時障害と再試行制御**
+  - 一時障害に対する再試行上限と期限の適用
+  - SDK の複合例外（`AggregateException`）および通信タイムアウトの判定
+  - 呼び出し元によるキャンセルの非再試行扱い
+  - 長時間 Activity 実行中に期限へ到達した場合の挙動
+- **期限超過時の Batch Job 停止制御**
+  - 停止対象 Job の照合
+  - 停止要求の再実行（冪等性）
+  - Job の自然完了との競合処理
+  - 停止確認に失敗した場合の Manifest 未公開保証
 
-## 初版の記録
+### 配置スクリプト・Terraform の追加検証項目（Fake / Mock）
 
-記録日: 2026-10-16。Azure 接続値と資格情報が提供されていないため実環境試験は未実施です。以下は期待値と実施手順の記録であり、実環境での成功を意味しません。
+- 作成済み state backend に対する `-PlanOnly` 実行
+- backend 不存在と参照エラーの区別
+- 既存の 0 台 Pool に対するコード配置
+- 新規 Pool 作成時の全台準備完了待ちと node 一覧の pagination 処理
+- 12 個の Functions 検出確認
+- インスタンス状態 GET 時の 404 待機と 401/403 エラー時の即時失敗
+
+### Azure 実環境で未検証の項目
+
+以下の項目はローカルの Fake / Mock では再現できないため、実環境での検証が必要です。設計上の根拠と残りの試験項目は[設計と公式資料](workflow-reliability.md)に記載しています。
+
+- Durable Entity の実 checkpoint 動作と host 中断からの復旧
+- Azure Blob Storage 実サービス上での同時条件付き書き込み
+- 実 Azure Batch 上での Job 停止動作
+
+---
+
+## 初版の記録（2026-10-16）
+
+記録日: 2026-10-16。以下は初版実装時点でのローカル検証結果と、Azure 実環境試験に向けた手順・期待値の記録です。
 
 ## 実行環境・証跡
 
@@ -35,7 +72,7 @@ Azure実接続は引き続き未実施。下の2026-10-16の30件は初版の履
 
 ## ワンコマンド配置資材の追加検証
 
-2026-10-16に以下を実行しました。Terraformは`mock_provider`、配置スクリプトはfake CLI/HTTPを使用しており、Azureへのplan/apply・ZIP配置・ノード起動を実施した結果ではありません。
+2026-10-16 に Terraform の `mock_provider` および fake CLI / HTTP を用いて以下のオフライン検証を実施しました。
 
 | 対象 | 実測 | 証跡 |
 |---|---|---|
@@ -45,13 +82,20 @@ Azure実接続は引き続き未実施。下の2026-10-16の30件は初版の履
 | Test-Deployment | ノード全台準備待ち、権限反映待ち、Functions検出、HTTP・Blob整合性など11シナリオPass | `artifacts/deployment-validation/readiness.log` |
 | Deploy workflow | PlanOnly、apply→Pool→ZIP→Functionsの順、subscription固定、単一Task smoke→HTTP検証、環境identity変更拒否、bootstrapの絶対stateパスと実行順がPass | `artifacts/deployment-validation/workflow.log` |
 
-新規Batchの実quota・Galleryアクセス・node-agent適合、state backendの初回RBAC反映、Entra認証による実ZIP配置は未検証です。配置コードとMock試験の成功を、Azure基盤の稼働確認と混同しません。
+※ 新規 Batch の実クォータ・Gallery アクセス・node-agent 適合性、state backend の初回 RBAC 反映待ち、Entra 認証による実 ZIP 配置については、Azure 実環境での検証が必要です。
 
 ## SDK / API の確認
 
-2026-10-16 に [Functions isolated guide](https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-process-guide)、[Durable MI guide](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-configure-managed-identity)、[AzureRM Linux Function schema](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/linux_function_app.html.markdown)、[Azure Batch SDK](https://learn.microsoft.com/en-us/dotnet/api/overview/azure/compute.batch-readme) を確認しました。Functions v4 / .NET 10 isolated、Linux Dedicated、Managed Identity host storage を選択しています。Function project は現行 `Azure.Functions.Sdk/1.0.0`、Worker `2.52.0`、DurableTask extension `1.19.0` を使用します。資料上の確認と package restore は Azure 実接続試験の Pass ではありません。
+2026-10-16 に以下の公式ドキュメントを確認し、Functions v4 / .NET 10 isolated、Linux Dedicated プラン、Managed Identity ベースの host storage 構成を選択しました。
 
-SDK 互換性の確認では、当初の `Azure.Identity 1.17.1` と Functions が依存する `Azure.Core 1.54` の型定義が衝突しました。Azure.Core 1.53 以降の Identity 型統合に対応する現行 `Azure.Identity 1.21.0` へ更新し、最終ビルドで互換性を確認しました。Function project を先に直接 restore して SDK の生成ターゲットを準備し、続けて solution を restore する手順を README に記載しています。
+- [Functions isolated guide](https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-process-guide)
+- [Durable MI guide](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-configure-managed-identity)
+- [AzureRM Linux Function schema](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/linux_function_app.html.markdown)
+- [Azure Batch SDK](https://learn.microsoft.com/en-us/dotnet/api/overview/azure/compute.batch-readme)
+
+Function プロジェクトでは現行の `Azure.Functions.Sdk/1.0.0`、Worker `2.52.0`、DurableTask extension `1.19.0` を使用しています。
+
+SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` と Functions 側が依存する `Azure.Core 1.54` の間で型定義の衝突が発生しました。そのため、`Azure.Core 1.53` 以降の Identity 型統合に対応した `Azure.Identity 1.21.0` へ更新し、ビルドが正常に通ることを確認しています。なお、ビルド時は Function プロジェクトを先に restore して SDK の生成ターゲットを準備してから solution 全体を restore する手順としており、README にも明記しています。
 
 ## シナリオ
 
@@ -79,4 +123,4 @@ SDK 互換性の確認では、当初の `Azure.Identity 1.17.1` と Functions �
 | T09 | OutputFiles 直送比較 | Blob への直接永続化 | P1 / 未実装 | Not tested |
 | T10 | Durable / Batch 停止 | 両方の状態整合性 | 期限超過時のJob停止は実装・Mock成功。利用者キャンセル連鎖は未実装 | Not tested（Azure） |
 
-Azure 試験時は `artifacts/` 等へ日時、設定（秘密を除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、該当行に具体的なパスを追記します。Durable の runtimeStatus が Completed でも業務 output が Failed / TimedOut の場合は成功としません。最終成功は manifest の内容と入力との整合性まで確認します。
+Azure 実環境での試験実施時は、`artifacts/` 配下へ実行日時、設定値（秘密情報を除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、上表の該当行に証跡パスを追記します。なお、Durable Functions の `runtimeStatus` が `Completed` であっても、業務出力（`output`）が `Failed` または `TimedOut` の場合は失敗とみなします。最終的な合格判定では、出力された manifest の内容と入力データとの整合性まで確認します。
