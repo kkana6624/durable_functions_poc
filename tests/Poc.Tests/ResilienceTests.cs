@@ -1,3 +1,4 @@
+using System.ClientModel.Primitives;
 using Azure;
 using Azure.Compute.Batch;
 using Microsoft.DurableTask;
@@ -307,8 +308,265 @@ public class ResilienceTests
             .ReturnsAsync(Response.FromValue(job, Mock.Of<Response>()));
         return client;
     }
+    [Fact]
+    public async Task EnsureTaskHappyPathCreatesAndValidatesTask()
+    {
+        var plan = Plan(new WorkflowRequest("ensure-task-happy"));
+        var spec = new TaskSpec(plan, 0);
+        var client = BatchReturning(Job(plan, BatchJobState.Active, "pool", plan.Fingerprint));
+        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+        var task = TaskModel(spec.TaskId, BatchTaskState.Active, command, plan.Fingerprint);
+
+        client.Setup(c => c.CreateTaskAsync(spec.Plan.JobId, It.IsAny<BatchTaskCreateOptions>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Response)null!);
+        client.Setup(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(task, Mock.Of<Response>()));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        await gateway.EnsureTaskAsync(spec, TestContext.Current.CancellationToken);
+
+        client.Verify(c => c.CreateTaskAsync(spec.Plan.JobId, It.Is<BatchTaskCreateOptions>(o => o.Id == spec.TaskId && o.CommandLine == command), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()), Times.Once);
+        client.Verify(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task EnsureTaskIdempotentConflictWithMatchingFingerprintSucceeds()
+    {
+        var plan = Plan(new WorkflowRequest("ensure-task-idempotent"));
+        var spec = new TaskSpec(plan, 0);
+        var client = BatchReturning(Job(plan, BatchJobState.Active, "pool", plan.Fingerprint));
+        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+        var task = TaskModel(spec.TaskId, BatchTaskState.Active, command, plan.Fingerprint);
+
+        client.Setup(c => c.CreateTaskAsync(spec.Plan.JobId, It.IsAny<BatchTaskCreateOptions>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RequestFailedException(409, "Task exists", "TaskExists", null));
+        client.Setup(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(task, Mock.Of<Response>()));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        await gateway.EnsureTaskAsync(spec, TestContext.Current.CancellationToken);
+
+        client.Verify(c => c.CreateTaskAsync(spec.Plan.JobId, It.IsAny<BatchTaskCreateOptions>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()), Times.Once);
+        client.Verify(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(true, "foreign-fingerprint", null)]
+    [InlineData(false, "foreign-fingerprint", null)]
+    [InlineData(true, "match", "cmd /c exit 99")]
+    public async Task EnsureTaskDifferentInputConflictThrowsWorkflowConflictException(bool simulate409Conflict, string fingerprintMode, string? overrideCommand)
+    {
+        var plan = Plan(new WorkflowRequest("ensure-task-conflict"));
+        var spec = new TaskSpec(plan, 0);
+        var client = BatchReturning(Job(plan, BatchJobState.Active, "pool", plan.Fingerprint));
+        var command = overrideCommand ?? WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+        var taskFingerprint = fingerprintMode == "match" ? plan.Fingerprint : "foreign-fingerprint";
+        var task = TaskModel(spec.TaskId, BatchTaskState.Active, command, taskFingerprint);
+
+        var createSetup = client.Setup(c => c.CreateTaskAsync(spec.Plan.JobId, It.IsAny<BatchTaskCreateOptions>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()));
+        if (simulate409Conflict)
+            createSetup.ThrowsAsync(new RequestFailedException(409, "Task exists", "TaskExists", null));
+        else
+            createSetup.ReturnsAsync((Response)null!);
+
+        client.Setup(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(task, Mock.Of<Response>()));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        await Assert.ThrowsAsync<WorkflowConflictException>(() => gateway.EnsureTaskAsync(spec, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task EnsureTaskDeadlineExceededBeforeJobCheckThrowsTimeoutException()
+    {
+        var plan = Plan(new WorkflowRequest("deadline-before-check"));
+        var spec = new TaskSpec(plan, 0, DateTime.UtcNow.AddSeconds(-1));
+        var client = new Mock<BatchClient>();
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+
+        var ex = await Assert.ThrowsAsync<TimeoutException>(() => gateway.EnsureTaskAsync(spec, TestContext.Current.CancellationToken));
+        Assert.Equal("Task submission deadline exceeded.", ex.Message);
+        client.Verify(c => c.GetJobAsync(It.IsAny<string>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task EnsureTaskDeadlineExceededDuringJobCheckThrowsTimeoutException()
+    {
+        var plan = Plan(new WorkflowRequest("deadline-during-check"));
+        var spec = new TaskSpec(plan, 0, DateTime.UtcNow.AddMilliseconds(50));
+        var job = Job(plan, BatchJobState.Active, "pool", plan.Fingerprint);
+        var client = new Mock<BatchClient>();
+        client.Setup(c => c.GetJobAsync(It.IsAny<string>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                await Task.Delay(100);
+                return Response.FromValue(job, Mock.Of<Response>());
+            });
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        var ex = await Assert.ThrowsAsync<TimeoutException>(() => gateway.EnsureTaskAsync(spec, TestContext.Current.CancellationToken));
+        Assert.Equal("Task submission deadline exceeded while checking the job.", ex.Message);
+        client.Verify(c => c.CreateTaskAsync(It.IsAny<string>(), It.IsAny<BatchTaskCreateOptions>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncCompletedSuccessReturnsSuccessStatus()
+    {
+        var plan = Plan(new WorkflowRequest("status-success"));
+        var spec = new TaskSpec(plan, 0);
+        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+        var execution = ExecutionInfo(exitCode: 0, result: BatchTaskExecutionResult.Success);
+        var task = TaskModel(spec.TaskId, BatchTaskState.Completed, command, plan.Fingerprint, execution: execution);
+        var client = new Mock<BatchClient>();
+        client.Setup(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(task, Mock.Of<Response>()));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        var status = await gateway.GetStatusAsync(spec, TestContext.Current.CancellationToken);
+
+        Assert.Equal(spec.TaskId, status.TaskId);
+        Assert.Equal(BatchTaskState.Completed.ToString(), status.State);
+        Assert.True(status.Completed);
+        Assert.True(status.Succeeded);
+        Assert.Equal(0, status.ExitCode);
+        Assert.Null(status.Failure);
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncCompletedFailureReturnsFailureStatus()
+    {
+        var plan = Plan(new WorkflowRequest("status-fail", FailTaskIndex: 0));
+        var spec = new TaskSpec(plan, 0);
+        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+        var execution = ExecutionInfo(exitCode: 42, result: BatchTaskExecutionResult.Failure);
+        var task = TaskModel(spec.TaskId, BatchTaskState.Completed, command, plan.Fingerprint, execution: execution);
+        var client = new Mock<BatchClient>();
+        client.Setup(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(task, Mock.Of<Response>()));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        var status = await gateway.GetStatusAsync(spec, TestContext.Current.CancellationToken);
+
+        Assert.Equal(spec.TaskId, status.TaskId);
+        Assert.Equal(BatchTaskState.Completed.ToString(), status.State);
+        Assert.True(status.Completed);
+        Assert.False(status.Succeeded);
+        Assert.Equal(42, status.ExitCode);
+        Assert.Equal($"Result={BatchTaskExecutionResult.Failure}; ExitCode=42", status.Failure);
+    }
+
+    [Theory]
+    [InlineData("Running")]
+    [InlineData("Active")]
+    [InlineData("Preparing")]
+    public async Task GetStatusAsyncStillRunningReturnsIncompleteStatus(string stateName)
+    {
+        var plan = Plan(new WorkflowRequest("status-running"));
+        var spec = new TaskSpec(plan, 0);
+        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+        var runningState = new BatchTaskState(stateName);
+        var task = TaskModel(spec.TaskId, runningState, command, plan.Fingerprint);
+        var client = new Mock<BatchClient>();
+        client.Setup(c => c.GetTaskAsync(spec.Plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(task, Mock.Of<Response>()));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        var status = await gateway.GetStatusAsync(spec, TestContext.Current.CancellationToken);
+
+        Assert.Equal(spec.TaskId, status.TaskId);
+        Assert.Equal(stateName, status.State);
+        Assert.False(status.Completed);
+        Assert.False(status.Succeeded);
+        Assert.Null(status.ExitCode);
+        Assert.Null(status.Failure);
+    }
+
+    [Fact]
+    public async Task ReadResultAsyncDiscoversBackslashPathAndReadsFile()
+    {
+        var plan = Plan(new WorkflowRequest("read-backslash"));
+        var spec = new TaskSpec(plan, 0);
+        var client = new Mock<BatchClient>();
+
+        var file = ModelReaderWriter.Read<BatchNodeFile>(BinaryData.FromString("""
+        {
+          "name": "wd\\result.txt",
+          "isDirectory": false
+        }
+        """))!;
+        var page = Azure.Page<BatchNodeFile>.FromValues([file], null, Mock.Of<Response>());
+        client.Setup(c => c.GetTaskFilesAsync(spec.Plan.JobId, spec.TaskId, null, null, null, null, true, It.IsAny<CancellationToken>()))
+            .Returns(Azure.AsyncPageable<BatchNodeFile>.FromPages([page]));
+
+        var response = Response.FromValue(BinaryData.FromString("42\r\n"), Mock.Of<Response>());
+        client.Setup(c => c.GetTaskFileAsync(spec.Plan.JobId, spec.TaskId, "wd\\result.txt", It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), "bytes=0-4096", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(response);
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        var result = await gateway.ReadResultAsync(spec, TestContext.Current.CancellationToken);
+        Assert.Equal("42\r\n", result);
+    }
+
+    [Fact]
+    public async Task ReadResultAsyncConverts416ToInvalidDataException()
+    {
+        var plan = Plan(new WorkflowRequest("read-416"));
+        var spec = new TaskSpec(plan, 0);
+        var client = new Mock<BatchClient>();
+
+        var file = ModelReaderWriter.Read<BatchNodeFile>(BinaryData.FromString("""
+        {
+          "name": "wd/result.txt",
+          "isDirectory": false
+        }
+        """))!;
+        var page = Azure.Page<BatchNodeFile>.FromValues([file], null, Mock.Of<Response>());
+        client.Setup(c => c.GetTaskFilesAsync(spec.Plan.JobId, spec.TaskId, null, null, null, null, true, It.IsAny<CancellationToken>()))
+            .Returns(Azure.AsyncPageable<BatchNodeFile>.FromPages([page]));
+
+        client.Setup(c => c.GetTaskFileAsync(spec.Plan.JobId, spec.TaskId, "wd/result.txt", It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), "bytes=0-4096", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RequestFailedException(416, "Requested Range Not Satisfiable"));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() => gateway.ReadResultAsync(spec, TestContext.Current.CancellationToken));
+        Assert.Equal("Batch task output was empty.", ex.Message);
+        Assert.IsType<RequestFailedException>(ex.InnerException);
+        Assert.Equal(416, ((RequestFailedException)ex.InnerException).Status);
+    }
+
+    [Fact]
+    public async Task ReadResultAsyncThrowsFileNotFoundExceptionWhenResultTxtMissing()
+    {
+        var plan = Plan(new WorkflowRequest("read-missing"));
+        var spec = new TaskSpec(plan, 0);
+        var client = new Mock<BatchClient>();
+
+        var file = ModelReaderWriter.Read<BatchNodeFile>(BinaryData.FromString("""
+        {
+          "name": "stderr.txt",
+          "isDirectory": false
+        }
+        """))!;
+        var page = Azure.Page<BatchNodeFile>.FromValues([file], null, Mock.Of<Response>());
+        client.Setup(c => c.GetTaskFilesAsync(spec.Plan.JobId, spec.TaskId, null, null, null, null, true, It.IsAny<CancellationToken>()))
+            .Returns(Azure.AsyncPageable<BatchNodeFile>.FromPages([page]));
+
+        var gateway = new AzureBatchGateway(client.Object, "pool");
+        await Assert.ThrowsAsync<FileNotFoundException>(() => gateway.ReadResultAsync(spec, TestContext.Current.CancellationToken));
+    }
+
     private static BatchJob Job(WorkflowPlan plan, BatchJobState state, string pool, string fingerprint) =>
         ComputeBatchModelFactory.BatchJob(id: plan.JobId, state: state, poolInfo: new BatchPoolInfo { PoolId = pool }, metadata: [new BatchMetadataItem("poc-fingerprint", fingerprint)]);
+    private static BatchTaskExecutionInfo ExecutionInfo(int? exitCode, BatchTaskExecutionResult? result, BatchTaskFailureInfo? failureInfo = null) =>
+        ComputeBatchModelFactory.BatchTaskExecutionInfo(exitCode: exitCode, result: result, failureInfo: failureInfo);
+    private static BatchTask TaskModel(string id, BatchTaskState state, string commandLine, string fingerprint, int maxRetryCount = 0, BatchTaskExecutionInfo? execution = null) =>
+        ComputeBatchModelFactory.BatchTask(
+            id: id,
+            state: state,
+            commandLine: commandLine,
+            constraints: new BatchTaskConstraints { MaxTaskRetryCount = maxRetryCount },
+            environmentSettings: [new EnvironmentSetting("POC_FINGERPRINT") { Value = fingerprint }],
+            executionInfo: execution);
     private static WorkflowPlan Plan(WorkflowRequest request) => new(request, "light", "Test", WorkflowIdentity.JobId(request.RequestId), WorkflowIdentity.Fingerprint(request, "light"), 10, 15);
     private static Mock<TaskOrchestrationContext> Context()
     {
