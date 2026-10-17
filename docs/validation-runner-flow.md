@@ -2,53 +2,53 @@
 
 更新日: 2026-10-17
 
-この文書は `scripts/Invoke-PocValidation.ps1` が行う検証と、開始APIからDurable Functions、Azure Batch、Blob Storageへ進む処理を記録します。個人検証での現行接続は公開endpointです。VPN／ExpressRoute、Private Endpoint、WebAppはこのrunnerが作成せず、将来構成は[ネットワーク接続設計](network-connectivity-design.md)を参照してください。
+本書では、`scripts/Invoke-PocValidation.ps1` による一括検証の処理フローと、ワークフロー開始 API から Durable Functions、Azure Batch、Blob Storage へ至る一連のシーケンスを解説します。個人の検証環境における現行の接続形態はパブリックエンドポイントです。VPN / ExpressRoute、Private Endpoint、Web App 等の閉域インフラは本 runner の作成スコープ外であり、将来の業務接続構成については [共通ネットワーク設計](network-connectivity-design.md) を参照してください。
 
 ## runnerの全体フロー
 
-runnerは既存配置結果を読み込み、選択したシナリオを順番に実行します。シナリオ内の分類試験と `admission20` のPOSTは複数処理を行います。
+runner はデプロイ結果ファイル（`deployment-result.json`）を読み込み、指定された検証シナリオを順次実行します。シナリオのうち `classification` は複数パターンのワークフローを連続実行し、`admission20` は HTTP 20 並行リクエストの送信を行います。
 
 ```mermaid
 flowchart TD
     A[runner起動] --> B[証跡ディレクトリ作成]
-    B --> C[配置結果を読込]
-    C --> D[Git revision・dirty状態・source hashを取得]
-    D --> E{入力とendpointは有効か}
-    E -- いいえ --> F[Setup Failを記録]
-    E -- はい --> G[配置subscriptionでFunction key取得]
-    G --> H{key取得成功か}
+    B --> C[デプロイ結果を読込]
+    C --> D[Gitリビジョン・変更状態・ソースハッシュを取得]
+    D --> E{入力とエンドポイントは有効か}
+    E -- いいえ --> F[Setup失敗を記録]
+    E -- はい --> G[対象サブスクリプションでFunction Key取得]
+    G --> H{Key取得成功か}
     H -- いいえ --> F
-    H -- はい --> I[選択シナリオを順番に処理]
+    H -- はい --> I[選択されたシナリオを順次処理]
     I --> J{実行条件を満たすか}
     J -- いいえ --> K[NotRunと理由を記録]
     J -- はい --> L[requestIdと入力を生成]
-    L --> M[開始APIへPOST]
-    M --> N{HTTP 202とinstanceId・状態URLが妥当か}
+    L --> M[開始APIへPOST送信]
+    M --> N{HTTP 202・instanceId・状態URLが妥当か}
     N -- いいえ --> O[Failと理由を記録]
-    N -- はい --> P[状態URLを定期照会]
-    P --> Q{状態照会結果}
+    N -- はい --> P[状態URLを定期ポーリング]
+    P --> Q{ステータス照会結果}
     Q -- 404 --> P
     Q -- Running等 --> P
-    Q -- 終端状態 --> R[BatchとBlobの状態を取得]
-    R --> S{期待値・識別子・fingerprintが一致か}
+    Q -- 終端状態 --> R[BatchおよびBlobの最終状態を取得]
+    R --> S{期待値・識別子・fingerprintが一致するか}
     S -- はい --> T[Pass候補]
     S -- いいえ --> O
-    T --> U{全世代の起動履歴を証明する試験か}
-    U -- はい・履歴不可 --> K
+    T --> U{全世代の起動履歴検証が必要か}
+    U -- はい・履歴取得不可 --> K
     U -- いいえ／観測済 --> V{次のシナリオがあるか}
     K --> V
     O --> V
     V -- はい --> I
     V -- いいえ --> W[summary.jsonとsummary.txtを保存]
     F --> W
-    W --> X[終了コードを返す]
+    W --> X[終了コードを返却]
 ```
 
-状態URLはHTTPS、同一Function Appのauthority、想定instance pathを検証します。初期404はEntity受付後にMain instanceが登録されるまでの待機として扱い、設定された待機上限を超えるとFailになります。HTTPエラー本文や秘密を含むURLは証跡へ出しません。
+状態照会用 URL については、HTTPS プロトコル、同一 Function App のホスト（Authority）、および想定されるインスタンスパス形式を満たしているかを検証します。起動直後の HTTP 404 は、WorkflowAdmissionEntity の受付後に Main オーケストレーションインスタンスが登録されるまでの過渡的な状態として扱い、ポーリングを継続します（設定された待機上限を超過した場合は Fail となります）。なお、セキュリティ確保のため、HTTP エラーレスポンスの本文やシークレットを含む URL はログや証跡ファイルへ出力しません。
 
 ## 1件のワークフローのシーケンス
 
-成功系では、runnerはDurable状態だけで判定せず、Batch TaskとBlobの結果も照合します。Batchノード上のコマンドは現在のPoC用ダミーで、待機後に `result.txt` へ整数 `1` を出力します。
+成功系の検証では、runner は Durable Functions のステータス照会結果のみに依存せず、Azure Batch の Job / Task 状態および Blob Storage 上の出力成果物も直接取得して突合します。なお、Batch 計算ノード上で実行される処理は本 PoC 用のダミーコマンド（PowerShell）であり、所定時間スリープした後に `result.txt` へ整数 `1` を書き出します。
 
 ```mermaid
 sequenceDiagram
@@ -68,7 +68,7 @@ sequenceDiagram
     else 新規または同じ入力
         API->>E: Start signal
         API-->>R: 202 Accepted (instanceId, status URL)
-        Note over R: URLはメモリ内で照会に使う
+        Note over R: URLはメモリ内での照会のみに使用しログ保存を抑止
         E->>D: 初回だけMain orchestrationを起動
         D->>D: 入力分類、Job ID・fingerprint・deadlineを決定
         D->>BA: fingerprint付きBatch Jobを作成／照合
@@ -103,34 +103,39 @@ sequenceDiagram
     R->>R: allowlist形式の証跡をsummaryへ追加
 ```
 
-期限超過でrunner自身の待機上限に達した場合、runnerは結果をFailとして記録します。runnerの停止はAzure側Jobの停止を意味しません。期限試験ではDurableのTimedOut状態、Batch JobのCompleted、Manifest不在をそれぞれ確認します。
+ワークフローが想定時間を超過して runner 自身のタイムアウト上限に達した場合、runner は当該シナリオを Fail として記録します。この場合、runner の停止によって Azure 側の Batch Job が自動停止するわけではありません。一方、`timeout` シナリオの検証においては、Durable ワークフローの `TimedOut` 状態、Batch Job が適切に `Completed`（強制終了）されたこと、および成功時の `manifest.json` が生成されていないことをそれぞれ確認して合否を判定します。
 
 ## 生成物と保存先
 
 | 保存先 | データ | 生成条件 |
 |---|---|---|
-| 実行端末 `artifacts/validation/<run>/` | `summary.json`、`summary.txt` | runnerの終了時。Setup失敗でも作成 |
-| Azure Blob `runs/poc-<requestId>/request.json` | version、instanceId、ワークフロー入力 | API受付時 |
-| Azure Batch Job | 決定的Job ID、Pool、fingerprint metadata、期限制約 | ワークフロー実行時 |
-| Azure Batch Task | `task-00`等、Task command、fingerprint、exit/result | Task投入時 |
-| Azure Blob `tasks/task-NN/result.json` | request/job/task identity、分類、fingerprint、値 | Batch Task成功後 |
-| Azure Blob `final/aggregate.json` | Task ID一覧、件数、合計、fingerprint | 全Task結果照合後 |
-| Azure Blob `final/manifest.json` | 成功状態、aggregateとTask結果のURI | すべて整合した成功時のみ |
+| 実行端末 `artifacts/validation/<run>/` | `summary.json`、`summary.txt` | runner の終了時（Setup 失敗時にも出力） |
+| Azure Blob `runs/poc-<requestId>/request.json` | version、instanceId、ワークフロー入力 | API 受付時 |
+| Azure Batch Job | 決定論的 Job ID、Pool、fingerprint メタデータ、サーバー側期限制約 | ワークフロー実行時 |
+| Azure Batch Task | `task-00` 等、Task コマンド、fingerprint 環境変数、終了コード・実行結果 | Task 投入時 |
+| Azure Blob `tasks/task-NN/result.json` | リクエスト／Job／Task 識別子、分類、fingerprint、計算結果の値 | Batch Task 成功後 |
+| Azure Blob `final/aggregate.json` | Task ID 一覧、Task 件数、合計値、fingerprint | 全 Task 結果照合後 |
+| Azure Blob `final/manifest.json` | 成功状態、aggregate および各 Task 結果の Blob URI | 全 Task が正常終了し集計値が整合した場合のみ |
 
-summaryはGit revision・dirty flag・source SHA-256・配置結果のpackage SHA-256、試験別時刻と状態、選択したJob／Task観測値を記録します。認証値や管理URL、応答本文、生の例外を含めません。package hashは配置結果ファイルの値であり、稼働中hostが読んだバイナリのhashを直接測定したものではありません。
+`summary.json` および `summary.txt` には、Git リビジョン、未コミット変更の有無（dirty フラグ）、ソースコード SHA-256、デプロイ結果パッケージの SHA-256、各試験の開始・完了時刻とステータス、ならびに Batch Job / Task の主要な観測値を記録します。シークレット、認証トークン、管理用 URL、生のレスポンス本文、例外スタックトレース等の機微情報は含めません。なお、パッケージハッシュ値はデプロイ結果ファイル（`deployment-result.json`）に記録された値であり、稼働中の Function App ホストがメモリにロードしたバイナリのハッシュを直接測定したものではありません。
 
 ## シナリオと合格判定
 
 | シナリオ | 実行内容 | Pass条件または留意点 |
 |---|---|---|
-| `single` | 1 Task | exit 0、Task結果1、aggregateとManifest整合 |
-| `three` | 3 Task | Task 3件、各結果1、合計3 |
-| `classification` | light、heavy、autoを各1回 | 分類値とTask結果が期待通り（現在autoはlight） |
-| `failure` | 1 Taskをexit 42にする | 業務状態Failed、exit 42、成功Manifestなしなら試験Pass |
-| `admission20` | 同じ入力で20並列POST後、完了後に再送 | 同じinstance・Task集合・完了状態を観測。全世代の起動履歴APIがないため最終結果はNotRun |
-| `conflict` | 同じrequestIdに異なる入力をPOST | HTTP 409 |
-| `timeout` | 専用設定でTaskを監視期限より長くする | Durable TimedOut、Batch停止完了、Manifestなし。専用環境指定と十分な待機時間がなければNotRun |
+| `single` | 1 Task のワークフロー実行 | exit 0、Task 結果 1、aggregate および manifest が正常生成・整合 |
+| `three` | 3 Task の並列ワークフロー実行 | Task 3 件、各結果 1、sum=3 の集計整合 |
+| `classification` | light、heavy、auto を各 1 回順次実行 | 分類結果と Task 実行パラメーターが期待通り（現状 auto は light に解決） |
+| `failure` | 1 Task を意図的に exit 42 で終了 | 業務ステータス Failed、exit 42 を検知、成功 manifest が出力されないことを確認 |
+| `admission20` | 同一入力で 20 並列 POST を送信し、完了後に再送 | 同一インスタンス・同一 Task 集合・完了状態が維持されることを確認。ただし全世代のオーケストレーション起動履歴を網羅確認する API が存在しないため、最終ステータスは NotRun として記録 |
+| `conflict` | 同一 requestId に対して異なる入力パラメーターで POST | HTTP 409 Conflict が返却されることを確認 |
+| `timeout` | 監視期限より長い待機時間を指定した専用 Task を実行 | Durable が TimedOut、Batch Job が Terminate されて Completed、manifest が出力されないことを確認。`-DedicatedEnvironment` スイッチと十分なタイムアウトが指定されていない場合は NotRun |
 
-Exit codeは全選択シナリオPassで0、Failありで1、FailなしでNotRunありの場合2です。検証runnerはJob／Taskを作成するため、実Azure実行時にはBatch料金が発生し得ます。履歴、受付Entity、Job、結果Blobの自動削除はしません。
+スクリプトの終了コード（Exit code）は以下のとおりです。
+- `0`: 選択されたすべてのシナリオが合格（Pass）
+- `1`: 1 件以上の失敗（Fail）が存在する
+- `2`: 失敗はないが、未実行・未実証の項目（NotRun）が含まれる
 
-Fake試験、ローカルloopback HTTP試験、実C# fingerprint照合はrunner実装のローカル検証です。Azureでの実Pool、Durable host、Blob serviceによる実証とは区別し、Azure試験が未実施ならNotRunのまま記録します。
+本検証 runner は実際に Azure Batch の Job および Task を作成するため、Azure 実環境での実行時には Batch ノードの利用料金が発生します。また、事後調査やエビデンス保持のため、実行履歴、受付 Entity、Batch Job、および結果 Blob の自動削除は行いません。
+
+なお、Fake 試験、ローカルループバック HTTP 試験、C# による fingerprint 算出突合は、いずれも runner スクリプト自体のローカル動作検証です。Azure 実環境（実 Windows Pool、Durable Functions ホスト、Blob Storage サービス）での実証とは明確に区別し、Azure 環境での実行が完了していない項目は NotRun として記録します。

@@ -32,9 +32,9 @@
 | F01 | Durable Functionsから既存Batch PoolにWindows Taskを投入できるか | 3 Taskが実行され、Batch上のTask IDと状態が追跡可能 |
 | F02 | 長時間の非同期待機を独自状態DBなしで実現できるか | Durable Timerで待機し、Functionを常時占有せず完了へ進める |
 | F03 | ファンアウト・ファンインを記述できるか | 3つの監視用サブオーケストレーションを並行させ、全成功後に一度だけ集約へ進む |
-| F04 | 再生・再起動から復旧するか | 待機中にPoC専用Function Appを再起動しても進行・状態が継続する |
-| F05 | 異常終了や期限超過を表現できるか | 失敗Task/タイムアウト時は失敗状態と原因を記録し、最終公開しない |
-| F06 | Blobを使う結果統合が可能か | 3つの小さな結果をBlobに格納し、期待値どおりの `aggregate.json` と `manifest.json` を生成 |
+| F04 | リプレイおよびプロセスの再起動から復旧できるか | タイマー待機中にPoC専用Function Appを再起動しても、リプレイにより進行・状態が維持され処理が完了すること |
+| F05 | タスクの異常終了や監視期限超過（タイムアウト）を適切に検知・処理できるか | タスク失敗時やタイムアウト時に失敗ステータスと原因を記録し、最終成果物（manifest.json）を公開しないこと |
+| F06 | Blob Storageを用いた結果集約と成果物公開が可能か | 3つのタスク結果をBlobに格納し、期待値どおりの `aggregate.json` と `manifest.json` を生成できること |
 
 **成功判定の位置づけ:** F01〜F03、F05、F06 を P0（必須検証項目）とします。F04（プロセス再起動からの復旧）も Durable Functions を採用する価値を確認するうえで重要な項目であるため、可能な限りあわせて実施します。なお、大規模な並列実行性能や計算ノード障害時の高可用性については、本PoCの評価対象外とします。
 
@@ -77,9 +77,9 @@ flowchart TD
 |---|---|---|
 | Orchestrator / Activity | 段階ごとの処理管理 | 自前の業務状態遷移エンジン |
 | Sub-orchestration + `Task.WhenAll` | 3 Taskの完了同期 | 共有DBのカウンタ、ロック、合流判定 |
-| Durable Timer | Batch状態の再照会 | 常駐ポーラ、DBベースの待機スケジュール |
-| 実行履歴・Replay | Functionプロセス再起動 | 独自チェックポイント / 復旧キュー |
-| Instance ID / 状態照会 | トレース・進行表示 | 簡易ジョブ状態APIの独自DB管理 |
+| Durable Timer | Batchタスク状態の定期ポーリング | 常駐ポーリングワーカー、DBベースのスケジュール管理 |
+| 実行履歴・Replay | Functionプロセス再起動時の自動復旧 | 独自チェックポイント管理 / メッセージ復旧用キュー |
+| Instance ID / 状態照会 | ワークフローの追跡・進捗表示 | ジョブ状態管理用の独自DBおよび追跡API |
 
 ※ Durable Functions における Activity の呼び出し保証は At-least-once（少なくとも1回実行）であるため、外部 API に対する副作用の Exactly-once（厳密に1回のみの実行）はフレームワーク側では保証されません。そのため、後述するとおり Activity 側で冪等性を考慮した実装を行います。
 
@@ -118,7 +118,7 @@ cmd /c powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 
 | `MainOrchestrator` | Orchestration trigger | 軽重判定、Job作成、監視用子Orchestratorを3本起動、合流、結果集約、公開 |
 | `ClassifyActivity` | Activity | 既存判定器との交換可能なStub |
 | `EnsureBatchJobActivity` | Activity | PoC専用Batch Jobの作成・冪等照合 |
-| `MonitorBatchTaskOrchestrator` | Sub-orchestration | 1 Taskの投入、状態監視、永続Timer待機 |
+| `MonitorBatchTaskOrchestrator` | Sub-orchestration | 1 Taskの投入、状態監視、Durable Timerによる非同期待機 |
 | `EnsureBatchTaskActivity` | Activity | 既存Task IDとの照合、投入 |
 | `GetBatchTaskStatusActivity` | Activity | Batch実状態、終了コード、失敗情報の取得 |
 | `FetchAndPersistActivity` | Activity | Task File APIから小結果取得→Blobへの書込 |
@@ -171,7 +171,7 @@ poc-results/
 
 ### P0 における冪等性の設計方針
 - `requestId` から Batch Job ID / Task ID を一意かつ決定論的に生成し、すでに同一 ID が存在する場合は入力パラメータの整合性を照合します（内容が異なる場合は Conflict として扱います）。
-- `StartWorkflow` において起動前にインスタンス状態を照会するだけでは、同時リクエストに対する完全な排他制御にはなりません。**同一 `requestId` の同時リクエストに対する厳密な排他保証は P1 の検討課題**とし、P0 では重複投入テスト時の挙動を観察・記録します。
+- `StartWorkflow` において起動前にインスタンス状態を照会するだけでは、同時リクエストに対する完全な排他制御にはなりません。初版の最小P0設計では厳密な排他保証をP1の検討課題としていましたが、追加の信頼性改善において Durable Entities を用いた受付排他制御が正式採用されました（現行の受付排他仕様は [信頼性改善の設計](workflow-reliability.md) を参照）。
 - `FetchAndPersistActivity` と `AggregateActivity` は、再実行されても同一の入力に対して同一の内容を上書き保存できる設計とし、最終の `manifest.json` は条件付き作成（すでに存在する場合は内容の同一性を確認）とします。
 - P0 では Batch Task の自動リトライ回数（`MaxTaskRetryCount`）は原則 `0` とします。ただし、Batch サービス側のノード障害復旧などに伴い Task が再実行される可能性は残る点に留意します。
 - P0 では、ワークフローの最終状態を `Failed` とした後に残存している実行中 Task を強制停止する処理は実装しません。PoC 用に作成したジョブの手動クリーンアップ手順を README に記載します。
@@ -187,14 +187,14 @@ poc-results/
 |---|---|---|---|
 | T01 | 3つのWindows Taskを投入 | 全Task成功し、結果3件と合計3がBlobに存在 | P0 |
 | T02 | light/heavyを変更 | 分岐結果が履歴・ログ・成果物に残り、待機時間の差が確認可能 | P0 |
-| T03 | 1 Taskを非ゼロ終了 | 親はFailed、aggregate/manifestを公開しない | P0 |
-| T04 | 長めに待機するTaskを実行 | Durable Timer待機、状態照会が機能し、HTTP要求は即座に応答 | P0 |
-| T05 | 待機中にPoC専用Function Appを再起動 | 再起動後に履歴から進行し、最終成果物が得られる | P0推奨 |
-| T06 | Batch Taskは完了、Taskファイルが取得不能 | 明示的な失敗と原因を記録。成功扱いしない | P0 |
-| T07 | 同一requestIdを同時に2回起動 | 受付側の競合とBatch ID重複時の挙動を観察 | P1 |
-| T08 | Activity成功直後の中断を模擬 | 再実行でBatch重複Taskを作らない | P1 |
-| T09 | OutputFilesによるBlob直送 | Functions経由の転送と差を比較 | P1 |
-| T10 | ジョブ停止・キャンセル | DurableとBatch双方の停止・整合性を確認 | P1 |
+| T03 | 1 Taskを非ゼロ終了（意図的失敗） | 親OrchestratorはFailedとなり、aggregate/manifestを公開しないこと | P0 |
+| T04 | 長めに待機するTaskを実行 | Durable Timer による非同期待機と状態照会が機能し、HTTP要求に対して即座に応答（202 Accepted）が返ること | P0 |
+| T05 | 待機中にPoC専用Function Appを再起動 | 再起動後に実行履歴（Replay）から処理が自動再開され、最終成果物が得られること | P0推奨 |
+| T06 | Batch Taskは完了したがTaskファイルが取得不能 | 明示的な失敗として原因を記録し、成功扱いとしないこと | P0 |
+| T07 | 同一requestIdを同時に2回起動 | 受付側の排他・競合ハンドリングとBatch ID重複時の挙動を確認（現行仕様ではEntityにより排他・重複抑止） | P1 |
+| T08 | Activity成功直後の中断を模擬 | リトライ再実行時に Batch 側で重複 Task が作成されないこと（冪等性の確認） | P1 |
+| T09 | OutputFilesによるBlob直送 | Functions経由の転送と性能・運用上の差異を比較 | P1 |
+| T10 | ジョブ停止・キャンセル | Durable Functions と Azure Batch の双方が適切に停止され、状態の整合性が保たれること | P1 |
 
 PoC の実施記録として、少なくとも Durable の `instanceId`、Batch Job ID、Task ID、各 Activity の実行履歴、成功・失敗の判定結果、出力先 Blob URI、および各テストケースの実施結果をドキュメントに残します。
 

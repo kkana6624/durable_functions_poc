@@ -2,7 +2,7 @@
 
 更新日: 2026-10-16
 
-> **2026-10-17追記:** 本文は初版（P0）時点の実装指示書です。その後追加で承認された「同時受付時の排他制御」「一時障害に対するリトライ」「タイムアウト時の Batch リソース停止処理」については、[信頼性改善の設計](workflow-reliability.md) を現行仕様とします。本文における「非要件」や「P1」の記載は、初版実装時のスコープ定義を示しています。
+> **2026-10-17追記:** 本文は初版（P0）時点の実装指示書です。その後追加で承認された「同時受付時の排他制御」「一時障害に対するリトライ」「タイムアウト時の Batch リソース停止処理」、およびワンコマンドデプロイにおける「新規 Batch リソース作成オプション（`batch_mode`）」については、[信頼性改善の設計](workflow-reliability.md) および [ワンコマンドデプロイ構成整理](one-command-deployment-inventory.md) を現行仕様とします。本文における「非要件」や「P1」の記載は、初版実装時のスコープ定義を示しています。
 
 > **はじめに:** 作業を開始する前に、同じディレクトリにある `azure-hpc-modernization-poc-design.md` を通読し、そこで定義されている P0 スコープを最短経路で動作させることを優先してください。
 > 本PoCの目的は **Durable Functions を用いた非同期ワークフロー制御の技術的実現性を確認すること** であり、HPC の数値計算処理そのものや LSF 互換スケジューラを開発することではありません。
@@ -66,14 +66,15 @@
 }
 ```
 
-正常完了後に生成される Blob 一覧:
+正常完了後に生成される Blob 一覧（PoC専用の `poc-` プレフィックスが付与されます）:
 
 ```text
-runs/feasibility-001/tasks/task-00/result.json
-runs/feasibility-001/tasks/task-01/result.json
-runs/feasibility-001/tasks/task-02/result.json
-runs/feasibility-001/final/aggregate.json
-runs/feasibility-001/final/manifest.json
+runs/poc-feasibility-001/request.json
+runs/poc-feasibility-001/tasks/task-00/result.json
+runs/poc-feasibility-001/tasks/task-01/result.json
+runs/poc-feasibility-001/tasks/task-02/result.json
+runs/poc-feasibility-001/final/aggregate.json
+runs/poc-feasibility-001/final/manifest.json
 ```
 
 `aggregate.json` には `sum=3` および `taskCount=3` が記録されます。最終の `manifest.json` は Blob の条件付きアップロードを用いて出力し、重複公開を防ぎます。

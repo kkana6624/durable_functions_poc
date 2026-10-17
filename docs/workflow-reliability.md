@@ -1,10 +1,10 @@
-# 受付・再試行・期限超過の改善
+# ワークフロー信頼性設計 — 受付制御・再試行・タイムアウト処理
 
 更新日: 2026-10-17
 
-本書は、公式ドキュメントおよび利用中のSDKソースコードの調査結果に基づき実装した、ワークフローの受付制御・再試行・期限超過処理およびデプロイ制御の設計書です。
+本書は、公式ドキュメントおよび利用中SDKのソースコード解析に基づき設計・実装した、ワークフローの同時受付排他制御・一時障害リトライ・監視期限超過（タイムアウト）処理およびデプロイ制御の設計仕様書です。
 
-> ※本書に記載の検証内容はローカル環境（Mock / Fake）で確認したものであり、Azure実環境での動作実証については末尾の「実Azureで残る検証」にて今後実施します。
+> **注意:** 本書に記載された検証内容はローカル開発環境（Mock / Fake）で確認したものであり、実Azure環境での動作実証については後述の「4. 実Azureで残る検証」にて段階的に実施します。
 
 ---
 
@@ -13,35 +13,35 @@
 ### 処理の流れ
 
 1. **入力の照合と確定（HTTP Starter）**
-   - HTTP starterは既存インスタンスの入力内容を照合したうえで、`runs/poc-<requestId>/request.json` をBlobの条件付き作成によって確定します。
-   - 同一の `requestId` に対して異なる入力が送信された場合は `409 Conflict` を返します。
-   - 受付確認時に一時的な障害が発生した場合は、`503 Service Unavailable` と `Retry-After` ヘッダーを返します。
-   - 入力内容をBlobに永続化するため、起動前にプロセスが停止したりHTTP応答が失われたりした場合でも、クライアントは同じ入力で安全にリクエストを再送できます。
+   - HTTP Starter は、既存インスタンスの入力内容を照合した上で、Blob Storage の条件付き作成（アトミックな作成）を用いて `runs/poc-<requestId>/request.json` を確定します。
+   - 同一の `requestId` に対して異なる入力内容が送信された場合は、リクエスト競合として `409 Conflict` を返却します。
+   - 受付確認時（Blob や Entity との通信時）に一時的な障害が発生した場合は、`503 Service Unavailable` と `Retry-After` ヘッダーをクライアントへ返却します。
+   - 入力内容をあらかじめ Blob Storage へ永続化することで、オーケストレーション起動前に Functions プロセスが停止したり HTTP 応答がネットワーク上で失われた場合でも、クライアントは同一内容で安全にリクエストを再送できます。
 
-2. **Entityによる起動制御（`WorkflowAdmissionEntity`）**
-   - 同一入力であることが確認できた場合、同じキーを持つ `WorkflowAdmissionEntity` に対して `Start` をsignalします。
-   - HTTP starterが返す `202 Accepted` は「signalを永続キューへ投入し受理したこと」を示します。そのため、Mainオーケストレーションが登録される前に状態照会（GET）を行うと、一時的に `404 Not Found` が返る場合があります。
-   - Entityの操作内では外部I/Oを行わず、未起動の場合にのみMainオーケストレーションの起動Actionと「起動済み」の状態を生成します。再送されたsignalを受信した場合は、保存済みの状態を照合してそのまま終了します。
-   - Entityの状態更新と送信Actionは同一のdurable batchで処理され、障害発生時のメッセージ再配信はStorageプロバイダーによって制御されます（※Azure StorageのQueueとTableをまたぐ単一の物理トランザクションではありません）。
+2. **Durable Entities による起動制御（`WorkflowAdmissionEntity`）**
+   - リクエスト入力の同一性が確認できた場合、`requestId` と同一のキーを持つ `WorkflowAdmissionEntity` に対して `Start` 操作をシグナル送信（`SignalEntityAsync`）します。
+   - HTTP Starter が返却する `202 Accepted` は、「起動シグナルが Durable の永続キューへ正常に投入され、リクエストが受理されたこと」を示します。そのため、Main オーケストレーションのインスタンスが実際に登録・開始される前に状態照会 API（GET）を実行すると、一時的に `404 Not Found` が返却される場合があります。
+   - `WorkflowAdmissionEntity` の操作内では外部 I/O を一切行わず、未起動である場合にのみ Main オーケストレーションの起動 Action と「起動済み」内部状態を生成します。同一リクエストの再送シグナルを受信した場合は、保存済みの状態と照合して追加のアクションを起こさずに正常終了します。
+   - Entity の状態更新と送信 Action は同一の Durable バッチ内で一括処理され、障害発生時のメッセージ再配信は基盤の Storage プロバイダーによって安全に制御されます（※Azure Storage の Queue と Table をまたぐ単一の物理分散トランザクションではない点に留意）。
 
 ### 設計上の判断とSDK仕様の確認
 
-調査の過程で確認したSDKの仕様と、それに基づく設計方針は以下の通りです。
+調査の過程で確認した Durable Functions SDK の仕様と、それに基づく設計方針は以下の通りです。
 
-- **単純な状態確認＋起動の競合**: `GetInstance` の後に `ScheduleNew` を呼ぶだけの実装では、同時受付時に競合が発生します（参考: [公式singleton説明](https://learn.microsoft.com/en-us/azure/durable-task/common/durable-task-singletons)）。
-- **`DedupeStatuses` とBlob Leaseの限界**: SDKの `DedupeStatuses` は利用可能ですが、Azure Storageプロバイダーにおける状態照会と起動キュー投入は原子的ではありません。また、Blob leaseを用いたとしても外部の起動APIに対するfencingにはならず、応答喪失時の完全な対策にはなりません（参考: [Storageプロバイダー実装](https://github.com/Azure/durabletask/blob/main/src/DurableTask.AzureStorage/AzureStorageOrchestrationService.cs)）。
-- **SDK 1.24.1におけるEntityからの起動挙動**: 利用中のSDK 1.24.1では、Entityからのオーケストレーション起動はActionをバッチへ追加する仕組みであり、例外発生時は状態とActionがともにロールバックされます。この経路は `DedupeStatuses` を転送しないため、本実装では `DedupeStatuses` を設定せず、Entity自身の保存状態によって起動を制御しています（参考: [利用版のEntity shim](https://github.com/microsoft/durabletask-dotnet/blob/v1.24.1/src/Worker/Core/Shims/TaskEntityShim.cs)）。
-- **直列処理と重複抑止の組み合わせ**: 上記を踏まえ、Entityの直列処理とランタイム側の起動メッセージ重複抑止を組み合わせて一意性を担保しています（参考: [公式Entity説明](https://learn.microsoft.com/en-us/azure/durable-task/common/durable-task-entities)、[Core Entity dispatcher](https://github.com/Azure/durabletask/blob/main/src/DurableTask.Core/TaskEntityDispatcher.cs)、[Core起動重複処理](https://github.com/Azure/durabletask/blob/main/src/DurableTask.Core/TaskOrchestrationDispatcher.cs)）。
+- **単純な状態確認＋起動における競合リスク**: `GetInstanceAsync` で状態を確認した直後に `ScheduleNewOrchestrationInstanceAsync` を呼び出すナイーブな実装では、同時リクエスト受信時に TOCTOU（Time-of-check to time-of-use）の競合が発生し、重複起動を完全に防ぐことができません（参考: [公式singleton説明](https://learn.microsoft.com/en-us/azure/durable-task/common/durable-task-singletons)）。
+- **`DedupeStatuses` と Blob Lease の限界**: SDK には `DedupeStatuses` オプションが存在しますが、Azure Storage プロバイダーの実装においてインスタンス状態の照会と起動キューへのメッセージ投入はアトミック（原子的）には行われません。また、Blob Lease による排他制御を導入しても、外部からの起動 API 呼び出しに対する完全なフェンシング（Fencing）としては機能せず、HTTP 応答喪失時の再送処理に対する根本解決にはなりません（参考: [Storageプロバイダー実装](https://github.com/Azure/durabletask/blob/main/src/DurableTask.AzureStorage/AzureStorageOrchestrationService.cs)）。
+- **SDK 1.24.1 における Entity からのオーケストレーション起動挙動**: 本プロジェクトで利用している Durable Task .NET SDK 1.24.1 では、Entity からのオーケストレーション起動は内部的に Action をバッチへ追加する仕組みとなっており、処理中に例外が発生した場合は内部状態と Action の双方がロールバックされます。ただし、この経路では `DedupeStatuses` 設定が伝播されない仕様であるため、本設計では `DedupeStatuses` に依存せず、Entity 自身が保持する内部状態によって起動の冪等性を制御しています（参考: [利用版のEntity shim](https://github.com/microsoft/durabletask-dotnet/blob/v1.24.1/src/Worker/Core/Shims/TaskEntityShim.cs)）。
+- **Entity による直列化とランタイム重複抑止の併用**: 上記の特性を踏まえ、同一キーを持つ Entity に対するシグナル処理の直列化保証と、Durable ランタイム内部の起動メッセージ重複抑止機構を組み合わせることで、厳密な単一インスタンス起動（一意性）を担保しています（参考: [公式Entity説明](https://learn.microsoft.com/en-us/azure/durable-task/common/durable-task-entities)、[Core Entity dispatcher](https://github.com/Azure/durabletask/blob/main/src/DurableTask.Core/TaskEntityDispatcher.cs)、[Core起動重複処理](https://github.com/Azure/durabletask/blob/main/src/DurableTask.Core/TaskOrchestrationDispatcher.cs)）。
 
 ### 前提条件と運用上の制約
 
-- 入力Blob・Entity状態・Main履歴を保持し、本HTTP API経由でリクエストを受け付けることを前提とします。
-- 以下の操作や構成はサポート対象外です。
-  - 個別のインスタンスや状態のpurge
-  - 管理API等からの同一IDでの直接起動
-  - 旧バージョンのstarterとの同時稼働（旧版からの更新は、既存の処理がすべて終了した後に実施してください）
-  - Entity状態を削除して同一の `requestId` を再利用する清掃手順
-- なお、Entityの利用にあたって追加の同時実行数制限を `host.json` に設定する必要はありません（参考: [host設定](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-host-json-settings)）。
+- 本設計は、入力 Blob・Entity 内部状態・Main オーケストレーション実行履歴を適切に保持し、専用の HTTP API を経由してリクエストを受け付ける運用を前提とします。
+- 以下の運用操作や構成はサポート対象外（非推奨）とします。
+  - 個別のオーケストレーションインスタンスや Entity 状態の任意 purge（パージ）
+  - Durable 管理 API 等から同一インスタンス ID を直接指定した強制起動
+  - 旧バージョンの Starter と新バージョンの Starter の同時稼働（新バージョンへの切り替えは、先行する実行中ワークフローがすべて完了した後に実施）
+  - Entity 内部状態を手動削除して同一の `requestId` を再利用するクリーンアップ運用
+- なお、Entity の利用にあたって追加の同時実行数制限を `host.json` に設定する必要はありません（参考: [host設定](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-host-json-settings)）。
 
 ---
 
@@ -49,37 +49,37 @@
 
 ### 再試行（Retry）の設計
 
-- **Durableレイヤーの再試行**: Activityは一時障害のみを `TransientWorkflowException` へ変換し、Durable retry handlerが「最大3試行」および「共有deadline（監視期限）内であること」を確認します。待機時間はDurable Timerで5秒・10秒です。入力不正、認証・権限エラー、競合、結果不整合などの恒久エラーは再試行しません。
-- **SDKレイヤーの再試行とタイムアウト**: SDK側は再試行1回、1回の通信試行あたりの `NetworkTimeout` は10秒とします。SDKによる再試行とDurableによる再試行の両方が行われるため、総通信試行数が3回とは限りません。
+- **Durableレイヤーの再試行**: Activity 関数は一時障害（ネットワーク瞬断、503、スロットリング等）のみを検知して `TransientWorkflowException` へ変換し、Durable の再試行ハンドラーが「最大3回の試行」かつ「ワークフロー共有の deadline（監視期限）内であること」を確認した上でリトライします。待機時間は Durable Timer により5秒、10秒と設定されます。一方で、入力バリデーション不正、認証・権限エラー（401/403）、リクエスト競合（409）、結果データ不整合などの恒久エラーは一切再試行しません。
+- **SDKレイヤーの再試行とタイムアウト**: Azure SDK 側のクライアント再試行は1回、1回の通信試行あたりの `NetworkTimeout` は10秒に設定します。SDK レイヤーでの再試行と Durable レイヤーでの再試行が階層的に実行されるため、総通信試行数が単純に3回とはならない点に留意します。
 - **例外型の判定とキャンセルトークンの伝播**:
-  - isolated workerの `TaskFailedException` で元の例外型を確認するには、`FailureDetails.IsCausedBy<T>()` を使用します（参考: [公式エラー処理](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-error-handling)）。
-  - `Azure.Core` は通信再試行を使い切ると `AggregateException` を返す場合があるため、内部例外の全件が一時障害の場合のみ再試行します。
-  - `NetworkTimeout` はlinked tokenによる `OperationCanceledException` として返ります。呼び出し元tokenをHTTP受付・Activity・SDK操作まで引き渡し、呼び出し元がcancel済みであれば再試行せず、それ以外のSDK通信cancelを一時障害として扱います。エラーメッセージの文字列判定は使用しません（参考: [SDK RetryPolicy](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Core_1.54.0/sdk/core/Azure.Core/src/Pipeline/RetryPolicy.cs)、[利用系列のResponseBodyPolicy](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Core_1.54.0/sdk/core/Azure.Core/src/Pipeline/Internal/ResponseBodyPolicy.cs)）。
+  - .NET Isolated Worker の `TaskFailedException` から基底の例外型を判定する際は、`FailureDetails.IsCausedBy<T>()` を使用します（参考: [公式エラー処理](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-error-handling)）。
+  - `Azure.Core` は通信リトライを使い切った際に `AggregateException` をラップして返す場合があるため、含まれる内部例外の全件が一時障害に該当する場合にのみ再試行対象と判定します。
+  - `NetworkTimeout` はリンクされたトークンによる `OperationCanceledException` として発生します。呼び出し元の `CancellationToken` を HTTP 受付から Activity、SDK 操作まで正しく引き渡し、呼び出し元自身がキャンセルされた場合は再試行を中止し、それ以外の SDK 通信タイムアウトによるキャンセルのみを一時障害として扱います。エラーメッセージの文字列マッチングによる判定は使用しません（参考: [SDK RetryPolicy](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Core_1.54.0/sdk/core/Azure.Core/src/Pipeline/RetryPolicy.cs)、[利用系列のResponseBodyPolicy](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Core_1.54.0/sdk/core/Azure.Core/src/Pipeline/Internal/ResponseBodyPolicy.cs)）。
 
 ### 監視期限とBatch Jobの停止処理
 
-- **期限の確定と監視**: 監視期限は分類処理の完了後に親オーケストレーターで確定し、子オーケストレーターへ渡します。Task作成・状態照会Activityとdeadline Timerを競合させ、期限到達時点で親へ `TimedOut` を返します。
-- **Activity実行中の競合対策**: Durable Timerは実行中のActivityを物理キャンセルしないため、Jobを終端化（Terminate）することで、遅れて実行されるTask追加をBatch側で拒否させます。ただし、Job作成Activityの待機を途中で放棄すると、停止処理の後にJobが新規作成される時間窓が生じるため、Job作成Activityだけは完了を待ちます（参考: [公式Timer説明](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-timers)）。
-- **Terminate要求と停止確認**: 期限超過時は対象JobのID・Pool・fingerprintを照合してTerminateを要求し、5秒間隔・最大2分でJobが `Completed` 状態になることを確認します。すでに完了済み・停止中のJobに対する再要求は冪等に扱います。万が一停止確認に失敗した場合も、ワークフローの状態を成功にはせず、`customStatus.termination` と `terminationError` を残し、Manifestを公開しません。なお、未開始のTaskはJob停止後も `Active` のまま残るため、全Taskの `Completed` 待ちは停止確認には使用しません（参考: [Terminate Job API](https://learn.microsoft.com/en-us/rest/api/batchservice/jobs/terminate-job?view=rest-batchservice-2025-06-01)、[Batchエラーコード](https://learn.microsoft.com/en-us/rest/api/batchservice/batch-status-and-error-codes)）。
-- **Batch側の安全網（`MaxWallClockTime`）**: Functionsホスト停止中の安全網として、Batch Job自体に `MaxWallClockTime` を設定します。これはJob作成時点からの起算であり、オーケストレーション側の共有期限とは異なります。また、Job release等を含む停止処理の時間も要するため、期限時刻ちょうどでの物理停止やワークフロー全体の厳密な実時間上限を保証するものではありません。なお、利用者によるDurableキャンセル操作のBatchへの連鎖は今回の実装範囲外です。
+- **期限の確定と監視**: 監視期限（deadline）は、ワークロード分類処理の完了後に親オーケストレーターで確定し、子オーケストレーターへ伝播します。各子オーケストレーターでは Task 投入・状態照会 Activity と deadline Timer を競合させ、期限到達時点で親オーケストレーターへ `TimedOut` ステータスを返却します。
+- **Activity実行中の競合対策**: Durable Timer は実行中の Activity を物理的に中断・キャンセルできないため、期限超過時は Batch Job を終端化（Terminate）することで、遅れて完了した Activity からの追加 Task 投入を Batch サービス側で拒否させます。ただし、Job 作成 Activity の待機を途中で打ち切ると、停止処理の直後に新規 Job が作成されてしまう時間窓（レースコンディション）が生じるため、Job 作成 Activity だけは必ず完了を待機します（参考: [公式Timer説明](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-timers)）。
+- **Terminate要求と停止確認**: 期限超過時は対象 Job の ID・Pool・fingerprint を照合した上で Terminate を要求し、5秒間隔・最大2分間のポーリングで Job が `Completed` 状態へ遷移したことを確認します。すでに完了済みまたは停止処理中の Job に対する再要求は冪等に処理されます。万一停止確認がタイムアウト等で失敗した場合も、ワークフローの状態を成功とは見なさず、`customStatus.termination` と `terminationError` に異常を記録し、最終成果物（manifest.json）の公開を阻止します。なお、未開始の Task は Job 停止後も `Active` のまま残存するため、全 Task の `Completed` 待機を Job 停止の確認条件には使用しません（参考: [Terminate Job API](https://learn.microsoft.com/en-us/rest/api/batchservice/jobs/terminate-job?view=rest-batchservice-2025-06-01)、[Batchエラーコード](https://learn.microsoft.com/en-us/rest/api/batchservice/batch-status-and-error-codes)）。
+- **Batch側の安全網（`MaxWallClockTime`）**: Functions ホストが突然停止した場合の最終安全網として、Batch Job 自身に `MaxWallClockTime` を設定します。これは Job 作成時点からの起算であり、Functions オーケストレーション側の共有 deadline とは起点が異なります。また、Job Release タスク等の停止シーケンスにも時間を要するため、期限時刻ちょうどでの物理停止やワークフロー全体の実時間上限を厳密に保証するものではありません。なお、ユーザーによる Durable ワークフローの手動キャンセル操作を Batch 側へ連鎖させる処理は本フェーズの実装範囲外です。
 
 ---
 
 ## 3. 配置制御（デプロイ・Smokeテスト）
 
-- **Terraform BackendのPlanOnly制御**: `Backend.Create=true` での `PlanOnly` 実行時は、存在確認が成功してbackend作成済みと判明すれば、bootstrapを適用せずmainの計画（plan）へ進みます。未作成であればbootstrapの計画のみを実行します。存在確認時のエラーを「不存在」として握りつぶすことはしません（参考: [AzureRM backend](https://developer.hashicorp.com/terraform/language/backend/azurerm)、[container exists](https://learn.microsoft.com/en-us/cli/azure/storage/container?view=azure-cli-latest)）。
-- **既存Batch Pool（0台構成）への対応**: 既存Poolは稼働ノードが0台でも配置可能です。ノードの存在をTask投入の前提条件にはせず、SmokeテストではTaskを投入して完了を待ちます。既存Poolの自動拡張（autoscale）設定は変更しません（参考: [Batch自動拡張](https://learn.microsoft.com/en-us/azure/batch/batch-automatic-scaling)）。
-- **新規Batch Poolのノード待機**: 新規Pool作成時は、設定台数分の利用可能ノードが揃うのを待ちます。`odata.nextLink` を辿って全ページを集計し、他ホストや循環する継続URLが返された場合は拒否します（参考: [Node一覧API](https://learn.microsoft.com/en-us/rest/api/batchservice/nodes/list-nodes?view=rest-batchservice-2025-06-01)）。
-- **Functionsの検出と状態判定**: デプロイ後のFunctions検出対象は12件です。状態GETの `404` は「起動待ち」、`401` / `403` は「認証・権限失敗」として扱います（参考: [Durable HTTP API](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-http-api)）。
+- **Terraform BackendのPlanOnly制御**: `Backend.Create=true` での `PlanOnly` 実行時は、リモートステート用 Storage の存在確認が成功して作成済みと判明すれば、bootstrap は適用せず main の計画（plan）へ進みます。未作成であれば bootstrap の計画のみを実行します。存在確認時のエラーを単なる「リソース不存在」として握りつぶすことはしません（参考: [AzureRM backend](https://developer.hashicorp.com/terraform/language/backend/azurerm)、[container exists](https://learn.microsoft.com/en-us/cli/azure/storage/container?view=azure-cli-latest)）。
+- **既存Batch Pool（0台構成）への対応**: 既存 Pool は稼働ノードが0台であってもデプロイおよび Task 投入が可能です。ノードの存在を Task 投入の前提条件とはせず、Smoke テストでは Task を投入した上でノードの起動および Task の完了を待機します。既存 Pool に設定された自動拡張（autoscale）ルールは変更しません（参考: [Batch自動拡張](https://learn.microsoft.com/en-us/azure/batch/batch-automatic-scaling)）。
+- **新規Batch Poolのノード待機**: 新規 Pool を作成する構成では、設定台数分の利用可能ノードが正常にプロビジョニングされるまで待機します。ノード一覧取得時は `odata.nextLink` を辿って全ページを集計し、別ホスト宛てや循環参照となる不正な継続 URL が返された場合は処理を拒否します（参考: [Node一覧API](https://learn.microsoft.com/en-us/rest/api/batchservice/nodes/list-nodes?view=rest-batchservice-2025-06-01)）。
+- **Functionsの検出と状態判定**: デプロイ後に正常稼働を確認すべき Functions の検出対象は計12件です。状態照会 API（GET）における `404` は「インスタンス起動待ち」として上限付きでリトライし、`401` / `403` は「認証・権限エラー」として即座に失敗判定とします（参考: [Durable HTTP API](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-http-api)）。
 
 ---
 
 ## 4. 実Azureで残る検証
 
-ローカルのMockテストでは、アプリケーションの分岐ロジックとAPI呼び出しの組み立てを確認しています。実Blobにおける同時条件付き書き込み、Entityバッチのクラッシュ復旧、実Batchの停止処理や権限エラーの伝播については、以下の実Azure試験にて別途実証します。
+ローカル環境のテスト（Mock / Fake）では、アプリケーションの分岐ロジックや API 呼び出しのシーケンスを確認しています。実 Blob Storage に対するアトミックな条件付き書き込み、Entity バッチ確定中におけるプロセス再起動復旧、実 Batch サービスにおける Job 停止処理や RBAC 権限エラーの伝播については、以下の Azure 実環境試験にて別途実証します。
 
-1. 同一入力の同時POSTおよび異なる入力の同時POSTにおいて、Mainオーケストレーションが1件のみ起動し、入力競合が `409` となること。
-2. 入力Blob作成後・Entity受理前後・Entityバッチ確定前後の各タイミングでhostを停止し、再送と復旧が正常に機能すること。
-3. Task投入・状態照会中の期限到達でJobが `Completed` となり、Manifestが公開されないこと。あわせて停止権限不足時の挙動も確認すること。
-4. host停止中の `MaxWallClockTime` によるJob終端化と、0台autoscale PoolへのSmokeテストが完了すること。
-5. 一時的な障害で再試行が行われ、権限エラー・競合・結果不整合では再試行されないこと。
+1. **同時受付と入力競合**: 同一入力の同時 POST および異なる入力の同時 POST を行い、Main オーケストレーションが厳密に1件のみ起動すること、および入力競合時に正しく `409 Conflict` が返却されること。
+2. **プロセス中断からの復旧**: 入力 Blob 作成後、Entity 受理前後、Entity バッチ確定前後の各タイミングで Functions ホストを強制停止し、リクエストの再送とオーケストレーションの復旧が正常に動作すること。
+3. **監視期限超過と停止処理**: Task 投入中や状態照会中に監視期限（deadline）へ到達した際、対象 Batch Job が確実に `Completed` となり、成果物（manifest.json）が公開されないこと。あわせて、停止権限不足時のフェイルセーフ挙動を確認すること。
+4. **安全網とオートスケール**: Functions ホスト停止状態において Batch の `MaxWallClockTime` による Job 終端化が正しく機能すること、および0台オートスケール Pool に対する Smoke テストが完了すること。
+5. **リトライポリシーの峻別**: 一時的な通信障害に対してのみリトライが行われ、認証・権限エラー、入力競合、データ不整合などの恒久エラーではリトライが実行されないこと。

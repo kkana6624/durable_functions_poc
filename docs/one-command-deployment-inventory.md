@@ -9,7 +9,7 @@
 - `scripts/Test-Deployment.ps1`（リソースの準備完了確認および任意のスモークテスト）
 - `environments/`（環境別の設定ファイル例）
 
-本ドキュメントの洗い出し表には、初期検討時の構成案も含めています。閉域網対応、`UserSubscription` モード、Galleryイメージのビルド工程、CI/OIDC 連携といった条件付き資材は現時点では未実装です。なお、Terraform で Batch リソースの新規作成と既存参照を切り替える変数名は `batch_mode` としています。
+本ドキュメントの一覧表には、初期検討時の構成案も含めて整理しています。閉域網対応、`UserSubscription` モード、Gallery イメージのビルド工程、CI/OIDC 連携といった条件付きリソースは現時点では未実装です。なお、Terraform で Batch リソースの新規作成と既存参照を切り替える変数名は `batch_mode` としています。
 
 ## 目標と管理境界
 
@@ -30,11 +30,11 @@
 | 分類 | 対象 / 主なTerraform資材 | 現状 | 追加・変更内容 |
 |---|---|---|---|
 | 必須 | Resource Group / `azurerm_resource_group` | 既存RGのみ参照 | PoC専用RGの新規作成と既存RGの参照を選択可能にし、`location` を明示する |
-| 必須 | Batch Account / `azurerm_batch_account` | ID/endpoint変数のみ | 新規Account作成、割当方式、Entra認証、公開アクセス設定を構成し、endpoint/IDをFunctionsへ自動連携する |
-| 必須 | Windows Pool / `azurerm_batch_pool` | Pool ID変数のみ | VM size、node-agent SKU、イメージ、専用ノード数、slots、通信方式、resize期限を管理する |
-| 必須 | Windowsイメージ参照 / Poolの`storage_image_reference` | Gallery IDをoutputするだけ | Poolのimage IDへ実際に接続する。Gallery版はversion固定、Marketplace版はpublisher/offer/SKU/versionを指定する |
-| 必須 | Function App / Service Plan | 実装済み | 新規または既存Batchから解決した値をapp settingsへ引き渡し、設定ファイルとの二重定義をなくす |
-| 必須 | Durable・結果Storage / Container | 実装済み | host用のBlob/Queue/Tableと結果格納用containerを維持し、実行主体の初期データアクセス権限を確認する |
+| 必須 | Batch Account / `azurerm_batch_account` | ID/endpoint変数のみ | 新規 Account 作成、割当方式、Entra認証、公開アクセス設定を構成し、endpoint/IDをFunctionsへ自動連携する |
+| 必須 | Windows Pool / `azurerm_batch_pool` | Pool ID変数のみ | VM サイズ、node-agent SKU、イメージ、専用ノード数、slots、通信方式、resize期限を管理する |
+| 必須 | Windowsイメージ参照 / Poolの`storage_image_reference` | Gallery IDの参照出力のみ | Poolのimage IDへ実際に接続する。Gallery版はversion固定、Marketplace版はpublisher/offer/SKU/versionを指定する |
+| 必須 | Function App / Service Plan | 実装済み | 新規または既存Batchから解決した値を App Settings へ引き渡し、設定ファイルとの二重定義をなくす |
+| 必須 | Durable・結果Storage / Container | 実装済み | host用のBlob/Queue/Tableと結果格納用 Container を維持し、実行主体の初期データアクセス権限を確認する |
 | 必須 | Managed Identity / RBAC | Function権限のみ実装済み | FunctionからBatch/Storageへの権限に加え、IaC実行主体によるPool作成・イメージ参照の権限を整理する |
 | 必須 | Insights / Log Analytics | 実装済み | Batchの診断設定を追加してログを集約する。利用可能な診断カテゴリを確認のうえ指定する |
 | 必須 | Terraform state / bootstrap | local state | ワンコマンド実行で再利用できるようstateの保存先を固定する。複数人で共有する場合はremote backendのStorage/Containerと実行主体RBACを別stateで管理する |
@@ -82,10 +82,10 @@ Batch Account と Pool は AzureRM プロバイダーで管理できます。計
 5. 保存済みの plan ファイルを `apply` し、Batch Account endpoint、Pool ID、Function App 名、Blob URI 等を Terraform output から取得する。
 6. RBAC の反映を待機したのち、新規 Pool モードでは指定台数のノードが準備完了になるまでタイムアウト・リトライ・resize error 検出付きで待機する。既存 Pool モードでは Pool の存在と参照権限のみを確認し、稼働ノード数が 0 台でもアプリ配置へ進む（スモークテスト実行時は Task 投入後のオートスケールおよび完了を待機する）。
 7. Entra 認証を用いて Function App へ ZIP パッケージをデプロイし、デプロイ完了と各 Function の認識状態を確認する。
-8. 検証オプション指定時は、単一 Batch Task のスモークテスト → HTTP トリガーによるワークフロー起動 → `manifest.json` の生成および `sum=3` の確認までを実行し、テスト結果をデプロイ結果とは区別して保存する。
+8. 検証オプション（`-Smoke`）指定時は、HTTP トリガーによるワークフロー起動（3 Task）から `manifest.json` の生成および `sum=3` の集約結果確認までを実行し、スモークテスト結果をデプロイ結果とは区別して記録する。
 9. 最後に環境名、state key、成果物ハッシュ、デプロイ先リソースID、実行結果、およびログの出力先を表示する（Function key や管理用URLに含まれるシークレット等は画面表示・ファイル保存ともに抑止する）。
 
-ワンコマンド実行であっても、標準動作では `terraform plan` の内容を確認したうえで `apply` へ進むフローとします。CI 等で無人実行する場合は、事前にレビューされた設定・変更に対して明示的な承認オプションを渡して実行します。途中でエラーが発生した場合は非ゼロの終了コードで停止し、原因調査や再実行ができるよう作成済みリソースはそのまま保持します。また、既存 Pool に対して破壊的なロールバック処理は行いません。
+ワンコマンドデプロイであっても、事前確認を行う場合は `-PlanOnly` オプションにより `terraform plan` の差分を精査したうえで適用へ進む運用が可能です。途中でエラーが発生した場合は非ゼロの終了コードで停止し、原因調査や再実行を容易にするため作成済みリソースはそのまま保持します。また、既存 Pool に対して破壊的なロールバック処理は行いません。
 
 Function App への ZIP 配置は IaC（Terraform）とは別工程のアプリケーションデプロイ処理ですが、同一のデプロイスクリプト内から連続して呼び出せるようにしています。セキュリティ維持のため現在の Basic 認証無効化設定はそのまま維持し、Entra 認証に対応した Azure CLI コマンドまたは SCM ZIP API を使用してデプロイします（参照: [Functions ZIP配置とEntra認証](https://learn.microsoft.com/en-us/azure/azure-functions/deployment-zip-push)）。
 

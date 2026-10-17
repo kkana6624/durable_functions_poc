@@ -1,56 +1,69 @@
 # PoC 検証結果
 
-## 2026-10-17 独立検証runnerの追加
+## 2026-10-17 独立検証ランナーの追加と単体テスト拡充（最新）
 
-`Invoke-PocValidation.ps1` を追加し、配置済み環境への検証を配置処理から分離しました。今回もAzure実接続は未実施です。
-処理の順序、生成物、シナリオ別の判定は[検証runnerの処理フロー](validation-runner-flow.md)を参照してください。
+`Invoke-PocValidation.ps1` を追加し、デプロイ済み環境に対する検証処理をデプロイ実行スクリプトから分離しました。あわせて HTTP レイヤー（`StartWorkflow`）および回復性・受付制御の単体テストを大幅に拡充し、.NET 単体テストは **全 7 テストクラス・91 件すべてが合格（91 Pass / 0 Fail / 0 Skip）** しています。なお、Azure 実環境への実接続試験は引き続き未実施です。
+各処理の順序、生成される成果物、およびシナリオ別の詳細な判定基準については [検証ランナーの処理フロー](validation-runner-flow.md) を参照してください。
 
 | 対象 | ローカル結果 |
 |---|---|
-| runnerオフライン試験 | Pass。正常・分類・期待exit 42・409・20並列の判定、404待機上限、401/403、結果改ざん、停止未確認、秘密除外、途中失敗の要約、終了コード0/1/2、空の試験選択拒否 |
-| HTTP並行送信 | ローカルTCPサーバーで、最初の応答前に20接続を確認。実Azureの同時受付成功を意味しない |
-| fingerprint互換 | 実C# `WorkflowIdentity.Fingerprint` の固定値2件（auto/light、heavy/非ゼロ）と一致 |
-| 既存.NET / Release publish | 54 Pass / 0 Fail / 0 Skip、publish成功 |
-| 既存PowerShell / Terraform | 配置試験3組Pass、Terraform Mock main7件・bootstrap1件Pass |
+| ランナー オフライン試験 (`PocValidation.Tests.ps1`) | Pass。正常系・分類・意図的な exit 42・409 競合・20 並列受付の判定、404 待機上限、401/403 即時失敗、結果改ざん検知、停止未確認のハンドリング、シークレット除外、途中失敗時の要約出力、終了コード（0/1/2）、空の試験選択の拒否を検証 |
+| HTTP 並行送信検証 | Pass。ローカル TCP サーバーを用い、最初のレスポンス返却前に 20 接続が並行確立されることを確認（ローカルでの並行受付確認であり、Azure 実環境での同時受付成功を保証するものではありません） |
+| fingerprint 互換性 | Pass。実 C# 実装の `WorkflowIdentity.Fingerprint` 固定値 2 件（auto/light、heavy/非ゼロ終了）と PowerShell 側の算出値が完全に一致 |
+| .NET 単体テスト / Release publish | **91 Pass / 0 Fail / 0 Skip（全 7 テストクラス合格）**、Release publish 成功 |
+| PowerShell スクリプト試験 | **4 組全 Pass**（Deployment.Common, Test-Deployment, Deploy.Workflow, PocValidation） |
+| Terraform Mock 試験 | **8 件全 Pass**（main 7 件、bootstrap 1 件） |
 
-証跡は `artifacts/runner-validation/powershell-runner-tests.log`、`publish.log`、`regression-summary.txt`。設定ファイル不存在を用いたCLI試験でも終了コード1と秘密を含まない要約を確認しました。Git revisionに加え、追跡ファイルとGit非無視の未追跡ファイルの内容から求める `sourceSha256` で未コミット状態を識別します。配置package hashは配置結果ファイル由来で、実hostの読込バイナリを別途実証した値ではありません。
+試験の証跡ログは `artifacts/runner-validation/powershell-runner-tests.log`、`publish.log`、`regression-summary.txt` に記録されています。設定ファイルが存在しない場合の CLI 挙動試験においても、意図どおり終了コード 1 とシークレット情報を含まない結果要約が出力されることを確認しました。また、Git revision に加え、Git 追跡対象ファイルおよび .gitignore 対象外の未追跡ファイルの内容ハッシュから算出する `sourceSha256` により、未コミットの変更状態を一意に識別します。なお、デプロイパッケージのハッシュ値（package hash）はデプロイ結果ファイルに記録された値であり、Azure 上の実 host が読み込んだバイナリそのものを直接照合した値ではありません。
 
-`admission20` は同一instanceへの収束・期待Task数・完了後再送を観測しますが、現在の管理APIだけでは全世代のMain起動履歴を証明できないため、実runnerは `NotRun / AdmissionObservedButExecutionHistoryUnavailable` を返します。Fakeで履歴を与える試験のPassを実Azureの一回起動保証へ繰り上げません。
+`admission20` シナリオでは、同一インスタンスへの集約、期待される Task 数、および完了後の再送動作を観測します。しかし、現在の Azure Functions / Durable 管理 API のみでは全世代にわたる Main オーケストレーションの起動履歴を完全には証明できないため、検証ランナーは観測値を記録したうえで `NotRun / AdmissionObservedButExecutionHistoryUnavailable` を返します。ローカル Fake 環境で履歴を擬似的に与えたテストの合格をもって、Azure 実環境における「1 度限りの起動保証」が実証されたとはみなしていません。
 
-個人環境は公開endpointで検証を開始する前提とし、VPN/ExpressRouteと共通VNetの境界は[接続設計](network-connectivity-design.md)に記録しました。ネットワークリソースは作成していません。
+個人の検証環境では公開エンドポイントを用いて検証を開始する前提とし、VPN / ExpressRoute 回線と共通 VNet の接続境界については [接続設計](network-connectivity-design.md) に記録しました。現段階では Azure 上のネットワークリソースは作成していません。
 
 > [!NOTE]
 > Azure 実環境への接続値・資格情報が未提供のため、現時点での検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しています。Azure 実環境での動作検証は未実施です。
 
-## 2026-10-17 信頼性改善後の再検証
+## .NET 単体テストの構成と検証項目（全 91 件・7 テストクラス）
 
-信頼性改善を反映した再検証の結果は以下のとおりです（後述の 2026-10-16 時点の 30 件は初版時点の記録です）。
+信頼性改善および HTTP レイヤー／Gateway 検証の追加を経て、.NET 単体テストは 30 件（初版）→ 54 件（信頼性改善時）→ **91 件（現行、全 7 テストクラス）** へと拡充されました。全テストが Fake / Mock を用いてオフラインで実行され、100% 合格しています。
 
-| 対象 | 結果 |
-|---|---|
-| .NET単体テスト | 54 Pass / 0 Fail / 0 Skip。`artifacts/reliability-validation/dotnet-test.log` |
-| Release publish | 成功。`artifacts/reliability-validation/publish.log`、`publish/` |
-| PowerShellオフライン試験 | Deployment.Common / Test-Deployment / Deploy.Workflowの3組成功 |
-| Terraform Mock | main 7件、bootstrap 1件成功 |
+| テストクラス | テスト数 | 主な検証内容 |
+|---|---|---|
+| `IdentityAndCommandTests` | 6 | リクエスト ID / Job ID / Task ID の決定論的導出、PowerShell コマンドラインのエスケープと生成 |
+| `OrchestrationTests` | 3 | 親子オーケストレーションの連携、Timer による待機、兄弟 Task 完了待ち、全件成功時のみ Manifest 公開 |
+| `RequestTests` | 13 | 入力パラメータのバリデーション（TaskCount 1〜3、classification、パストラバーサルや不正文字列の拒否） |
+| `ResilienceTests` | 42 | 一時障害（HTTP 408/429/503・gRPC 障害）の Durable 再試行、監視期限超過時の Batch Job 停止（Terminate）照合・完了確認、Manifest 未公開保証、Blob の条件付き作成（If-None-Match）、Task 競合処理、ファイル欠損検知 |
+| `WorkflowAdmissionTests` | 6 | 同一 `requestId` の同時受付、Durable Entity による起動直列化・重複起動抑止、異なる入力パラメータ時の 409 Conflict 競合検出、Entity 状態再読み込み後の重複排除 |
+| `WorkflowHttpTests` | 13 | HTTP トリガー API の挙動検証（不正 JSON や不正パラメータへの 400 Bad Request、RPC 一時障害時の 503 + Retry-After 応答、正常受付時の 202 Accepted と Location / statusQueryGetUri 返却） |
+| `WorkflowOperationsTests` | 8 | 3 Task 正常実行と集約（sum=3）、分類と待機時間の保持、Task 失敗時の成果物非公開、Activity リプレイ時の既存リソース再利用、集約破損時の Manifest 公開抑止 |
+| **合計** | **91** | **91 Pass / 0 Fail / 0 Skip** |
 
-### 単体テスト（Fake / Mock）での追加検証項目
+### 単体テスト（Fake / Mock）での検証カテゴリ
 
-- **受付・重複起動の抑止**
-  - 同一入力の同時受付
-  - 異なる入力での競合検出（409）
-  - 通知応答が失われた後の再送
-  - 既存インスタンスの再利用
-  - Entity 状態の再読み込み後における重複起動の抑止
-- **一時障害と再試行制御**
-  - 一時障害に対する再試行上限と期限の適用
-  - SDK の複合例外（`AggregateException`）および通信タイムアウトの判定
-  - 呼び出し元によるキャンセルの非再試行扱い
-  - 長時間 Activity 実行中に期限へ到達した場合の挙動
-- **期限超過時の Batch Job 停止制御**
-  - 停止対象 Job の照合
-  - 停止要求の再実行（冪等性）
-  - Job の自然完了との競合処理
+- **受付・重複起動の抑止（Admission & Concurrency Control）**
+  - 同一入力パラメータでの同時リクエスト受付と単一インスタンスへの集約
+  - 異なる入力パラメータによる競合検出（HTTP 409 Conflict）
+  - クライアントへの通知応答喪失後の再送処理
+  - 既存インスタンスの再利用と異なる入力による状態汚染の防止
+  - Durable Entity 状態の再読み込み後における Main オーケストレーション重複起動の抑止
+- **一時障害と再試行制御（Transient Faults & Retry Policies）**
+  - 一時障害（408 / 429 / 503、gRPC `Unavailable` 等）に対する Durable 再試行上限と期限の適用
+  - SDK の複合例外（`AggregateException`）およびネットワークタイムアウトの正確な一時障害判定
+  - 呼び出し元によるキャンセル要求（`CancellationToken`）の非再試行扱いと伝播
+  - 長時間 Activity 実行中に監視期限へ到達した場合の競合制御
+- **期限超過時の Batch Job 停止制御（Deadline & Termination Control）**
+  - 停止対象 Job の Pool ID および fingerprint 照合（他 Job や他 Pool の誤停止防止）
+  - 停止要求の再実行耐性（冪等性）
+  - Job の自然完了と停止処理の競合ハンドリング
   - 停止確認に失敗した場合の Manifest 未公開保証
+- **HTTP レイヤーと入力検証（HTTP API & Request Validation）**
+  - 不正 JSON 構文および不正リクエストパラメータに対する適切なエラー応答（HTTP 400 Bad Request）
+  - gRPC / RPC 一時通信障害時における HTTP 503 Service Unavailable および `Retry-After` ヘッダー付与
+  - 正常受付時における HTTP 202 Accepted および状態照会 URL の返却
+- **Activity リプレイ耐性とデータ整合性（Replay Safety & Data Integrity）**
+  - Activity リプレイ時における既存 Batch Job / Task および Manifest の再利用
+  - 計算結果ファイル（`result.txt`）欠損時の明示的な失敗処理
+  - 集約データ破損時における最終 Manifest 公開の抑止
 
 ### 配置スクリプト・Terraform の追加検証項目（Fake / Mock）
 
@@ -63,17 +76,17 @@
 
 ### Azure 実環境で未検証の項目
 
-以下の項目はローカルの Fake / Mock では再現できないため、実環境での検証が必要です。設計上の根拠と残りの試験項目は[設計と公式資料](workflow-reliability.md)に記載しています。
+以下の項目はローカルの Fake / Mock では再現できないため、Azure 実環境での検証が必要です。設計上の根拠と残りの試験項目は [設計と公式資料](workflow-reliability.md) に記載しています。
 
-- Durable Entity の実 checkpoint 動作と host 中断からの復旧
-- Azure Blob Storage 実サービス上での同時条件付き書き込み
-- 実 Azure Batch 上での Job 停止動作
+- Durable Entity の実 checkpoint 動作と Functions host 中断からの復旧
+- Azure Blob Storage 実サービス上での同時条件付き書き込み（If-None-Match）
+- 実 Azure Batch 上での Job 停止（Terminate）動作およびノード障害時の挙動
 
 ---
 
 ## 初版の記録（2026-10-16）
 
-記録日: 2026-10-16。以下は初版実装時点でのローカル検証結果と、Azure 実環境試験に向けた手順・期待値の記録です。
+記録日: 2026-10-16。以下は初版実装時点でのローカル検証結果と、Azure 実環境試験に向けた手順・期待値の記録です（最新の検証状況はページ上部を参照してください）。
 
 ## 実行環境・証跡
 
@@ -83,7 +96,7 @@
 | .NET SDK | 10.0.402 を作業フォルダー内に導入 |
 | .NET package restore | Function project / solution restore 成功 |
 | .NET build / publish | solution build 0 警告・0 エラー、Release publish 成功。`artifacts/build.log` / `artifacts/publish.log` |
-| .NET unit test | 30 Pass / 0 Fail / 0 Skip、18.731 秒、0 警告。Microsoft.Testing.Platform |
+| .NET unit test | 初版: 30 Pass / 0 Fail / 0 Skip（現行: 91 Pass / 0 Fail / 0 Skip） |
 | Terraform fmt / validate | Terraform 1.14.0 / AzureRM 5.10.0、2026-10-16 実測 Pass |
 | Terraform plan / apply | Not tested: Azure 接続値なし |
 | Azure 実行 instance / Job / Task ID | 未発行 |
@@ -122,7 +135,7 @@ SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` 
 |---|---|---|---|---|
 | Build | `dotnet build DurableBatchPoc.slnx --no-restore` | コンパイル成功 | 0 警告・0 エラー。`artifacts/build.log` | Pass |
 | Publish | `dotnet publish src/Poc.Functions/Poc.Functions.csproj -c Release --no-restore -o artifacts/publish` | デプロイ用成果物生成 | 成功。`artifacts/publish.log` / `artifacts/publish/` | Pass |
-| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 30 Pass / 0 Fail / 0 Skip、18.731 秒。`artifacts/test-summary.txt`（実測要約、生ログではない） | Pass |
+| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 初版: 30 Pass、現行: 91 Pass / 0 Fail / 0 Skip（全 7 テストクラス合格） | Pass |
 | Windows command | ローカル Windows で `cmd` → `powershell.exe` を実行 | 正常 exit 0 / result 1、故意失敗 exit 42 | 正常 exit 0・result.txt=1、失敗 exit 42・result ファイルなし。`artifacts/test-summary.txt` | Pass（ローカルのみ） |
 | Terraform init | `terraform -chdir=infra init -backend=false` | provider の取得成功 | AzureRM v5.10.0 (signed by HashiCorp)、`.terraform.lock.hcl` 生成 | Pass |
 | Terraform fmt | `terraform -chdir=infra fmt -check` | 差分なし、exit 0 | 2026-10-16 実行、標準出力なし、exit 0 | Pass |
@@ -136,10 +149,10 @@ SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` 
 | T06 Mock | Fake で結果ファイル取得失敗 | 明示失敗、manifest なし | `MissingTaskFileIsAnErrorAndPreventsManifest` 成功 | Pass（Mock） |
 | T06 Azure | 実 Batch File API で取得不能 | 明示失敗、manifest なし | 実ノードは未試験 | Not tested |
 | Timeout | 待機より短い期限 | TimedOut、manifestなし、Job停止結果を記録 | Mock成功、実Azure接続なし | Not tested（Azure） |
-| T07 | 同一 requestId の同時 POST | 同入力は同instance、異入力は409、Entityで起動を直列化 | 2026-10-17 Mock成功、実Azure接続なし | Not tested（Azure） |
-| T08 Mock | Activity の副作用後に再呼び出し | 同一 Job / Task / manifest を再利用 | `ReplayedActivitiesReuseResourcesAndManifest` 成功。1 Job / 3 Tasks / 5文書 | Pass（Mock） |
+| T07 | 同一 requestId の同時 POST | 同入力は同instance、異入力は409、Entityで起動を直列化 | Mock 成功（WorkflowAdmissionTests / WorkflowHttpTests）、実 Azure 接続なし | Not tested（Azure） |
+| T08 Mock | Activity の副作用後に再呼び出し | 同一 Job / Task / manifest を再利用 | `WorkflowOperationsTests.ReplayedActivitiesReuseResourcesAndManifest` 成功。1 Job / 3 Tasks / 5文書 | Pass（Mock） |
 | T08 Azure | 実 Activity 副作用後の中断・再実行 | 同一 Job / Task / manifest を再利用 | クラウド replay 未実施 | Not tested |
 | T09 | OutputFiles 直送比較 | Blob への直接永続化 | P1 / 未実装 | Not tested |
 | T10 | Durable / Batch 停止 | 両方の状態整合性 | 期限超過時のJob停止は実装・Mock成功。利用者キャンセル連鎖は未実装 | Not tested（Azure） |
 
-Azure 実環境での試験実施時は、`artifacts/` 配下へ実行日時、設定値（秘密情報を除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、上表の該当行に証跡パスを追記します。なお、`MainOrchestrator` は失敗・タイムアウト時に例外を再スローするため、その場合の `runtimeStatus` は `Failed`、`customStatus.state` は `Failed` または `TimedOut` になります。`runtimeStatus` が `Completed` となるのは `output.state` が `Succeeded` の場合のみで、それ以外は失敗とみなします。最終的な合格判定では、出力された manifest の内容と入力データとの整合性まで確認します。
+Azure 実環境での試験実施時は、`artifacts/` 配下へ実行日時、設定値（認証情報やキー等のシークレットを除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、上表の該当行に証跡パスを追記します。なお、`MainOrchestrator` は失敗・タイムアウト時に例外を再スローするため、その場合の `runtimeStatus` は `Failed`、`customStatus.state` は `Failed` または `TimedOut` になります。`runtimeStatus` が `Completed` となるのは `output.state` が `Succeeded` の場合のみで、それ以外は失敗とみなします。最終的な合格判定では、出力された manifest の内容と入力データとの整合性まで確認します。
