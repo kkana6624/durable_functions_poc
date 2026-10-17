@@ -39,19 +39,19 @@ VM の Public IP を省略しても外部サービスへの送信は必要です
 
 ## 2. 配置・検証経路と権限
 
-ローカルの deploy.ps1 は既存の build / test / publish と Terraform plan / apply を行い、VM 上で Private SCM へ ZIP を配置して Functions の登録を確認します。独立検証の入口は Invoke-PrivatePocValidation.ps1 とし、VM 上で既存 Invoke-PocValidation.ps1 を実行します。deploy の -Smoke は VM 上で3 Task HTTP workflow のみを実行し、単一 Task は独立検証の -Scenarios single で実行します。HTTP 受付を経由して Durable の受付・監視・集約を検証するため、az batch job create で直接投入する方法は通常の workflow 検証には使用しません。
+ローカル端末の `deploy.ps1` は、アプリケーションの `build` / `test` / `publish` と Terraform の `plan` / `apply` を実行したのち、検証 VM 上から Private SCM エンドポイントへ ZIP を配置し、Functions の登録完了を確認します。独立検証の入口は `Invoke-PrivatePocValidation.ps1` とし、検証 VM 上で `Invoke-PocValidation.ps1` を実行します（`deploy.ps1` の `-Smoke` オプションは VM 上で 3 Task の HTTP ワークフローのみを実行し、単一 Task の検証は独立検証ランナーの `-Scenarios single` で実行します）。HTTP 受付を通じた Durable Functions の受付・監視・集約フロー全体を検証するため、`az batch job create` 等で Batch へ直接投入する方法は通常のワークフロー検証には使用しません。
 
-VM への転送と実行は Invoke-PrivateVmOperation.ps1 にまとめます。ローカル端末がスクリプト・ZIP・必要な設定を bundle 化して転送専用 Blob コンテナへアップロードし、VM が Managed Identity で取得します。Run Command 内で PowerShell を実行し、安全な証跡を Blob にアップロードしてローカルへ回収します。転送コンテナ poc-vm-control は匿名アクセス無効の専用コンテナとし、結果コンテナとは分離します。SAS は発行せず、Function key、Durable 管理 URL、アクセストークン、生の機密応答は転送用引数や証跡に含めません。
+検証 VM へのファイル転送と処理実行は `Invoke-PrivateVmOperation.ps1` に集約しています。ローカル端末でスクリプト・ZIP・必要な設定値をバンドル化して転送専用の Blob コンテナ（`poc-vm-control`）へアップロードし、検証 VM が自身の Managed Identity で取得します。VM Run Command 内で PowerShell ワーカー（`PrivateVm.Worker.ps1`）を実行し、機密情報を除外した証跡のみを Blob 経由でローカル端末へ回収します。転送用コンテナ `poc-vm-control` は匿名アクセス無効の専用コンテナとし、計算結果用コンテナ（`poc-results`）とは分離します。SAS トークンは発行せず、Function キー、Durable 管理 URL、アクセストークン、および生の機密応答は転送用引数や証跡ファイルに一切含めません。
 
 | 主体 | 必要な権限 |
 |---|---|
-| デプロイ実行者 | リソース作成、対象スコープの RBAC 割当とカスタムロール定義作成、VM Run Command 操作。転送専用 poc-vm-control コンテナの Storage Blob Data Contributor。validation_operator_principal_id を指定した場合のみその ID へ IaC で付与し、未指定なら事前付与 |
-| VM Managed Identity | Function scope のカスタムロール5操作（sites/read、functions/read、functions/listkeys/action、config/list/action、publish/action）、Batch account scope の Azure Batch Account Reader、Storage scope の Storage Blob Data Reader、poc-vm-control コンテナ scope の Storage Blob Data Contributor |
-| Function Managed Identity | 現行の host Storage / 結果 Blob / Batch 操作権限を維持 |
+| デプロイ実行者 | リソース作成、対象スコープの RBAC 割り当てとカスタムロール定義の作成、VM Run Command の操作権限、および転送専用 `poc-vm-control` コンテナの `Storage Blob Data Contributor`（`validation_operator_principal_id` を指定した場合のみその ID へ IaC で付与し、未指定時は事前に付与） |
+| VM Managed Identity | Function スコープのカスタムロール 6 操作（`sites/read`、`functions/read`、`functions/listkeys/action`、`host/listkeys/action`［再起動復旧検証時の状態照会用、実機試験前に要反映］、`config/list/action`、`publish/action`）、Batch Account スコープの `Azure Batch Account Reader`、Storage スコープの `Storage Blob Data Reader`、および `poc-vm-control` コンテナスコープの `Storage Blob Data Contributor` |
+| Function Managed Identity | 現行の host Storage / 結果 Blob / Batch 操作権限（DTS 選択時は対象 Task Hub の `Durable Task Data Contributor` を追加） |
 
-ローカル checkout から Git revision・ソース fingerprint・package hash を bundle に含め、.git のないゲストにも来歴情報を渡します。ゲストでソースを照合した値や実 host のロード済みバイナリの直接照合値とは区別します。cloud-init 待ちは最大900秒、以後のゲスト操作全体は最大4200秒とし、Action Run Command の90分上限内に収めます。検証の TimeoutSeconds はシナリオの待機上限（60〜3600秒）であり、長時間試験は Scenarios を小分けに実行します。実際の権限付与のスコープとアクションは Terraform のロール定義を正とします。Run Command は VM 上でスクリプトを実行できる強い権限であるため、操作権限の付与先は管理者・検証担当に限定します。VM Identity のログインだけで HTTP トリガーが認証済みになるわけではありません。Function key 取得権限とネットワーク到達性が別途必要です。
+ローカル checkout から Git リビジョン・ソース fingerprint・package hash をバンドルに含めることで、`.git` ディレクトリを持たない検証 VM ゲスト内でも来歴情報を記録できるようにしています（これらは実行時に引き渡した来歴情報であり、ゲスト上でのソース再計算値や Azure ホスト上のロード済みバイナリの直接照合値とは区別します）。cloud-init の準備完了待機は最大 900 秒、以後のゲスト操作全体は最大 4200 秒（70 分）に制限し、Azure VM Run Command の 90 分上限内に収めます。検証ランナーの `TimeoutSeconds` はシナリオ内の待機上限（60〜3600 秒）であり、長時間を要する試験は `-Scenarios` を小分けにして実行します。Run Command は VM 上で任意のスクリプトを実行できる強い権限であるため、操作権限の付与先は管理者・検証担当者に限定してください。また、VM の Managed Identity によるログインだけで Function の HTTP トリガーが自動認証されるわけではなく、Function キーの取得権限と Private Endpoint へのネットワーク到達性が別途必要です。
 
-環境設定の追加入力は validation_vm_ssh_public_key、validation_vm_admin_username、validation_vm_size と、任意の validation_operator_principal_id（nullable GUID）です。operator ID は転送コンテナの Blob Data Contributor 付与先であり、未指定なら自動付与しません。サンプルの GUID は実際の実行者 Object ID へ置換するか、この項目を省略します。SSH は開放しませんが、Azure Linux VM 作成には有効な公開鍵を指定します。サンプル値は実値に置換してください。秘密鍵を設定ファイルや state へ書き込みません。VM SKU・リージョン容量・クォータ、実行者権限、組織ポリシーは実環境適用前に確認します。
+環境設定ファイルへの追加入力項目は `validation_vm_ssh_public_key`、`validation_vm_admin_username`、`validation_vm_size`、および任意の `validation_operator_principal_id`（nullable GUID）です。SSH ポート自体は NSG で遮断しますが、Azure Linux VM のプロビジョニング要件として有効な SSH 公開鍵の指定が必須であるため、サンプル値は必ず実際の公開鍵へ置換してください（秘密鍵は設定ファイルや state に保存しません）。VM SKU・リージョン容量・クォータ・実行者権限・組織ポリシーは実環境への適用前に確認します。
 
 ## 3. 実機検証の完了条件
 

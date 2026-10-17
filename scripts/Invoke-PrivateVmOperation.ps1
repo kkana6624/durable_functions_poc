@@ -19,20 +19,26 @@ function Invoke-PrivateVmOperation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Outputs,
-        [Parameter(Mandatory)][ValidateSet('Deploy','Validate')][string]$Operation,
+        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete')][string]$Operation,
         [Parameter(Mandatory)][string]$EvidenceDirectory,
         [string]$PackagePath,
         [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$PackageSha256='',
         [ValidateRange(60,3600)][int]$TimeoutSeconds=900,
         [ValidateSet('single','three','classification','failure','admission20','conflict','timeout')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
         [switch]$Smoke,
-        [switch]$DedicatedEnvironment
+        [switch]$DedicatedEnvironment,
+        [hashtable]$RecoveryContext=@{}
     )
     foreach ($key in @('subscription_id','resource_group_name','validation_vm_name','vm_control_container_name','storage_account_name','function_app_name','function_app_url','function_private_ip')) {
         if (-not $Outputs.ContainsKey($key) -or [string]::IsNullOrWhiteSpace([string]$Outputs[$key])) { throw "Private VM output '$key' is required; apply the private network infrastructure first." }
     }
     if ($Operation -eq 'Deploy' -and (-not $PackagePath -or -not (Test-Path -LiteralPath $PackagePath -PathType Leaf))) { throw 'Deploy requires a Function ZIP package.' }
     if ($Operation -eq 'Validate' -and $Scenarios.Count -eq 0) { throw 'Select at least one scenario.' }
+    if ($Operation -in @('RecoveryStart','RecoveryComplete')) {
+        . (Join-Path $PSScriptRoot 'Recovery.Context.ps1')
+        $phase=if ($Operation -eq 'RecoveryStart') { 'Start' } else { 'Complete' }
+        $RecoveryContext=Assert-PocRecoveryContext -Phase $phase -Context $RecoveryContext
+    }
     $script:DeploymentSubscriptionId=$Outputs.subscription_id
     $id=[Guid]::NewGuid().ToString('N')
     $work=Join-Path ([IO.Path]::GetTempPath()) "poc-vm-$id"
@@ -43,7 +49,12 @@ function Invoke-PrivateVmOperation {
         foreach ($file in @('Deployment.Common.ps1','Validation.Assertions.ps1','Test-Deployment.ps1','Invoke-PocValidation.ps1','PrivateVm.Worker.ps1')) {
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $bundle
         }
+        if ($Operation -in @('RecoveryStart','RecoveryComplete')) {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-PocRecoveryValidation.ps1') -Destination $bundle
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Recovery.Context.ps1') -Destination $bundle
+        }
         $request=@{ operation=$Operation; outputs=$Outputs; timeout_seconds=$TimeoutSeconds; scenarios=@($Scenarios); smoke=[bool]$Smoke; dedicated_environment=[bool]$DedicatedEnvironment; operation_id=$id; package_sha256=$PackageSha256 }
+        if ($Operation -in @('RecoveryStart','RecoveryComplete')) { $request.recovery_context=$RecoveryContext }
         # Preserve the source identity on the initiating host. The guest executes a
         # bundle without .git and must not mislabel that bundle as a Git checkout.
         $repository=Split-Path $PSScriptRoot -Parent
@@ -134,7 +145,7 @@ echo 'Private VM operation completed; sanitized results are in the control conta
             if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','function_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
             $failureStage=[string]$result.failure_stage
         }
-        if ($Operation -eq 'Validate' -and $result.summary_available) {
+        if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete') -and $result.summary_available) {
             foreach ($name in @('summary.json','summary.txt')) {
                 $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',(Join-Path $EvidenceDirectory $name),'--overwrite','true','--auth-mode','login','--no-progress')
             }

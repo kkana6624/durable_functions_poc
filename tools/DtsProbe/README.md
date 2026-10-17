@@ -20,6 +20,25 @@ Exit 2 means no instance was found, and exit 1 means invalid arguments or lookup
 Only HTTPS endpoints under `.durabletask.io` are accepted; the tool is for Azure
 public cloud and does not connect to the emulator.
 
+Add `--history true` to query the retained history returned for that instance ID.
+The optional `historyObservation` contains event and lifecycle event counts only.
+History event payloads, names, inputs, outputs and failure text are never printed.
+The metadata and history reads share one 60-second timeout and are not an atomic
+snapshot; query after completion when comparing them.
+
+`scope=ReturnedInstanceHistoryOnly` and `allGenerationsObserved=false` are explicit
+limits, including when `executionStartedCount=1`. The pinned .NET SDK history API
+accepts an instance ID without an execution ID selector or an enumeration of prior
+execution IDs. This observation cannot prove that an earlier generation was never
+started, replaced, continued or purged, and must not upgrade admission20 to Pass.
+See the [pinned client implementation](https://github.com/microsoft/durabletask-dotnet/blob/v1.26.0/src/Client/Grpc/GrpcDurableTaskClient.cs).
+
+Local aggregate and payload exclusion tests:
+
+```powershell
+dotnet test --project tests/DtsProbe.Tests/DtsProbe.Tests.csproj
+```
+
 Client setup follows the [official .NET sample](https://github.com/Azure-Samples/Durable-Task-Scheduler/blob/main/samples/durable-task-sdks/dotnet/FunctionChaining/Client/Program.cs).
 The pinned [Microsoft client package](https://www.nuget.org/packages/Microsoft.DurableTask.Client.AzureManaged/1.26.0)
 is independent of the Function App's backend package version.

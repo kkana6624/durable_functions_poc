@@ -159,12 +159,14 @@ resource "azurerm_linux_virtual_machine" "validation" {
 resource "azurerm_role_definition" "validation_function" {
   name        = "${local.prefix}-validation-function"
   scope       = "/subscriptions/${var.subscription_id}/resourceGroups/${local.resource_group_name}"
-  description = "Read Function readiness/settings, obtain starter key and publish the PoC package."
+  description = "Read Function readiness/settings and validation keys, and publish the PoC package."
   permissions {
     actions = [
       "Microsoft.Web/sites/read",
       "Microsoft.Web/sites/functions/read",
       "Microsoft.Web/sites/functions/listkeys/action",
+      # Recovery observation reconstructs the Durable status URI only in guest memory.
+      "Microsoft.Web/sites/host/listkeys/action",
       "Microsoft.Web/sites/config/list/action",
       "Microsoft.Web/sites/publish/action",
     ]

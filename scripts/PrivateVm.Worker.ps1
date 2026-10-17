@@ -138,6 +138,21 @@ exit $LASTEXITCODE
         foreach ($file in @('summary.json','summary.txt')) {
             $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',(Join-Path $evidence $file),'--auth-mode','login','--overwrite','false','--no-progress')
         }
+    } elseif ($request.operation -in @('RecoveryStart','RecoveryComplete')) {
+        $stage='validation_runner'
+        . (Join-Path $PSScriptRoot 'Invoke-PocRecoveryValidation.ps1')
+        $phase=if ($request.operation -eq 'RecoveryStart') { 'Start' } else { 'Complete' }
+        $summary=Invoke-PocRecoveryGuest -Outputs $outputs -Phase $phase -Context (ConvertTo-DeploymentHashtable $request.recovery_context) -EvidenceDirectory $evidence -TimeoutSeconds ([int]$request.timeout_seconds)
+        $result.exit_code=[int]$summary.ExitCode
+        if ($result.exit_code -notin @(0,1,2)) { $result.exit_code=1 }
+        if ($result.exit_code -eq 1) { $result.failure_stage='validation_runner' }
+        $stage='validation_summary'
+        $result.summary_available=(Test-Path -LiteralPath (Join-Path $evidence 'summary.json')) -and (Test-Path -LiteralPath (Join-Path $evidence 'summary.txt'))
+        if (-not $result.summary_available) { throw 'Missing sanitized recovery summary.' }
+        $stage='summary_upload'
+        foreach ($file in @('summary.json','summary.txt')) {
+            $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',(Join-Path $evidence $file),'--auth-mode','login','--overwrite','false','--no-progress')
+        }
     } else { $stage='operation'; throw 'Unknown private VM operation.' }
     $result.error_code=$(if ($result.exit_code -eq 1) { 'ValidationFailed' } else { $null })
 } catch {

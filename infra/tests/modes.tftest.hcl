@@ -286,6 +286,10 @@ run "private_function_and_validation_vm" {
     error_message = "VM identity must have scoped publishing/read rights and write only to the private control container."
   }
   assert {
+    condition     = contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/host/listkeys/action") && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/restart/action") && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/start/action") && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "*")
+    error_message = "Recovery observation may read host keys at Function scope but must not grant the VM restart/start or wildcard management rights."
+  }
+  assert {
     condition     = azurerm_linux_virtual_machine.validation.source_image_reference[0].publisher == "RedHat" && azurerm_linux_virtual_machine.validation.source_image_reference[0].offer == "RHEL" && azurerm_linux_virtual_machine.validation.source_image_reference[0].sku == "9-lvm-gen2" && strcontains(base64decode(azurerm_linux_virtual_machine.validation.custom_data), "packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm") && strcontains(base64decode(azurerm_linux_virtual_machine.validation.custom_data), "dnf install -y azure-cli powershell") && strcontains(base64decode(azurerm_linux_virtual_machine.validation.custom_data), "poc-tools-ready") && output.deployment.vm_control_container_name == "poc-vm-control"
     error_message = "RHEL 9 Gen2 VM cloud-init must install official Microsoft RPM tools and expose the completion marker."
   }

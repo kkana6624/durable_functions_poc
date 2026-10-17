@@ -4,10 +4,11 @@ using Microsoft.DurableTask.Client;
 using Microsoft.DurableTask.Client.AzureManaged;
 using Microsoft.Extensions.DependencyInjection;
 using Grpc.Core;
+using DtsProbe;
 
 if (args is ["--help"])
 {
-    Console.WriteLine("DtsProbe --endpoint https://<scheduler>.durabletask.io --task-hub <hub> --instance-id <id>");
+    Console.WriteLine("DtsProbe --endpoint https://<scheduler>.durabletask.io --task-hub <hub> --instance-id <id> [--history true|false]");
     Console.WriteLine("Read-only metadata probe using DefaultAzure authentication. Exit: 0 found, 2 not found, 1 error.");
     return 0;
 }
@@ -17,11 +18,13 @@ try
     var options = new Dictionary<string, string>(StringComparer.Ordinal);
     for (int i = 0; i < args.Length; i += 2)
     {
-        if (i + 1 >= args.Length || args[i] is not ("--endpoint" or "--task-hub" or "--instance-id") ||
+        if (i + 1 >= args.Length || args[i] is not ("--endpoint" or "--task-hub" or "--instance-id" or "--history") ||
             !options.TryAdd(args[i], args[i + 1]))
             throw new ArgumentException();
     }
-    if (options.Count != 3 || !Uri.TryCreate(options["--endpoint"], UriKind.Absolute, out var endpoint) ||
+    if (!options.ContainsKey("--endpoint") || !options.ContainsKey("--task-hub") || !options.ContainsKey("--instance-id") ||
+        (options.TryGetValue("--history", out var historyOption) && historyOption is not ("true" or "false")) ||
+        !Uri.TryCreate(options["--endpoint"], UriKind.Absolute, out var endpoint) ||
         endpoint.Scheme != Uri.UriSchemeHttps || endpoint.Port != 443 || endpoint.UserInfo.Length != 0 ||
         endpoint.Query.Length != 0 || endpoint.Fragment.Length != 0 || endpoint.AbsolutePath != "/" ||
         !endpoint.Host.EndsWith(".durabletask.io", StringComparison.OrdinalIgnoreCase) ||
@@ -43,6 +46,14 @@ try
         Console.WriteLine("{\"error\":\"InstanceNotFound\"}");
         return 2;
     }
+    HistoryObservation? historyObservation = null;
+    if (options.GetValueOrDefault("--history") == "true")
+    {
+        // The SDK query has no execution ID selector or all-generations enumeration.
+        // Never serialize history events: they include inputs, outputs and failures.
+        var history = await client.GetOrchestrationHistoryAsync(options["--instance-id"], timeout.Token);
+        historyObservation = HistoryObservation.FromEvents(history);
+    }
     Console.WriteLine(JsonSerializer.Serialize(new
     {
         instanceId = instance.InstanceId,
@@ -50,6 +61,7 @@ try
         runtimeStatus = instance.RuntimeStatus.ToString(),
         createdAt = instance.CreatedAt,
         lastUpdatedAt = instance.LastUpdatedAt,
+        historyObservation,
     }));
     return 0;
 }

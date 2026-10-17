@@ -2,13 +2,12 @@
 
 作成日: 2026-10-17
 
-追加 PoC の [Durable Task Scheduler](durable-task-scheduler-poc.md) を別環境へ配置し、MI 接続、12 Functions の登録、3 Task smoke（sum=3）、single / three / classification / failure / conflict の5件 Pass を確認しました。admission20 は全世代の起動履歴取得の制限による NotRun で、summary 終了コード2です。SDK の DTS データプレーン直接照会でも smoke インスタンスの `MainOrchestrator / Completed` を確認しました。既存 B1 を読み取り専用で共用し、既存 Azure Storage Function の設定・保存先は変更せず、DTS 用の Function・Storage・hub・state を分離しています。CPU・メモリの共有による性能影響は別途評価します。provider 間の履歴・Entity 状態は移行しません。
+- **信頼性検証資材の追加（ローカル実装済み・実機未実行）**: Function App 再起動復旧ランナー（`scripts/Invoke-PocRecoveryValidation.ps1`）、`timeout` シナリオにおける Batch Job の期限制約（`MaxWallClockTime`）照合、および `tools/DtsProbe` による DTS 返却履歴のイベント件数集計を追加しました（手順と証明範囲の詳細は [信頼性の追加検証](reliability-validation.md) を参照）。今回の更新はローカル実装および単体・Fake 試験までであり、Azure 実機上での再起動復旧・期限停止試験は今後の残作業です（実機実行前に、検証 VM の Function スコープ用ロールへ host key 読み取り権限を反映する必要があります）。なお、DTS 履歴集計でも過去の全世代にわたる起動一意性は証明できないため、`admission20` シナリオの `NotRun` 扱いは継続します。
+- **Durable Task Scheduler（DTS）環境の実機検証完了**: 追加 PoC である [Durable Task Scheduler](durable-task-scheduler-poc.md) を別環境（`dts-poc`）へ配置し、Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、および標準検証シナリオ 5 件（`single` / `three` / `classification` / `failure` / `conflict`）の Pass を確認しました（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。あわせて、SDK による DTS データプレーン直接照会でもスモークインスタンスの `MainOrchestrator / Completed` を確認済みです。本環境は既存の Linux B1 Plan を読み取り専用で共用しつつ、Function App・Storage・Task Hub・Terraform state を既存環境から分離しています（バックエンド間での履歴・Entity 状態の移行は行いません）。
+- **Azure Storage バックエンド環境の実機検証完了**: 従来の Azure Storage バックエンド環境においても、Spot コア枠 2 への増枠後にインフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、12 個の Functions 登録、および 3 Task の投入・結果回収・`Sum=3` を実証し、標準 6 シナリオ（5 件 Pass・`admission20` NotRun）まで完了しています。最新のローカル検証（.NET 単体テスト 93 件、Terraform main Mock 27 件 + bootstrap 1 件、`fmt` / `validate`、PowerShell オフライン試験）と各バックエンドの実機検証結果は [検証結果](test-results.md) に分離して記録しています。
+- **今後の実機検証とSpotノードの制限**: 今後は監視期限停止、Functions ホスト再起動復旧、および Spot 回収復旧の未実証項目を個別に検証します。構成を変更する際は既存の remote state を用いて再 `plan` を実行し、古い保存 `plan` は使用しません。なお、クォータ承認済みであっても Spot ノードの空き容量や継続稼働は保証されず、現行のノードローカル結果回収方式では回収前にノードが失われると結果を取得できない制限があります（Task から Blob への直接永続化は [IaC 設計](one-command-deployment-inventory.md) を参照）。
 
-Azure Storage バックエンドでも、Spot コア枠2への増枠後にインフラ配置、RHEL 9 VM の初期設定、Private SCM 配置、12 Functions の登録、3 Task の投入・結果回収・sum=3 を実証しました。標準6シナリオは5件 Pass・admission20 NotRun で完了しています。DTS / 既存 Plan 参照 / observer 追加後の最新ローカル検証は Terraform main Mock27件・fmt・validate 成功です。.NET 単体テスト91件・Release publish と各バックエンドの実機結果は [検証結果](test-results.md) に分けて記録します。
-
-> **注意:** 本書はAzure実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake/Mock）による検証結果と、Azure実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。なお、Function の受信閉域化と検証 VM は今回の実装範囲です。Storage / Batch の全面閉域化、利用者向け認証付きAPI、および実C++ファイル入出力は後続フェーズです。
-
-**直近の確認と後続検証**: Spot 1台・専用0台と通常 RHEL 検証 VM を配置済みです。標準6シナリオの5件 Pass・admission20 NotRun を確認しました。次は期限停止、host 再起動復旧、Spot 回収復旧の未実証部分を個別に検証します。配置を変更する場合は既存 state で再 plan し、古い保存 plan は使用しません。クォータ内でも Spot の容量・継続稼働は保証されません。回収前のローカル結果喪失と Task から Blob への直接永続化は [IaC 設計](one-command-deployment-inventory.md) を参照してください。
+> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。また、今回の実装範囲は Function の受信閉域化と検証 VM までであり、Storage / Batch の全面閉域化、利用者向け認証付き API、および実 C++ ファイル入出力は後続フェーズの対象です。
 
 ---
 

@@ -238,6 +238,26 @@ function Invoke-PocScenario {
         $run.runtimeStatus = if ($status.runtimeStatus -in @('Completed','Failed','Terminated','Canceled','Suspended')) { [string]$status.runtimeStatus } else { 'Unknown' }
         $batch = Get-PocBatchObservation -Outputs $Outputs -JobId $jobId
         if ($batch.Job.id -ne $jobId -or $batch.Job.poolInfo.poolId -ne $Outputs.batch_pool_id) { Stop-PocValidation 'BatchJobIdentityMismatch' }
+        if ($Name -eq 'timeout') {
+            # Observe the deployed Batch safety net rather than inferring it from
+            # the workflow configuration. Its clock starts at Job creation.
+            $constraintSeconds=$null
+            try {
+                if ($batch.Job.PSObject.Properties['constraints'] -and $batch.Job.constraints -and
+                    $batch.Job.constraints.PSObject.Properties['maxWallClockTime']) {
+                    $constraintSeconds=[Xml.XmlConvert]::ToTimeSpan([string]$batch.Job.constraints.maxWallClockTime).TotalSeconds
+                }
+            } catch { Stop-PocValidation 'InvalidBatchWallClockConstraint' }
+            if ($null -eq $constraintSeconds -or $constraintSeconds -ne ($settings.TimeoutMinutes*60)) { Stop-PocValidation 'BatchWallClockConstraintMismatch' }
+            $run.batchMaxWallClockSeconds=[int]$constraintSeconds
+            $run.batchTerminationReason='Unobserved'
+            if ($batch.Job.PSObject.Properties['executionInfo'] -and $batch.Job.executionInfo -and
+                $batch.Job.executionInfo.PSObject.Properties['terminateReason']) {
+                # Never copy the arbitrary service string into evidence.
+                $reason=[string]$batch.Job.executionInfo.terminateReason
+                $run.batchTerminationReason=if ($reason -ceq 'MaxWallClockTimeExpiry') { 'MaxWallClockTimeExpiry' } else { 'Other' }
+            }
+        }
         $selected = if ($classification -eq 'auto') { 'light' } else { $classification }
         $expectedFingerprint = Get-PocFingerprint -Request $request -Classification $selected
         $fingerprints = @($batch.Job.metadata | Where-Object { $_.name -eq 'poc-fingerprint' })

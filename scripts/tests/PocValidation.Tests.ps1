@@ -107,7 +107,7 @@ function Invoke-PocValidationHttp {
     $request = $script:current
     $state = 'Succeeded'; $runtime='Completed'
     if ($null -ne $request.failTaskIndex -or $script:mode -eq 'unexpectedFailure') { $state='Failed'; $runtime='Failed' }
-    if ($script:mode -in @('timeout','terminationFailed')) { $state='TimedOut'; $runtime='Failed' }
+    if ($script:mode -in @('timeout','terminationFailed','timeoutNoConstraint','timeoutWrongConstraint','timeoutBadConstraint')) { $state='TimedOut'; $runtime='Failed' }
     return @{ StatusCode=200; Data=[pscustomobject]@{
         runtimeStatus=$runtime; createdTime='2026-10-17T00:00:00Z'; output=[pscustomobject]@{ state=$state; requestId=$request.requestId; jobId=(Get-PocJobId $request.requestId) }
         customStatus=[pscustomobject]@{ state=$state; jobId=(Get-PocJobId $request.requestId); error=$script:secret
@@ -168,9 +168,12 @@ function Get-PocBatchObservation {
     param($Outputs,[string]$JobId)
     $script:batchReads++
     $request=$script:current; $fingerprint=Get-FakeFingerprint $request
-    $job=[pscustomobject]@{ id=$JobId; state=$(if ($script:mode -eq 'timeout') { 'completed' } else { 'active' })
+    $job=[pscustomobject]@{ id=$JobId; state=$(if ($script:mode -like 'timeout*') { 'completed' } else { 'active' })
         poolInfo=[pscustomobject]@{ poolId=$Outputs.batch_pool_id }; metadata=@([pscustomobject]@{ name='poc-fingerprint'; value=$fingerprint })
         constraints=[pscustomobject]@{ maxWallClockTime='PT1M' }; unexpected=$script:secret }
+    if ($script:mode -eq 'timeoutNoConstraint') { $job.constraints=$null }
+    if ($script:mode -eq 'timeoutWrongConstraint') { $job.constraints.maxWallClockTime='PT2M' }
+    if ($script:mode -eq 'timeoutBadConstraint') { $job.constraints.maxWallClockTime=$script:secret }
     $tasks=@(0..($request.taskCount-1) | ForEach-Object {
         $exit=if ($null -ne $request.failTaskIndex -and $_ -eq $request.failTaskIndex) { 42 } else { 0 }
         if ($script:mode -eq 'wrongExit' -and $_ -eq $request.failTaskIndex) { $exit=7 }
@@ -281,7 +284,12 @@ try {
     Assert-True ($script:posts -eq 0) 'Timeout must not submit work without dedicated-environment acknowledgement'
     $null=Invoke-TestCase timeout @('timeout') 2 NotRun -DedicatedEnvironment
     Assert-True ($script:posts -eq 0) 'Timeout must not submit work when runner wait is too short for stop confirmation'
-    $null=Invoke-TestCase timeout @('timeout') 0 Pass -DedicatedEnvironment -Wait 240
+    $timeoutResult=Invoke-TestCase timeout @('timeout') 0 Pass -DedicatedEnvironment -Wait 240
+    Assert-True ($timeoutResult.Scenarios[0].Evidence.runs[0].batchMaxWallClockSeconds -eq 60 -and $timeoutResult.Scenarios[0].Evidence.runs[0].batchTerminationReason -eq 'Unobserved') 'Timeout evidence must observe the Batch constraint without inventing a termination reason'
+    foreach ($constraintMode in @('timeoutNoConstraint','timeoutWrongConstraint','timeoutBadConstraint')) {
+        $constraintResult=Invoke-TestCase $constraintMode @('timeout') 1 Fail -DedicatedEnvironment -Wait 240
+        Assert-True ($constraintResult.Scenarios[0].Reason -in @('BatchWallClockConstraintMismatch','InvalidBatchWallClockConstraint')) 'Missing, different or malformed Batch safety-net constraints must fail'
+    }
     $null=Invoke-TestCase terminationFailed @('timeout') 1 Fail -DedicatedEnvironment -Wait 240
     $mixed=Invoke-TestCase unexpectedFailure @('single','timeout') 1 Fail
     Assert-True ($mixed.Scenarios.Count -eq 2 -and $mixed.Scenarios[1].Status -eq 'NotRun') 'Fail must outrank NotRun and later scenarios must still be recorded'

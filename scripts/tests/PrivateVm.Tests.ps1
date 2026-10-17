@@ -82,7 +82,7 @@ function Invoke-AzJson {
         $script:transportDownloads+=$name
         if ($name -eq 'vm-operation.json') {
             $id=if ($script:transportInvalidId) { 'wrong-id' } else { $script:transportRequest.operation_id }
-            @{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -eq 'Validate');validation=@{Ready=$true} } |
+            @{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -in @('Validate','RecoveryStart','RecoveryComplete'));validation=@{Ready=$true} } |
                 ConvertTo-Json | Set-Content -LiteralPath $file -Encoding UTF8
         } elseif ($name -eq 'summary.json') { '{"status":"NotRun"}' | Set-Content -LiteralPath $file -Encoding UTF8 }
         else { 'NotRun fixture' | Set-Content -LiteralPath $file -Encoding UTF8 }
@@ -137,6 +137,20 @@ try {
     Assert-True ($result.exit_code -eq 2) 'Validate must preserve NotRun exit code 2'
     Assert-True ($script:transportRequest.scenarios.Count -eq 1 -and $script:transportRequest.scenarios[0] -eq 'admission20') 'Selected validation scenarios must reach the VM'
     Assert-True ('summary.json' -in $script:transportDownloads -and 'summary.txt' -in $script:transportDownloads) 'Validate must retrieve both sanitized summaries'
+    $script:transportExit=0
+    $script:transportDownloads=@()
+    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation RecoveryStart -RecoveryContext @{delaySeconds=300} -EvidenceDirectory $evidence
+    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.recovery_context.delaySeconds -eq 300) 'Recovery start must preserve the validated delay context'
+    Assert-True ('summary.json' -in $script:transportDownloads -and 'summary.txt' -in $script:transportDownloads) 'Recovery must download sanitized phase summaries'
+    $requestId='recovery-'+('a'*32)
+    . (Join-Path $PSScriptRoot '../Recovery.Context.ps1')
+    $context=@{request=@{requestId=$requestId; classification='light'; taskCount=1; failTaskIndex=$null; lightDelaySeconds=300; heavyDelaySeconds=3};instanceId=(Get-PocRecoveryIdentity $requestId);createdTime='2026-10-17T12:00:00Z';taskCreationTime='2026-10-17T12:00:01Z';runningObservedUtc='2026-10-17T12:00:03Z';taskStartedUtc='2026-10-17T12:00:02Z'}
+    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation RecoveryComplete -RecoveryContext $context -EvidenceDirectory $evidence
+    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.recovery_context.instanceId -eq $context.instanceId) 'Recovery completion must preserve safe request identity'
+    $callCount=$script:transportCalls.Count
+    $badContext=$context.Clone(); $badContext.statusUri='https://function.example/?code=PRIVATE-FUNCTION-KEY'
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation RecoveryComplete -RecoveryContext $badContext -EvidenceDirectory $evidence } 'InvalidRecoveryContext'
+    Assert-True ($script:transportCalls.Count -eq $callCount) 'Untrusted recovery fields must be rejected before any Azure transport call'
     $script:transportInvalidId=$true
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -EvidenceDirectory $evidence } 'invalid operation result'
     Assert-True (($script:transportCalls -join "`n") -notmatch 'PRIVATE-FUNCTION-KEY|--sas-token|[?&](sig|code)=') 'Transport commands must not carry secrets'

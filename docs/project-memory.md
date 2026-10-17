@@ -1,5 +1,15 @@
 # プロジェクトメモリ
 
+## 2026-10-17 信頼性検証ランナーの追加（ローカル実装）
+
+- **範囲**: 再起動復旧 runner、DTS の現行履歴集計、timeout の Batch 制約照合を追加しました。今回 Azure の設定変更・再配置・Function 再起動・故障試験は行っていません。直下の DTS 基本動作の Azure 成功記録と区別します。変更は未コミットです。
+- **復旧 runner**: `scripts/Invoke-PocRecoveryValidation.ps1` が非公開 Function の1 Task の Running を VM で確認し、操作者の認証で指定 Function を restart、再送なしで同じ instance / Task の完了・作成時刻・fingerprint・Blob 成果物を照合します。対象の明示、専用試験の明示、観測時刻の鮮度確認、finally での start を実装しました。Entity checkpoint の強制中断は証明しません。
+- **権限差分**: 状態確認用の system key をメモリ内で再取得するため、VM の Function スコープのロールに `Microsoft.Web/sites/host/listkeys/action` を追加しました。host key の読み取りを含むため、次の実機試験前に IaC の差分を確認して反映します。VM への restart / start 権限は追加していません。管理 URL・キーをバンドルや Blob に保存しません。
+- **timeout**: 実際の Job の maxWallClockTime が設定と一致することを必須にし、欠落・不正・不一致を Fail とします。既知の停止理由と制約秒数だけを証跡へ追加しました。Function 停止中の Batch 安全網の実証は別の残作業です。
+- **DTS 履歴**: `DtsProbe --history true` で返却履歴のイベント件数を集計します。payload を表示せず、`allGenerationsObserved=false` を明示。確認した SDK / 公開契約では全 executionId の列挙・網羅を保証できないため、admission20 の厳密判定は NotRun を維持します。設計書の一意性を実証済みと読める表現も修正しました。
+- **検証**: Terraform main Mock27件・fmt・validate、.NET93件（既存91 + 履歴集計2件）が成功しました。PowerShell の timeout / VM transport / RecoveryValidation の3組も成功。新 runner は権限不足・古い観測・Task 再作成の拒否、再起動失敗時の復元、秘密非記録、実 CLI 子プロセスの引数保持を Fake で確認しました。手順は [信頼性の追加検証](reliability-validation.md) を参照してください。
+- **次**: IaC の権限差分を反映した後、他のワークフローがない PoC Function で timeout と再起動復旧を個別に実機検証します。全世代起動履歴、host 停止中の Batch 安全網、Spot 回収、実 C++、認証 API、全面閉域化は未完了です。
+
 ## 2026-10-17 DTS の Azure 配置・実接続検証完了
 
 - **最新状態**: `dts-poc` を Japan East の別 RG `poc-durable-scheduler-rg` に配置しました。Consumption Scheduler `poc-dts40481149-dts`、hub `DtsPocHub`、保持30日、新 Function `poc-dts40481149-func`、Storage、RHEL 検証 VM を作成しています。段階適用は4件と32件の新規作成で、変更・削除0件です。remote state は既存とは別の `dts-poc.tfstate` です。

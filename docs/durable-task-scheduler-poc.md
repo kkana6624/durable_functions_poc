@@ -4,97 +4,99 @@
 
 ## 対象と検証状況
 
-Durable Functions の履歴・内部メッセージ・Entity 状態の保存先を、Azure Storage または Durable Task Scheduler（DTS）から選択します。既定は従来の `azureStorage` です。DTS 用の別環境を Azure へ配置し、Managed Identity 接続、12 Functions の登録、3 Task smoke（sum=3）と標準検証の5件 Pass を確認しました。`admission20` は起動履歴取得の制限による NotRun、summary 終了コード2です。SDK で DTS 上の smoke インスタンスも直接照会し、`MainOrchestrator / Completed` を確認しました。既存 Azure Storage 環境の Function 設定・保存先は変更していません。
+本構成では、Durable Functions の実行履歴・内部メッセージ・Durable Entity 状態の保存先（バックエンド）として、従来の **Azure Storage（`azureStorage`、既定）** または **Durable Task Scheduler（`durableTaskScheduler`、DTS）** を選択できます。
 
-Orchestrator、Activity、受付 Entity、Windows Batch の処理は共通です。DTS を選択しても Functions のホスト用 Storage と業務入力・結果 Blob は残します。DTS は Batch のスケジューラを置き換えるものではありません。
+DTS 用の別環境を Azure 上へ配置し、Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、および標準検証シナリオ 5 件の Pass を実機で確認済みです。`admission20`（20 並列同時受付）については、公開 API から全世代の起動履歴を網羅取得できない制限により `NotRun`（summary 終了コード `2`）としています。あわせて、SDK（`tools/DtsProbe`）から DTS 上のスモークインスタンスを直接照会し、`MainOrchestrator / Completed` へ到達していることも確認しました。なお、既存の Azure Storage バックエンド環境の Function App 設定や保存先は一切変更していません。
+
+Orchestrator、Activity、受付用 Durable Entity、および Windows Batch 側の処理コードは両バックエンドで共通です。DTS を選択した場合でも、Functions ホスト自体が使用する Storage と業務用の入力・結果保存 Blob は引き続き使用します。また、**DTS はワークフローの状態管理バックエンドであり、Azure Batch の計算ノードスケジューラを置き換えるものではありません。**
 
 ## Azure 実証結果
 
-Japan East の別 RG `poc-durable-scheduler-rg` に Function `poc-dts40481149-func`、Consumption scheduler `poc-dts40481149-dts`、task hub `DtsPocHub` を配置しました。追加 B1 Plan の枠がないため既存 B1 を読み取り専用で参照し、Function・Storage・hub・Terraform state は分離しました。既存 Plan の設定は変更していませんが、CPU・メモリは共有します。
+Japan East の別リソースグループ `poc-durable-scheduler-rg` に、Function App `poc-dts40481149-func`、Consumption Scheduler `poc-dts40481149-dts`、および Task Hub `DtsPocHub` を配置しました。サブスクリプションの B1 Plan クォータに空きがなかったため既存の Linux B1 Plan を読み取り専用で参照し、Function App・Storage・Task Hub・Terraform state は既存環境から分離しています（既存 Plan の設定自体は変更していませんが、Plan 内の CPU・メモリは共有されます）。
 
-| 確認 | 結果・証跡（Git 管理外） |
+| 確認項目 | 結果・証跡（Git 管理外） |
 |---|---|
-| 配置・3 Task smoke | `Ready=true`、`Smoke=Pass`、`TaskCount=3`、`Sum=3`。`.deploy/dts-poc/20261017-224759-6853/deployment-result.json`（完了 `2026-10-17T13:56:57Z`） |
-| 標準6シナリオ | single / three / classification / failure / conflict は Pass、admission20 は `AdmissionObservedButExecutionHistoryUnavailable` による NotRun。`artifacts/dts-validation/azure-scenarios/summary.txt`、終了コード2（完了 `2026-10-17T14:06:03Z`） |
-| DTS データプレーン直接照会 | `artifacts/dts-validation/live-instance.json`。smoke と同じ `poc-8689eb6004faae579c3e4eae6de22e50310d4ff9` の `MainOrchestrator / Completed` を SDK で取得。配置設定の表示とは別の接続証跡 |
-| ローカル IaC | Terraform main Mock27件、fmt / validate 成功。既存 Plan の参照、observer の hub スコープ読み取り権限も検証 |
+| 配置・3 Task smoke | `Ready=true`、`Smoke=Pass`、`TaskCount=3`、`Sum=3`。証跡: `.deploy/dts-poc/20261017-224759-6853/deployment-result.json`（完了: `2026-10-17T13:56:57Z`） |
+| 標準 6 シナリオ | `single` / `three` / `classification` / `failure` / `conflict` の 5 件が Pass、`admission20` は `AdmissionObservedButExecutionHistoryUnavailable` により `NotRun`。証跡: `artifacts/dts-validation/azure-scenarios/summary.txt`、終了コード `2`（完了: `2026-10-17T14:06:03Z`） |
+| DTS データプレーン直接照会 | 証跡: `artifacts/dts-validation/live-instance.json`。スモークテストと同一のインスタンス `poc-8689eb6004faae579c3e4eae6de22e50310d4ff9` が `MainOrchestrator / Completed` であることを SDK で直接取得（配置設定値の表示とは独立したデータプレーン接続証跡） |
+| ローカル IaC 検証 | Terraform main Mock 27 件、および `fmt` / `validate` が成功。既存 Plan の参照や observer 用の Task Hub スコープ読み取り権限も検証済み |
 
-host 再起動復旧、期限停止、権限・通信障害注入、0台 autoscale、Spot 回収復旧、実 C++ 処理、保持期限経過後の動作は未実証です。admission20 の観測結果を、全世代にわたる厳密な起動一意性の保証には繰り上げません。
+なお、Functions ホストの再起動復旧、監視期限超過（タイムアウト）による停止、権限・通信障害注入、0 台オートスケール、Spot 回収からの復旧、実 C++ バイナリ処理、および履歴保持期限経過後の動作は未実証です。また、`admission20` の観測結果をもって全世代にわたる厳密な起動一意性の保証とは扱いません。
 
 ## 設定と作成するリソース
 
-| 設定 | 内容 |
+| 設定項目 | 内容 |
 |---|---|
 | `durable_backend` | `azureStorage`（既定）または `durableTaskScheduler` |
-| `durable_task_hub_name` | 既定 `PocBatchHub`。DTS のサンプルでは `DtsPocHub` |
-| `existing_service_plan_id` | 既定 `null` で新規 Linux B1 Plan を作成。指定時は同じサブスクリプション・リージョンの既存 Linux Plan を読み取り専用で参照 |
-| DTS SKU | Consumption。実行アクションに応じた従量課金 |
-| 履歴保持 | Scheduler の default retention policy を30日に設定。完了したオーケストレーションの履歴は永続保持されない |
-| 認証 | Function の system-assigned Managed Identity。対象 task hub に `Durable Task Data Contributor` を付与 |
-| 通信 | Function の受信は Private Endpoint を継続。DTS への送信は公開 TLS/gRPC エンドポイントと Entra 認証を使用 |
+| `durable_task_hub_name` | 既定は `PocBatchHub`（DTS 設定例では `DtsPocHub`） |
+| `existing_service_plan_id` | 既定は `null`（新規 Linux B1 Plan を作成）。指定時は同一サブスクリプション・リージョン内の既存 Linux Plan を読み取り専用で参照 |
+| DTS SKU | `Consumption`（実行アクション数に応じた従量課金） |
+| 履歴保持ポリシー | Scheduler の default retention policy を 30 日に設定（完了したオーケストレーションの履歴は永続保持されません） |
+| 認証方式 | Function App の System-assigned Managed Identity（対象 Task Hub に `Durable Task Data Contributor` を付与） |
+| 通信経路 | Function の受信は Private Endpoint（公開アクセス無効）を継続。Function から DTS への送信は公開 TLS/gRPC エンドポイント＋Entra 認証を使用 |
 
-AzureRM 5.10 に scheduler / task hub リソースがないため、固定バージョンの AzAPI で `Microsoft.DurableTask/schedulers`、`taskHubs`、`retentionPolicies` を管理します。API は `2026-02-01` を使用します。Azure Storage モードでは DTS リソース・DTS 権限を作成しません。
+Terraform の AzureRM プロバイダー（5.10.0）には DTS リソースが用意されていないため、バージョン固定した AzAPI プロバイダー（API バージョン `2026-02-01`）を用いて `Microsoft.DurableTask/schedulers`、`taskHubs`、`retentionPolicies` を管理します。`azureStorage` モードを選択した場合は、DTS リソースおよび関連ロール割り当ては一切作成されません。
 
-Functions は `Microsoft.Azure.Functions.Worker.Extensions.DurableTask.AzureManaged` を参照し、DTS 選択時は app settings で host.json の provider を `azureManaged` に上書きします。接続設定は `DURABLE_TASK_SCHEDULER_CONNECTION_STRING` で、形式は次のとおりです。
+Function App 側は `Microsoft.Azure.Functions.Worker.Extensions.DurableTask.AzureManaged` を参照し、DTS 選択時のみ App Settings で `host.json` のストレージプロバイダー設定を `azureManaged` へ上書きします。接続設定 `DURABLE_TASK_SCHEDULER_CONNECTION_STRING` の形式は以下のとおりです。
 
 ```text
 Endpoint=<scheduler endpoint>;TaskHub=<hub name>;Authentication=ManagedIdentity
 ```
 
-この設定にキーや SAS は含めません。検証 VM が DTS へ直接アクセスする権限は付与せず、従来どおり Function の HTTP API を呼び出します。Scheduler の Private Endpoint と Function の送信用 VNet Integration はこの追加の対象外です。
+この設定には共有キーや SAS トークンを含めません。検証 VM には DTS へ直接アクセスする権限を付与せず、従来どおり Function App の HTTP API を経由してワークフローを呼び出します。なお、DTS Scheduler 側の Private Endpoint 化および Function App の送信用 VNet Integration は今回のスコープ外です。
 
 ## Azure 用の別環境を準備する
 
-1. `environments/durable-task-scheduler.example.psd1` を `environments/dts-poc.psd1` にコピーし、subscription、SSH 公開鍵、operator ID、既存 Batch の参照先、state backend を埋めます。
-2. 稼働中の環境と異なる Environment 名・resource group・name suffix を使用します。Function App、入力・結果 Storage、DTS task hub と Terraform state key を分離してください。Batch Pool は既存参照で共有できますが、名前や ID を確認して指定します。
-3. `Microsoft.DurableTask` を登録し、対象リージョンで scheduler が提供されることと Consumption のクォータを確認します。現在の提供リージョンは次で確認できます。
+1. `environments/durable-task-scheduler.example.psd1` を `environments/dts-poc.psd1` にコピーし、サブスクリプション ID、SSH 公開鍵、操作者 Object ID、既存 Batch の参照情報、および Terraform state backend を設定します。
+2. 稼働中の環境とは異なる Environment 名・Resource Group・name suffix を使用し、Function App・入出力 Storage・DTS Task Hub・Terraform state key を既存環境から分離してください（Batch Pool は既存参照モードで共有可能ですが、事前に名前や ID を確認して指定します）。
+3. サブスクリプションで `Microsoft.DurableTask` を登録し、対象リージョンで Scheduler が提供されていること、および Consumption SKU のクォータを確認します。現在の提供リージョンは以下のコマンドで確認できます。
 
 ```powershell
 az provider show --namespace Microsoft.DurableTask --query "resourceTypes[?resourceType=='schedulers'].locations | [0]" --output table
 ```
 
-4. 同じリージョンの Function と DTS を選択し、plan を確認してから配置します。
+4. Function App と同一リージョンの DTS を選択し、`plan` の内容を確認してから配置します。
 
-追加の App Service Plan を作成できない場合は、`existing_service_plan_id` に既存 Plan の完全な ARM ID を指定できます。別 RG の Plan も参照でき、追加 Plan の作成・既存 Plan の設定変更は行いません。例は `/subscriptions/<subscription>/resourceGroups/<plan-rg>/providers/Microsoft.Web/serverFarms/<plan-name>` です。Linux とリージョンの一致を配置前に検証します。
+追加の App Service Plan を作成できない場合は、`existing_service_plan_id` に既存 Linux Plan の完全な ARM ID（例: `/subscriptions/<subscription>/resourceGroups/<plan-rg>/providers/Microsoft.Web/serverFarms/<plan-name>`）を指定することで、別リソースグループの Plan も読み取り専用で参照できます。追加 Plan の作成や既存 Plan の設定変更は行わず、配置前に OS が Linux であることとリージョンの一致を検証します。
 
-共用するのは計算用 Plan だけで、DTS 用の Function App・Storage・task hub・Terraform state は分離します。Plan 内では CPU・メモリを共有するため、既存 Function への性能影響がないことは保証しません。[Dedicated Plan の共有](https://learn.microsoft.com/en-us/azure/azure-functions/dedicated-plan)、[別 RG の Plan 指定](https://learn.microsoft.com/en-us/cli/azure/functionapp#az-functionapp-create) を参照してください。
+共用するのは計算用の App Service Plan のみであり、DTS 用の Function App・Storage・Task Hub・Terraform state は分離します。ただし、Plan 内で CPU・メモリを共有するため、既存の Function App に対する性能影響がないことは保証しません（参考: [Dedicated Plan の共有](https://learn.microsoft.com/en-us/azure/azure-functions/dedicated-plan)、[別 RG の Plan 指定](https://learn.microsoft.com/en-us/cli/azure/functionapp#az-functionapp-create)）。
 
 ```powershell
 ./scripts/deploy.ps1 -Environment dts-poc -ConfigFile ./environments/dts-poc.psd1 -PlanOnly
 ./scripts/deploy.ps1 -Environment dts-poc -ConfigFile ./environments/dts-poc.psd1 -Smoke
 ```
 
-既存ローカル Environment の backend / hub 変更は拒否します。旧 identity ファイルは `azureStorage` / `PocBatchHub` として扱います。この保護はローカルの配置記録に基づくもので、別端末からの直接 Terraform 操作まで防ぐものではありません。`-PlanOnly` は接続先や state backend の存在確認を伴い、backend 未作成時は bootstrap の plan のみで終了します。
+事故防止のため、既存のローカル Environment に対する `durable_backend` や `durable_task_hub_name` の事後変更は拒否します（旧形式の identity ファイルは `azureStorage` / `PocBatchHub` として扱います）。この保護機構はローカルの配置記録に基づくものであり、別端末からの直接の Terraform 操作まで防ぐものではありません。`-PlanOnly` は接続先や state backend の存在確認を伴い、backend 未作成時は bootstrap の plan のみで終了します。
 
 ## DTS の実行履歴を直接確認する
 
-`durable_observer_principal_id` に明示した操作者 Object ID を設定すると、DTS の対象 task hub にだけ `Durable Task Data Reader` を付与します。既定は `null` で権限を追加せず、Azure Storage モードでは指定を拒否します。Function の実行権限と読み取り用の権限は別です。
+`durable_observer_principal_id` に操作者の Object ID を明示設定すると、DTS の対象 Task Hub スコープにのみ `Durable Task Data Reader` ロールを付与します（既定は `null` で権限を追加せず、`azureStorage` モードでは指定を拒否します）。Function App の実行権限と操作者による読み取り用の権限は分離しています。
 
-`tools/DtsProbe` は DTS endpoint / task hub に直接接続し、スモークテストの instance ID を読み取ります。`GetInstanceAsync(..., getInputsAndOutputs:false)` を使い、名前・状態・時刻だけを JSON に出します。キー、接続文字列、入力・出力、生の例外は表示しません。デプロイ結果ファイルの `outputs.durable_scheduler_endpoint` と `task_hub_name`、スモークの `validation.InstanceId` を指定してください。
+補助ツール `tools/DtsProbe` は DTS エンドポイントおよび Task Hub に直接接続し、対象インスタンス ID の状態を読み取ります。`GetInstanceAsync(..., getInputsAndOutputs:false)` を使用し、関数名・状態・時刻のみを JSON 出力します。キー、接続文字列、入出力ペイロード、生の例外は表示しません。デプロイ結果ファイルの `outputs.durable_scheduler_endpoint` と `task_hub_name`、およびスモークテスト等の `validation.InstanceId` を指定して実行してください。
 
 ```powershell
 dotnet run --project tools/DtsProbe -- --endpoint https://YOUR-SCHEDULER.REGION.durabletask.io --task-hub DtsPocHub --instance-id YOUR-INSTANCE-ID
 ```
 
-取得成功は終了コード0ですが、呼び出し側で `runtimeStatus=Completed` と期待する ID / 関数名を確認します。未登録は2、照会失敗は1です。これは設定値の表示とは異なり、DTS データプレーン上の履歴を直接照会する検証です。詳細は [ツール説明](../tools/DtsProbe/README.md) を参照してください。
+取得成功時は終了コード `0` を返しますが、呼び出し側で `runtimeStatus=Completed` と期待するインスタンス ID・関数名を確認してください（未登録は `2`、照会失敗は `1`）。これは構成設定値の表示とは異なり、DTS データプレーン上の実データを直接照会する検証です。また、`--history true` オプションを付与すると保持履歴のイベント件数集計も確認できます（詳細は [ツール説明](../tools/DtsProbe/README.md) および [信頼性の追加検証](reliability-validation.md) を参照してください）。
 
 ## 履歴と requestId の扱い
 
-バックエンド間で既存の実行履歴・Entity 状態を移行する機能はありません。既存 Function の app settings だけを DTS に切り替えても、旧環境の処理は引き継がれません。旧環境は処理完了まで維持し、別環境・新しい requestId で DTS の検証を開始します。
+バックエンド間で既存の実行履歴や Durable Entity 状態を移行する機能はありません。稼働中の Function App の App Settings だけを DTS に切り替えても、旧環境の処理状態は引き継がれません。旧環境は処理完了まで維持したうえで、別環境・新しい `requestId` で DTS の検証を開始してください。
 
-同じ Batch Pool を共有する場合も、過去に使った requestId を別環境で再使用しないでください。Job ID は requestId から決まるため、別バックエンドで同じ ID を使うと過去の Batch Job と衝突します。
+同じ Batch Pool を共有する場合も、過去に使用した `requestId` を別環境で再使用しないでください。Batch の Job ID は `requestId` から決定論的に決まるため、別バックエンドであっても同じ ID を使うと過去の Batch Job と衝突します。
 
-DTS の標準ペイロード上限は1MB、instance ID は最大100文字の printable ASCII です。現 PoC は小さな状態と Blob 参照を渡し、instance ID は44文字のハッシュ形式です。大きな入力・結果を Durable の状態へ直接埋め込む構成にはしません。
+DTS の標準ペイロード上限は 1 MB、インスタンス ID は最大 100 文字の印字可能 ASCII です。本 PoC では小さな状態メタデータと Blob 参照のみを受け渡し、インスタンス ID は 44 文字のハッシュ形式としているため、大容量の入力・結果を Durable の状態へ直接埋め込む構成にはなりません。
 
-Consumption の履歴保持上限は30日です。受付 Blob・Entity 状態・実行履歴の保持は別々に扱い、保持期間後の再送・過去 ID 再利用を保証しません。Entity 状態も30日で確実に消えるという意味ではありません。既存の「全世代の Main 起動履歴を取得できないため admission20 は NotRun」という評価も、この追加のみでは解消しません。
+Consumption SKU の完了履歴保持上限は 30 日です。受付 Blob・Entity 状態・オーケストレーション実行履歴の保持期限はそれぞれ個別に管理されるため、保持期間経過後の再送や過去 ID の再利用は保証しません（また、Entity 状態が 30 日で確実に消去されるという意味でもありません）。既存の「全世代の Main オーケストレーション起動履歴を取得できないため `admission20` は `NotRun` とする」という評価も、この追加のみでは解消しません。
 
 ## ローカル設定例と実接続の確認
 
-`src/Poc.Functions/local.settings.scheduler.json.example` を `local.settings.json` にコピーすると、DTS emulator の `localhost:8080` / task hub `default` を使用できます。Functions host 用に Azurite も必要です。`Authentication=None` はローカル emulator 専用で、Azure 用設定には使用しません。Batch / 結果 Blob の設定は実際の検証先に置き換え、開発者の認証・権限を準備してください。emulator はインメモリのため、停止をまたぐ永続性の実証には使いません。
+`src/Poc.Functions/local.settings.scheduler.json.example` を `local.settings.json` にコピーすると、ローカルの DTS エミュレーター（`localhost:8080` / Task Hub `default`）を使用できます（Functions ホスト用に Azurite も必要です）。`Authentication=None` はローカルエミュレーター専用であり、Azure 用設定には使用しないでください。Batch および結果 Blob の設定は実際の検証先に置き換え、開発者の認証・権限を準備してください。なお、エミュレーターはインメモリ動作のため、プロセス停止をまたぐ永続性の実証には使用できません。
 
-Azure では DTS 配置・MI 接続・12 Functions の登録、単一 / 3 Task・分類・意図的失敗・入力競合を確認済みです。次は host 再起動後の Entity / orchestration 復旧、期限停止、履歴保持の影響を別途確認します。Mock・ビルド・publish の成功と実機の証跡は区別します。
+Azure 実環境では、DTS 配置・Managed Identity 接続・12 個の Functions 登録、および単一 / 3 Task・分類・意図的失敗・入力競合の各シナリオを確認済みです。今後は Functions ホスト再起動後の Entity / オーケストレーション復旧、期限停止、および履歴保持期限の影響を別途確認します。ローカルの Mock・ビルド・publish の成功と、Azure 実機の証跡は明確に区別して管理します。
 
-検証結果の `settings.durableBackend` と `settings.taskHubName` は配置設定の記録であり、DTS サーバーへの実接続を独立に証明する欄ではありません。
+検証結果ファイルの `settings.durableBackend` と `settings.taskHubName` はデプロイ構成設定の記録であり、DTS サーバーへの実接続を独立に証明する欄ではありません。
 
 ## 公式の参照先
 

@@ -1,5 +1,19 @@
 # PoC 検証結果
 
+## 2026-10-17 信頼性の追加実装（ローカル検証）
+
+再起動復旧ランナー、DTS の返却履歴の集計、timeout 時の実 Batch 制約照合を追加しました。今回の Azure 再配置・再起動・障害試験は未実行です。下記の DTS Azure 成功記録は従来の基本シナリオの結果です。
+
+| 対象 | 結果と範囲 |
+|---|---|
+| .NET | solution test 93件 Pass（既存91件と新しい履歴集計2件）。payload 秘匿、開始イベントが複数でも全世代観測を主張しないことを確認 |
+| Terraform | main Mock27件、fmt / validate Pass。VM の host key 読取は Function スコープ、restart / start / wildcard 権限を付与しないことを確認 |
+| timeout runner | Fake 試験 Pass。制約欠落・不一致・不正値を Fail とし、正常時の制約秒数と限定した停止理由を記録。秘密を含む不正値は記録しない |
+| VM transport | Fake 試験 Pass。RecoveryStart / RecoveryComplete のバンドル・summary 回収、Context の不明フィールドを Azure 呼出し前に拒否 |
+| 再起動復旧 runner | Fake 試験 Pass。権限不足で投入前に停止、再 POST なしの完了照会、Task 再作成拒否、古い観測で restart 拒否、restart 失敗時の start、時刻の精度保持、別プロセスからの CLI 引数保持、秘密非記録を確認 |
+
+新 runner の手順・権限反映の前提・証明範囲は [信頼性の追加検証](reliability-validation.md) を参照してください。通常の ARM restart 後の継続確認を、Entity checkpoint 境界の強制 crash や Activity の単一実行保証とは扱いません。DTS の全世代観測制約は残り、admission20 は NotRun のままです。
+
 ## 2026-10-17 DTS の Azure 配置・実接続検証
 
 DTS 用の別環境 `dts-poc` を Japan East / `poc-durable-scheduler-rg` に配置し、実 Azure 上で動作を確認しました。既定は Azure Storage のままで、既存 Azure Storage Function の設定・コードは変更していません。既存 B1 Plan と Batch pool は共有するため、CPU・メモリと処理容量は共有します。emulator は未実行です。以降の RHEL VM の節は Azure Storage バックエンドでの過去の履歴です。
