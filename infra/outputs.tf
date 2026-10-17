@@ -42,6 +42,13 @@ output "deployment" {
     blob_container_name        = azurerm_storage_container.results.name
     blob_endpoint              = azurerm_storage_account.poc.primary_blob_endpoint
     function_principal_id      = azurerm_linux_function_app.poc.identity[0].principal_id
+    service_plan_id            = local.service_plan_id
+    durable_backend            = var.durable_backend
+    task_hub_name              = var.durable_task_hub_name
+    durable_scheduler_id       = local.use_durable_task_scheduler ? azapi_resource.durable_scheduler[0].id : null
+    durable_scheduler_name     = local.use_durable_task_scheduler ? azapi_resource.durable_scheduler[0].name : null
+    durable_scheduler_endpoint = local.use_durable_task_scheduler ? azapi_resource.durable_scheduler[0].output.properties.endpoint : null
+    durable_task_hub_id        = local.use_durable_task_scheduler ? azapi_resource.durable_task_hub[0].id : null
     batch_mode                 = var.batch_mode
     batch_endpoint             = local.batch_endpoint
     batch_pool_id              = local.batch_pool_id

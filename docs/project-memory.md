@@ -1,5 +1,25 @@
 # プロジェクトメモリ
 
+## 2026-10-17 DTS の Azure 配置・実接続検証完了
+
+- **最新状態**: `dts-poc` を Japan East の別 RG `poc-durable-scheduler-rg` に配置しました。Consumption Scheduler `poc-dts40481149-dts`、hub `DtsPocHub`、保持30日、新 Function `poc-dts40481149-func`、Storage、RHEL 検証 VM を作成しています。段階適用は4件と32件の新規作成で、変更・削除0件です。remote state は既存とは別の `dts-poc.tfstate` です。
+- **既存環境との関係**: B1 の追加枠がないため、既存 Linux App Service Plan を参照して共有しています。既存 Azure Storage Function の構成・コードと既存 Batch account / pool は変更していませんが、Plan の CPU・メモリと Batch pool の処理容量は共有します。既存 Plan の参照、新 Function の別 RG 配置、hub スコープの MI Contributor と観測者 Reader を IaC に追加しました。
+- **実 Azure 成功**: Private SCM 配置と12 Functions の登録、公開受信無効、新 RHEL VM からの受付、Windows Batch Spot で3 Task、Blob 結果・manifest の整合性（Sum=3）を確認しました。配置結果は `.deploy/dts-poc/20261017-224759-6853/deployment-result.json` です。
+- **DTS の独立確認**: 読み取り専用 `tools/DtsProbe` から現在の Azure CLI 認証で hub を直接照会し、`poc-8689eb6004faae579c3e4eae6de22e50310d4ff9` が `MainOrchestrator` / `Completed` であることを確認しました。証跡は `artifacts/dts-validation/live-instance.json`。summary の構成値だけによる判定ではありません。
+- **標準シナリオ**: `2026-10-17T14:06:03Z` に single / three / classification / failure / conflict の5件 Pass。admission20 は `AdmissionObservedButExecutionHistoryUnavailable` で NotRun、終了コード2です。Entity 経由の受付は動作しましたが、全世代の起動一意性は未実証です。証跡は `artifacts/dts-validation/azure-scenarios/`、VM の失敗段階・エラーコードは null です。
+- **ローカル検証**: Terraform main Mock27件・fmt・validate、PowerShell5組、.NET91件、Release publish が成功しました。DtsProbe も build 成功。証跡は Git 管理外です。DTS 実装・配置手順・実 Azure 検証結果を同じコミットにまとめます。
+- **残作業**: host 復旧、期限停止、Spot 回収復旧、実 C++ 連携、全世代の起動履歴観測、全面閉域化を継続します。DTS emulator と保持期限後の挙動は未検証です。以下の各節は過去のチェックポイントです。
+
+## 2026-10-17 Durable Task Scheduler 選択対応（ローカル資材）
+
+- **今回の範囲**: `durable_backend='azureStorage'|'durableTaskScheduler'` と `durable_task_hub_name` を追加しました。既定は従来の Azure Storage / PocBatchHub。稼働中の Azure 環境、実設定、remote state は変更していません。下記の Azure 5件 Pass は Azure Storage の記録であり、DTS での成功ではありません。
+- **実装**: AzureManaged 1.10.3 拡張と host.json の既定 provider を整備しました。DTS 選択時のみ AzAPI 2.12.0 / ARM 2026-02-01 で Consumption scheduler・task hub・default retention 30日を作成し、Function MI に hub スコープの Durable Task Data Contributor を付与します。接続は MI、Function 受信は閉域のまま、DTS 送信は公開 TLS/gRPC + Entra 認証です。host Storage と入力・結果 Blob のリソース・権限は残します。
+- **互換性と移行**: provider 間の履歴・Entity 状態移行はできません。既存 Environment の backend/hub 変更と、同じ Function を指す別ローカル Environment の切り替えを拒否します。旧 identity は Azure Storage / PocBatchHub として解釈します。別端末や直接 Terraform 操作まで防ぐものではありません。別 Function・Storage・state、新 requestId で検証します。Consumption の完了履歴保持上限30日を前提とし、保持期限後の再送保証は行いません。
+- **資材**: `environments/durable-task-scheduler.example.psd1`、`src/Poc.Functions/local.settings.scheduler.json.example`、[DTS PoC 手順](durable-task-scheduler-poc.md) を追加しました。summary の durableBackend / taskHubName は構成値であり、実接続の独立した証明ではありません。
+- **ローカル検証**: Terraform main Mock21件・fmt・validate、PowerShell5組、.NET91件、Release build/publish が成功しました。publish と ZIP 内に AzureManaged DLL / host startup 登録があり、既定 Azure Storage、local.settings 除外、POSIX ZIP パスを確認しました。.NET 証跡は `artifacts/dts-validation/`。DTS emulator / Azure DTS は未実行です。
+- **次の作業**: Microsoft.DurableTask の登録・対象リージョン・クォータを確認し、DTS 用の別 Environment を plan/apply して smoke と標準シナリオを実施します。DTS での Entity 受付、host 復旧、保持期限の扱いも個別に確認します。
+
+
 ## 2026-10-17 RHEL 9 VM からの Private Function・3 Task 実証
 
 - **最新状態（以下は過去のチェックポイント）**: Azure 上で Private SCM 配置、12 Functions の登録、VM からの HTTP 受付、Windows Batch Spot ノードでの3 Task 実行、Blob 結果回収・集約まで成功しました。`artifacts/deployment-recovery/rhel-private-deploy/vm-operation.json` は `exit_code=0`、`validation.Ready=true`、`Smoke=Pass`、`TaskCount=3`、`Sum=3` です。完了時刻は `2026-10-17T13:06:18Z`。これは実 Azure の成功記録です。

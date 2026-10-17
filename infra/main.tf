@@ -47,12 +47,28 @@ resource "azurerm_storage_container" "results" {
 }
 
 resource "azurerm_service_plan" "poc" {
+  count               = var.existing_service_plan_id == null ? 1 : 0
   name                = "${local.prefix}-plan"
   resource_group_name = local.resource_group_name
   location            = local.location
   os_type             = "Linux"
   sku_name            = "B1"
   tags                = local.tags
+}
+
+moved {
+  from = azurerm_service_plan.poc
+  to   = azurerm_service_plan.poc[0]
+}
+
+data "azurerm_service_plan" "existing" {
+  count               = var.existing_service_plan_id == null ? 0 : 1
+  name                = try(split("/", var.existing_service_plan_id)[8], "invalid")
+  resource_group_name = try(split("/", var.existing_service_plan_id)[4], "invalid")
+}
+
+locals {
+  service_plan_id = var.existing_service_plan_id == null ? azurerm_service_plan.poc[0].id : data.azurerm_service_plan.existing[0].id
 }
 
 resource "azurerm_log_analytics_workspace" "poc" {
@@ -77,7 +93,7 @@ resource "azurerm_linux_function_app" "poc" {
   name                                           = "${local.prefix}-func"
   resource_group_name                            = local.resource_group_name
   location                                       = local.location
-  service_plan_id                                = azurerm_service_plan.poc.id
+  service_plan_id                                = local.service_plan_id
   storage_account_name                           = azurerm_storage_account.poc.name
   storage_uses_managed_identity                  = true
   content_share_force_disabled                   = true
@@ -88,6 +104,17 @@ resource "azurerm_linux_function_app" "poc" {
   ftp_publish_basic_authentication_enabled       = false
   webdeploy_publish_basic_authentication_enabled = false
   tags                                           = local.tags
+
+  lifecycle {
+    precondition {
+      condition = var.existing_service_plan_id == null ? true : (
+        lower(data.azurerm_service_plan.existing[0].id) == lower(var.existing_service_plan_id) &&
+        data.azurerm_service_plan.existing[0].os_type == "Linux" &&
+        replace(lower(data.azurerm_service_plan.existing[0].location), " ", "") == replace(lower(local.location), " ", "")
+      )
+      error_message = "Existing service plan must match the supplied ID, use Linux, and be in the Function App region."
+    }
+  }
 
   identity { type = "SystemAssigned" }
 
@@ -102,7 +129,7 @@ resource "azurerm_linux_function_app" "poc" {
     }
   }
 
-  app_settings = {
+  app_settings = merge({
     FUNCTIONS_WORKER_RUNTIME        = "dotnet-isolated"
     AzureWebJobsStorage__credential = "managedidentity"
     BATCH_ENDPOINT                  = local.batch_endpoint
@@ -112,7 +139,7 @@ resource "azurerm_linux_function_app" "poc" {
     BATCH_POLL_SECONDS              = tostring(var.batch_poll_seconds)
     WORKFLOW_TIMEOUT_MIN            = tostring(var.workflow_timeout_minutes)
     WEBSITE_RUN_FROM_PACKAGE        = "1"
-  }
+  }, local.durable_app_settings)
 }
 
 # The host requires Blob Data Owner; Durable additionally uses queues and tables.

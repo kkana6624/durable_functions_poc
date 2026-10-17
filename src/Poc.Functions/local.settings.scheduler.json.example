@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "AzureFunctionsJobHost__extensions__durableTask__hubName": "default",
+    "AzureFunctionsJobHost__extensions__durableTask__storageProvider__type": "azureManaged",
+    "AzureFunctionsJobHost__extensions__durableTask__storageProvider__connectionStringName": "DURABLE_TASK_SCHEDULER_CONNECTION_STRING",
+    "DURABLE_TASK_SCHEDULER_CONNECTION_STRING": "Endpoint=http://localhost:8080;TaskHub=default;Authentication=None",
+    "BATCH_ENDPOINT": "https://YOUR-ACCOUNT.YOUR-REGION.batch.azure.com",
+    "BATCH_POOL_ID": "YOUR-EXISTING-WINDOWS-POOL",
+    "BLOB_ENDPOINT": "https://YOUR-STORAGE.blob.core.windows.net",
+    "BLOB_CONTAINER": "poc-results",
+    "BATCH_POLL_SECONDS": "10",
+    "WORKFLOW_TIMEOUT_MIN": "15"
+  }
+}

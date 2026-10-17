@@ -1,6 +1,48 @@
 variable "subscription_id" {
   type = string
 }
+variable "existing_service_plan_id" {
+  type        = string
+  default     = null
+  description = "Optional existing Linux App Service plan in the same subscription and region. Read-only reference; compute is shared with its existing apps."
+  validation {
+    condition = var.existing_service_plan_id == null ? true : (
+      can(regex("(?i)^/subscriptions/[0-9a-f-]{36}/resourceGroups/[^/]+/providers/Microsoft.Web/serverfarms/[^/]+$", var.existing_service_plan_id)) &&
+      try(lower(split("/", var.existing_service_plan_id)[2]) == lower(var.subscription_id), false)
+    )
+    error_message = "Use a full Microsoft.Web/serverfarms resource ID in the deployment subscription, or null to create a plan."
+  }
+}
+variable "durable_backend" {
+  type        = string
+  default     = "azureStorage"
+  description = "Durable persistence backend. Select DTS only in a separate environment; existing orchestration and entity state is not migrated."
+  validation {
+    condition     = contains(["azureStorage", "durableTaskScheduler"], var.durable_backend)
+    error_message = "durable_backend must be azureStorage or durableTaskScheduler."
+  }
+}
+variable "durable_observer_principal_id" {
+  type        = string
+  default     = null
+  description = "Optional explicit Entra object ID granted read-only DTS data access on the selected task hub. Never inferred from deployment or VM operator identities."
+  validation {
+    condition = var.durable_observer_principal_id == null ? true : (
+      var.durable_backend == "durableTaskScheduler" &&
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.durable_observer_principal_id))
+    )
+    error_message = "durable_observer_principal_id requires the DTS backend and an explicit Entra object ID in GUID format, or null to grant no observer access."
+  }
+}
+variable "durable_task_hub_name" {
+  type        = string
+  default     = "PocBatchHub"
+  description = "Task hub name shared by Functions configuration and the optional DTS resource."
+  validation {
+    condition     = can(regex("^[A-Za-z][A-Za-z0-9]{2,44}$", var.durable_task_hub_name))
+    error_message = "Task hub name must be 3-45 alphanumeric characters beginning with a letter."
+  }
+}
 variable "validation_operator_principal_id" {
   type        = string
   default     = null

@@ -6,6 +6,10 @@
         create_resource_group = $true
         location = 'japaneast'
         name_suffix = 'replaceunique001'
+        # Existing orchestration/entity state is not migrated when changing backend.
+        # Use durable-task-scheduler.example.psd1 for a separate DTS environment.
+        durable_backend = 'azureStorage'
+        durable_task_hub_name = 'PocBatchHub'
         # Replace with your SSH PUBLIC key. No public IP/SSH ingress is enabled; use VM Run Command.
         validation_vm_ssh_public_key = 'ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY poc-validation'
         validation_vm_admin_username = 'pocadmin'

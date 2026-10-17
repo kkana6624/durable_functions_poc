@@ -2,7 +2,9 @@
 
 作成日: 2026-10-17
 
-Spot コア枠2への増枠を確認し、Azure インフラ配置、RHEL 9 VM の初期設定、Private SCM 配置、12 Functions の登録、3 Task の投入・結果回収・sum=3 を実証しました。標準6シナリオは single / three / classification / failure / conflict が Pass、admission20 が起動履歴取得の制限による NotRun で完了しました（summary 終了コード2）。ローカルでは Terraform main Mock18件・fmt・validate と修正対象 PowerShell 試験が成功しています。.NET 単体テスト91件・Release publish の既存記録と実機の結果は [検証結果](test-results.md) に分けて記録します。
+追加 PoC の [Durable Task Scheduler](durable-task-scheduler-poc.md) を別環境へ配置し、MI 接続、12 Functions の登録、3 Task smoke（sum=3）、single / three / classification / failure / conflict の5件 Pass を確認しました。admission20 は全世代の起動履歴取得の制限による NotRun で、summary 終了コード2です。SDK の DTS データプレーン直接照会でも smoke インスタンスの `MainOrchestrator / Completed` を確認しました。既存 B1 を読み取り専用で共用し、既存 Azure Storage Function の設定・保存先は変更せず、DTS 用の Function・Storage・hub・state を分離しています。CPU・メモリの共有による性能影響は別途評価します。provider 間の履歴・Entity 状態は移行しません。
+
+Azure Storage バックエンドでも、Spot コア枠2への増枠後にインフラ配置、RHEL 9 VM の初期設定、Private SCM 配置、12 Functions の登録、3 Task の投入・結果回収・sum=3 を実証しました。標準6シナリオは5件 Pass・admission20 NotRun で完了しています。DTS / 既存 Plan 参照 / observer 追加後の最新ローカル検証は Terraform main Mock27件・fmt・validate 成功です。.NET 単体テスト91件・Release publish と各バックエンドの実機結果は [検証結果](test-results.md) に分けて記録します。
 
 > **注意:** 本書はAzure実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake/Mock）による検証結果と、Azure実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。なお、Function の受信閉域化と検証 VM は今回の実装範囲です。Storage / Batch の全面閉域化、利用者向け認証付きAPI、および実C++ファイル入出力は後続フェーズです。
 

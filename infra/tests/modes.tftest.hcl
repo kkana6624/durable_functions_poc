@@ -1,3 +1,14 @@
+mock_provider "azapi" {
+  mock_resource "azapi_resource" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/poc-test001-dts"
+      output = {
+        properties = { endpoint = "https://poc-test001-dts.japaneast.durabletask.io" }
+      }
+    }
+  }
+}
+
 mock_provider "azurerm" {
   mock_resource "azurerm_virtual_network" {
     defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/virtualNetworks/poc-test-vnet" }
@@ -40,6 +51,13 @@ mock_provider "azurerm" {
   }
   mock_resource "azurerm_service_plan" {
     defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Web/serverFarms/poc-test-plan" }
+  }
+  mock_data "azurerm_service_plan" {
+    defaults = {
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
+      os_type  = "Linux"
+      location = "japaneast"
+    }
   }
   mock_resource "azurerm_log_analytics_workspace" {
     defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.OperationalInsights/workspaces/poc-test-logs" }
@@ -84,6 +102,18 @@ variables {
 run "existing_preserves_shared_resources" {
   command = apply
   assert {
+    condition     = length(azurerm_role_assignment.durable_observer) == 0
+    error_message = "Observer data access must never be inferred or created by default."
+  }
+  assert {
+    condition     = length(azurerm_service_plan.poc) == 1 && length(data.azurerm_service_plan.existing) == 0 && azurerm_linux_function_app.poc.service_plan_id == azurerm_service_plan.poc[0].id
+    error_message = "The default must retain a managed plan, using the moved address without changing its identity."
+  }
+  assert {
+    condition     = length(azapi_resource.durable_scheduler) == 0 && length(azapi_resource.durable_task_hub) == 0 && length(azapi_resource.durable_retention) == 0 && length(azurerm_role_assignment.durable_task_hub) == 0 && output.deployment.durable_backend == "azureStorage" && output.deployment.task_hub_name == "PocBatchHub" && output.deployment.durable_scheduler_endpoint == null && !contains(keys(azurerm_linux_function_app.poc.app_settings), "DURABLE_TASK_SCHEDULER_CONNECTION_STRING") && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureFunctionsJobHost__extensions__durableTask__storageProvider__type") && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureFunctionsJobHost__extensions__durableTask__hubName")
+    error_message = "Default Azure Storage must preserve the existing app settings and create no DTS resources or permissions."
+  }
+  assert {
     condition     = length(azurerm_batch_account.poc) == 0 && length(azurerm_batch_pool.poc) == 0 && length(azurerm_resource_group.poc) == 0
     error_message = "Existing mode must never manage shared Batch or RG resources."
   }
@@ -99,6 +129,130 @@ run "existing_preserves_shared_resources" {
     condition     = azurerm_linux_function_app.poc.storage_account_name == azurerm_storage_account.poc.name && azurerm_linux_function_app.poc.storage_uses_managed_identity == true && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureWebJobsStorage__accountName")
     error_message = "Host storage account name must come only from the provider-managed identity attributes, not app_settings."
   }
+}
+
+run "existing_cross_rg_service_plan_is_read_only" {
+  command = apply
+  variables {
+    existing_service_plan_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
+  }
+  assert {
+    condition     = length(azurerm_service_plan.poc) == 0 && length(data.azurerm_service_plan.existing) == 1 && data.azurerm_service_plan.existing[0].resource_group_name == "shared-plan-rg" && data.azurerm_service_plan.existing[0].name == "shared-linux-plan" && azurerm_linux_function_app.poc.service_plan_id == var.existing_service_plan_id && output.deployment.service_plan_id == var.existing_service_plan_id
+    error_message = "An existing cross-RG plan must be read through a data source, never created or managed by this environment."
+  }
+}
+
+run "existing_windows_service_plan_rejected" {
+  command = plan
+  variables {
+    existing_service_plan_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
+  }
+  override_data {
+    target = data.azurerm_service_plan.existing[0]
+    values = {
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
+      os_type  = "Windows"
+      location = "japaneast"
+    }
+  }
+  expect_failures = [azurerm_linux_function_app.poc]
+}
+
+run "existing_other_region_service_plan_rejected" {
+  command = plan
+  variables {
+    existing_service_plan_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
+  }
+  override_data {
+    target = data.azurerm_service_plan.existing[0]
+    values = {
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
+      os_type  = "Linux"
+      location = "westus2"
+    }
+  }
+  expect_failures = [azurerm_linux_function_app.poc]
+}
+
+run "invalid_existing_service_plan_id_rejected" {
+  command = plan
+  variables { existing_service_plan_id = "shared-linux-plan" }
+  expect_failures = [var.existing_service_plan_id]
+}
+
+run "durable_task_scheduler_consumption_and_identity" {
+  command = apply
+  assert {
+    condition     = length(azurerm_role_assignment.durable_observer) == 0
+    error_message = "Selecting DTS alone must not grant observer access."
+  }
+  variables {
+    durable_backend       = "durableTaskScheduler"
+    durable_task_hub_name = "DtsPocHub"
+  }
+  override_resource {
+    target = azapi_resource.durable_task_hub[0]
+    values = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/poc-test001-dts/taskHubs/DtsPocHub"
+    }
+  }
+  assert {
+    condition     = length(azapi_resource.durable_scheduler) == 1 && length(azapi_resource.durable_task_hub) == 1 && length(azapi_resource.durable_retention) == 1 && azapi_resource.durable_scheduler[0].type == "Microsoft.DurableTask/schedulers@2026-02-01" && azapi_resource.durable_scheduler[0].body.properties.sku.name == "Consumption" && azapi_resource.durable_scheduler[0].body.properties.publicNetworkAccess == "Enabled" && azapi_resource.durable_scheduler[0].body.properties.ipAllowlist[0] == "0.0.0.0/0"
+    error_message = "DTS must create a Consumption scheduler using the stable API and explicit public outbound connectivity."
+  }
+  assert {
+    condition     = azapi_resource.durable_task_hub[0].name == "DtsPocHub" && azapi_resource.durable_task_hub[0].parent_id == azapi_resource.durable_scheduler[0].id && azapi_resource.durable_retention[0].name == "default" && azapi_resource.durable_retention[0].body.properties.retentionPolicies[0].retentionPeriodInDays == 30
+    error_message = "The selected hub and 30-day default retention must belong to the scheduler."
+  }
+  assert {
+    condition     = azurerm_role_assignment.durable_task_hub[0].scope == azapi_resource.durable_task_hub[0].id && endswith(azurerm_role_assignment.durable_task_hub[0].scope, "/taskHubs/DtsPocHub") && azurerm_role_assignment.durable_task_hub[0].role_definition_name == "Durable Task Data Contributor" && azurerm_role_assignment.durable_task_hub[0].principal_id == azurerm_linux_function_app.poc.identity[0].principal_id && length(azurerm_role_assignment.storage) == 3
+    error_message = "Function MI must receive Data Contributor only at hub scope while retaining host Storage permissions."
+  }
+  assert {
+    condition     = azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__storageProvider__type == "azureManaged" && azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__storageProvider__connectionStringName == "DURABLE_TASK_SCHEDULER_CONNECTION_STRING" && azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__hubName == "DtsPocHub" && azurerm_linux_function_app.poc.app_settings.DURABLE_TASK_SCHEDULER_CONNECTION_STRING == "Endpoint=https://poc-test001-dts.japaneast.durabletask.io;TaskHub=DtsPocHub;Authentication=ManagedIdentity" && azurerm_linux_function_app.poc.public_network_access_enabled == false
+    error_message = "DTS must use the MI connection and selected hub while Function ingress remains private."
+  }
+  assert {
+    condition     = output.deployment.durable_backend == "durableTaskScheduler" && output.deployment.task_hub_name == "DtsPocHub" && output.deployment.durable_scheduler_endpoint == "https://poc-test001-dts.japaneast.durabletask.io" && output.deployment.durable_task_hub_id == azapi_resource.durable_task_hub[0].id
+    error_message = "Non-secret deployment metadata must identify the selected backend, scheduler and hub."
+  }
+}
+
+run "explicit_durable_observer_is_hub_reader_only" {
+  command = apply
+  variables {
+    durable_backend               = "durableTaskScheduler"
+    durable_task_hub_name          = "DtsPocHub"
+    durable_observer_principal_id = "66666666-6666-6666-6666-666666666666"
+  }
+  override_resource {
+    target = azapi_resource.durable_task_hub[0]
+    values = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/poc-test001-dts/taskHubs/DtsPocHub"
+    }
+  }
+  assert {
+    condition     = length(azurerm_role_assignment.durable_observer) == 1 && azurerm_role_assignment.durable_observer[0].principal_id == var.durable_observer_principal_id && azurerm_role_assignment.durable_observer[0].role_definition_name == "Durable Task Data Reader" && azurerm_role_assignment.durable_observer[0].scope == azapi_resource.durable_task_hub[0].id && endswith(azurerm_role_assignment.durable_observer[0].scope, "/taskHubs/DtsPocHub")
+    error_message = "Explicit observer access must be read-only and limited to the selected task hub."
+  }
+}
+
+run "observer_on_azure_storage_rejected" {
+  command = plan
+  variables { durable_observer_principal_id = "66666666-6666-6666-6666-666666666666" }
+  expect_failures = [var.durable_observer_principal_id]
+}
+
+run "invalid_durable_backend_rejected" {
+  command = plan
+  variables { durable_backend = "invalid" }
+  expect_failures = [var.durable_backend]
+}
+
+run "invalid_durable_hub_rejected" {
+  command = plan
+  variables { durable_task_hub_name = "invalid-hub" }
+  expect_failures = [var.durable_task_hub_name]
 }
 
 run "private_function_and_validation_vm" {

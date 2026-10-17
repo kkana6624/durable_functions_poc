@@ -6,9 +6,17 @@ Windows Batch Pool への PowerShell Task 投入から、Durable Functions（子
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> Azure へのインフラ配置と RHEL 9 検証 VM の初期設定が完了し、Private SCM 配置、12 Functions の登録、VM から Private Endpoint 経由で投入した3 Task の実行・結果回収・sum=3 の集約が成功しました。Function の公開アクセス無効化と Private Endpoint 接続 Approved を確認しています。標準6シナリオは HTTP 202 対応修正後に5件 Pass、admission20 は起動履歴取得の制限による NotRun で完了しました（summary 終了コード2）。host 再起動復旧、期限停止、Spot 回収復旧は未実証です。実環境の証跡とローカル試験は [検証結果](docs/test-results.md) と [実現性評価](docs/feasibility-matrix.md) に分けて記録します。
+> Azure Storage バックエンドでのインフラ配置と RHEL 9 検証 VM の初期設定が完了し、Private SCM 配置、12 Functions の登録、VM から Private Endpoint 経由で投入した3 Task の実行・結果回収・sum=3 の集約が成功しました。Function の公開アクセス無効化と Private Endpoint 接続 Approved を確認しています。標準6シナリオは HTTP 202 対応修正後に5件 Pass、admission20 は起動履歴取得の制限による NotRun で完了しました（summary 終了コード2）。host 再起動復旧、期限停止、Spot 回収復旧は未実証です。実環境の証跡とローカル試験は [検証結果](docs/test-results.md) と [実現性評価](docs/feasibility-matrix.md) に分けて記録します。
 
 ---
+
+## Durable Task Scheduler の PoC
+
+`durable_backend='durableTaskScheduler'` を指定すると、Consumption Scheduler・task hub・30日保持ポリシーと Function Managed Identity の接続を構成します。既定は従来の `azureStorage` です。DTS 用は別 Environment・Function App・Storage・state とし、既存の実行履歴・Entity 状態の移行は行いません。設定例は `environments/durable-task-scheduler.example.psd1`、構成・配置・検証手順と制限は [DTS PoC](docs/durable-task-scheduler-poc.md) を参照してください。
+
+DTS 用の別環境を Azure へ配置し、Managed Identity 接続、12 Functions の登録、3 Task smoke（sum=3）と標準検証の5件 Pass を確認しました。`admission20` は全世代の起動履歴を取得できないため NotRun、summary 終了コードは2です。SDK で DTS データプレーンを直接照会し、同じ smoke インスタンスの `MainOrchestrator / Completed` も確認しました。上記の Azure Storage の検証記録とは別の結果です。Functions の受信閉域化は継続し、DTS への送信は公開エンドポイントと Entra 認証を使います。証跡は [DTS PoC](docs/durable-task-scheduler-poc.md) に記録しています。
+
+`existing_service_plan_id` は既定 `null`（新規 Plan 作成）です。同じサブスクリプション・リージョンの既存 Linux Plan の完全な ARM ID を指定すると、別 RG からも読み取り専用で参照し、追加 Plan を作成しません。今回の DTS 実証では既存 B1 を共用し、Function App・Storage・hub・state を分離しました。既存 Azure Storage 環境の Function 設定・保存先と Plan 設定は変更していません。Plan の CPU・メモリは共有するため性能影響がないことは保証しません。[Plan 共有の仕様](https://learn.microsoft.com/en-us/azure/azure-functions/dedicated-plan) を参照してください。
 
 ## ワンコマンド配置
 
@@ -187,7 +195,7 @@ terraform -chdir=infra/bootstrap test
 
 検証結果は `summary.json` および `summary.txt` に出力され、シナリオごとの合否判定（`Pass` / `Fail` / `NotRun`）、UTC 実行時刻、Git コミット情報、デプロイパッケージのハッシュ値、各種観測値が保存されます。VM 経由ラッパーの既定の回収先は `artifacts/private-validation/<run>/` です。VM 内で直接使用するランナーの既定保存先は `artifacts/validation/<run>/` であり、プロセスの終了コードは「全選択試験が Pass」で `0`、「Fail が 1 件以上あり」で `1`、「Fail はないが NotRun が含まれる」で `2` となります。認証情報、キー、シークレットを含む URL、生の例外スタックトレースは証跡ファイルへ出力されません。なお、同一の出力先を指定すると前回の結果要約が上書きされるため、実行ごとに個別のディレクトリを指定してください。
 
-`admission20` シナリオでは、同一インスタンスへの集約、投入 Task 数、完了後の再送動作を観測します。ただし、現在の Azure Functions / Durable 管理 API のみでは全世代にわたる Main オーケストレーションの起動履歴を完全には証明できないため、観測値を記録したうえでステータスを `NotRun`（未実証）とし、厳密な「1 度限りの起動（exactly-once schedule）」が実環境で成立したとは断定しません。また、検証完了後も調査用にリクエスト入力、Entity 状態、Main オーケストレーション履歴を保持し、自動クリーンアップは行いません。
+`admission20` シナリオでは、同一インスタンスへの集約、投入 Task 数、完了後の再送動作を観測します。ただし、現在の Azure Functions / Durable 管理 API のみでは全世代にわたる Main オーケストレーションの起動履歴を完全には証明できないため、観測値を記録したうえでステータスを `NotRun`（未実証）とし、厳密な「1 度限りの起動（exactly-once schedule）」が実環境で成立したとは断定しません。また、検証ランナー自身はリクエスト入力、Entity 状態、Main オーケストレーション履歴を清掃しません。DTS を選択した場合は Scheduler の30日保持ポリシーが別途適用され、期限後の履歴保持は保証しません。
 
 個人の検証環境では VNet 内の検証 VM から Function の Private Endpoint を呼び出します。ローカル端末から Function への直接到達性は不要です。転送用 bundle を専用の転送 Blob コンテナにアップロードし、VM の Managed Identity で取得して実行し、安全な証跡のみ Blob 経由で回収します。NAT Gateway を通る外部通信と Storage / Batch の公開データエンドポイントは今回維持します。VPN / ExpressRoute 接続と Storage / Batch の全面閉域化は [共通ネットワーク設計](docs/network-connectivity-design.md) に記載した後続フェーズです。なお、ローカル環境での Fake / Mock によるテスト成功と、Azure 実環境での接続試験の結果は明確に区別して評価してください。
 

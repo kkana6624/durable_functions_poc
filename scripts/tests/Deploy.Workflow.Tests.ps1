@@ -165,6 +165,28 @@ exit 0
     Assert-True ($bootstrapApply -ge 0 -and $mainInit -gt $bootstrapApply -and $mainApply -gt $mainInit) 'New backend must bootstrap apply before main backend init and main apply'
     $bootstrapInit=@($trace | Where-Object { $_ -match '^terraform -chdir=infra/bootstrap init ' })
     Assert-True ($bootstrapInit.Count -eq 1 -and $bootstrapInit[0] -match [regex]::Escape("-backend-config=path=$expectedState")) 'Backend state path must remain stable across PlanOnly and apply'
+    $identityPath=Join-Path $temporary '.deploy/offline/environment.json'
+    $legacy=Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+    $legacy.PSObject.Properties.Remove('durable_backend'); $legacy.PSObject.Properties.Remove('durable_task_hub_name')
+    $legacy | ConvertTo-Json | Set-Content -LiteralPath $identityPath -Encoding UTF8
+    & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath -PlanOnly
+    $identity=Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+    Assert-True ($identity.durable_backend -ceq 'azureStorage' -and $identity.durable_task_hub_name -ceq 'PocBatchHub') 'Successful legacy invocation must persist the original durable identity'
+    $schedulerConfig=$config.Replace("batch_mode='existing'","batch_mode='existing'; durable_backend='durableTaskScheduler'; durable_task_hub_name='SchedulerHub'")
+    Set-Content -LiteralPath $configPath -Value $schedulerConfig -Encoding UTF8
+    foreach ($name in @('offline','other-environment')) {
+        Clear-Content -LiteralPath $env:POC_FAKE_TRACE
+        $failed=$false
+        try { & (Join-Path $temporary 'scripts/deploy.ps1') -Environment $name -ConfigFile $configPath -PlanOnly }
+        catch { $failed=$_.Exception.Message -match 'identity changed' }
+        Assert-True $failed 'Changing durable identity of an existing Function must fail even through a new local Environment'
+        Assert-True ((Get-Content -LiteralPath $env:POC_FAKE_TRACE -Raw) -notmatch 'terraform .* (init|apply)|dotnet restore') 'Backend switch must fail before build or state access'
+    }
+    $schedulerConfig=$schedulerConfig.Replace("name_suffix='test01'","name_suffix='scheduler'")
+    Set-Content -LiteralPath $configPath -Value $schedulerConfig -Encoding UTF8
+    Clear-Content -LiteralPath $env:POC_FAKE_TRACE
+    & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'scheduler' -ConfigFile $configPath -PlanOnly
+    Assert-True ((Get-Content -LiteralPath $env:POC_FAKE_TRACE -Raw) -match 'provider show --namespace Microsoft.DurableTask') 'Scheduler deployment must check its resource provider registration'
     $changed=$config.Replace("name_suffix='test01'","name_suffix='changed'")
     Set-Content -LiteralPath $configPath -Value $changed -Encoding UTF8
     $failed=$false

@@ -68,6 +68,27 @@ function Write-DeploymentJson {
     [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
 }
 
+function Get-DeploymentDurableSettings {
+    param([Parameter(Mandatory)][hashtable]$Variables, [switch]$FromOutputs)
+    $backend = if ($Variables.ContainsKey('durable_backend')) { [string]$Variables.durable_backend } else { 'azureStorage' }
+    $hubKey = if ($FromOutputs) { 'task_hub_name' } else { 'durable_task_hub_name' }
+    $hub = if ($Variables.ContainsKey($hubKey)) { [string]$Variables[$hubKey] } else { 'PocBatchHub' }
+    if ($backend -cnotin @('azureStorage','durableTaskScheduler')) { throw 'Invalid durable backend.' }
+    if ($hub -cnotmatch '^[A-Za-z][A-Za-z0-9]{2,44}$') { throw 'Invalid durable task hub name.' }
+    return @{ durable_backend=$backend; durable_task_hub_name=$hub }
+}
+
+function Assert-DeploymentEnvironmentIdentity {
+    param([Parameter(Mandatory)][hashtable]$Previous, [Parameter(Mandatory)][hashtable]$Current, [switch]$DurableOnly)
+    # Legacy identity files describe the original Azure Storage / PocBatchHub deployment.
+    $legacy = @{ durable_backend='azureStorage'; durable_task_hub_name='PocBatchHub' }
+    $keys = if ($DurableOnly) { @('durable_backend','durable_task_hub_name') } else { @($Current.Keys) }
+    foreach ($key in $keys) {
+        $old = if ($Previous.ContainsKey($key)) { $Previous[$key] } elseif ($legacy.ContainsKey($key)) { $legacy[$key] } else { $null }
+        if ($old -cne $Current[$key]) { throw "Environment identity changed ($key). Use a separate Function App and state for a new durable backend or task hub; history and Entity state are not migrated." }
+    }
+}
+
 function Assert-DeploymentPlan {
     param([Parameter(Mandatory)] $Plan, [Parameter(Mandatory)][string] $BatchMode)
     # Existing resources are reference-only in both modes; replacement/deletion needs a separate migration.

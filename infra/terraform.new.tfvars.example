@@ -3,6 +3,9 @@ resource_group_name   = "poc-durable-batch"
 create_resource_group = true
 location              = "japaneast"
 name_suffix           = "replaceunique001"
+# Keep Azure Storage as the default. Use a separate environment/state for DTS.
+durable_backend       = "azureStorage"
+durable_task_hub_name = "PocBatchHub"
 validation_vm_ssh_public_key = "ssh-ed25519 <your-public-key>"
 # Optional: explicitly grant the initiating user's/service principal's object ID access to the control container.
 # validation_operator_principal_id = "00000000-0000-0000-0000-000000000000"

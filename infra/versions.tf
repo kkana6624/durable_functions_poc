@@ -3,7 +3,12 @@ terraform {
   backend "azurerm" {}
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 5.10.0" }
+    azapi   = { source = "Azure/azapi", version = "= 2.12.0" }
   }
+}
+provider "azapi" {
+  subscription_id            = var.subscription_id
+  skip_provider_registration = true
 }
 provider "azurerm" {
   features {}

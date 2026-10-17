@@ -4,6 +4,8 @@
 
 本書では、`scripts/Invoke-PocValidation.ps1` による一括検証の処理フローと、ワークフロー開始 API から Durable Functions、Azure Batch、Blob Storage へ至る一連のシーケンスを解説します。個人検証では `Invoke-PrivatePocValidation.ps1` が検証 VM の Run Command を起動し、VM 上から Function の Private Endpoint を呼び出します。Azure CLI は VM の Managed Identity でログインし、Function key を取得します。Function の公開ネットワークアクセスは無効化します。Storage / Batch の送信経路、VPN / ExpressRoute、Web App の後続構成については [共通ネットワーク設計](network-connectivity-design.md) を参照してください。
 
+検証結果の `summary.settings.durableBackend` / `taskHubName` は配置設定を記録します。既存出力に値がない場合は Azure Storage / PocBatchHub として扱います。DTS 対応資材の詳細と実接続の未実証範囲は [DTS PoC](durable-task-scheduler-poc.md) を参照してください。
+
 ## runnerの全体フロー
 
 VM 実行時の Git revision・ソース fingerprint・package hash はローカル checkout から bundle に含めて渡します。ゲストには .git はなく、来歴情報をゲスト checkout から再計算したものではありません。転送専用 poc-vm-control Blob と Run Command で実行・証跡回収を行います。cloud-init 待ちの900秒とゲスト操作全体の4200秒上限があり、長い検証は Scenarios を分割します。

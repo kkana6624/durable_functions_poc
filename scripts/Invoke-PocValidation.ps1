@@ -311,7 +311,7 @@ function Invoke-PocValidation {
     $directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EvidenceDirectory)
     $null = New-Item -ItemType Directory -Path $directory -Force
     $summary = [ordered]@{ schemaVersion=1; startedUtc=[DateTime]::UtcNow.ToString('o'); completedUtc=$null; validationKind='Azure';
-        gitRevision=$null; gitDirty=$null; sourceSha256=$null; packageSha256=$null; settings=@{ timeoutSeconds=$TimeoutSeconds; pollSeconds=$PollSeconds; dedicatedEnvironment=[bool]$DedicatedEnvironment; batchNodeType=$null };
+        gitRevision=$null; gitDirty=$null; sourceSha256=$null; packageSha256=$null; settings=@{ timeoutSeconds=$TimeoutSeconds; pollSeconds=$PollSeconds; dedicatedEnvironment=[bool]$DedicatedEnvironment; batchNodeType=$null; durableBackend=$null; taskHubName=$null };
         Scenarios=@(); excluded=@('HostRecovery','PermissionFaults','NetworkFaults','ZeroNodeAutoscale','RealCpp','SpotEvictionRecovery'); ExitCode=1 }
     $key=$null
     try {
@@ -331,6 +331,11 @@ function Invoke-PocValidation {
         }
         if (-not $deployment.ContainsKey('outputs')) { Stop-PocValidation 'DeploymentOutputsMissing' }
         $outputs = $deployment.outputs
+        try { $durableSettings = Get-DeploymentDurableSettings -Variables $outputs -FromOutputs }
+        catch { Stop-PocValidation 'InvalidDurableSettings' }
+        # Configured backend identity; this is not evidence of provider-specific Azure execution.
+        $summary.settings.durableBackend=$durableSettings.durable_backend
+        $summary.settings.taskHubName=$durableSettings.durable_task_hub_name
         if ($outputs.ContainsKey('batch_node_type') -and $null -ne $outputs.batch_node_type) {
             if ($outputs.batch_node_type -cnotin @('dedicated','spot')) { Stop-PocValidation 'InvalidBatchNodeType' }
             $summary.settings.batchNodeType=$outputs.batch_node_type

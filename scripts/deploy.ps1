@@ -20,6 +20,8 @@ foreach ($key in @('subscription_id', 'resource_group_name', 'name_suffix')) {
     if (-not $variables.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($variables[$key])) { throw "Terraform.$key is required." }
 }
 if (-not $variables.ContainsKey('batch_mode')) { $variables.batch_mode = 'existing' }
+$durableSettings = Get-DeploymentDurableSettings -Variables $variables
+foreach ($key in $durableSettings.Keys) { $variables[$key] = $durableSettings[$key] }
 $script:DeploymentSubscriptionId = $variables.subscription_id
 $tools = if ($config.ContainsKey('Tools')) { $config.Tools } else { @{} }
 $dotnet = Resolve-DeploymentTool -Name dotnet -ConfiguredPath $tools['DotNet'] -RepositoryRoot $repositoryRoot
@@ -56,18 +58,30 @@ try {
     if ([version]$cliVersion.'azure-cli' -lt [version]'2.48.1') { throw 'Azure CLI 2.48.1 or later is required for Entra ZIP deployment with Basic authentication disabled.' }
     $account = Invoke-AzJson @('account', 'show', '--subscription', $variables.subscription_id)
     if ($account.id -ne $variables.subscription_id -or $account.state -ne 'Enabled') { throw 'The target subscription is unavailable.' }
-    foreach ($provider in @('Microsoft.Web', 'Microsoft.Storage', 'Microsoft.Insights', 'Microsoft.OperationalInsights', 'Microsoft.Batch', 'Microsoft.Compute', 'Microsoft.Network')) {
+    $providers = @('Microsoft.Web', 'Microsoft.Storage', 'Microsoft.Insights', 'Microsoft.OperationalInsights', 'Microsoft.Batch', 'Microsoft.Compute', 'Microsoft.Network')
+    if ($variables.durable_backend -ceq 'durableTaskScheduler') { $providers += 'Microsoft.DurableTask' }
+    foreach ($provider in $providers) {
         $registration = Invoke-AzJson @('provider', 'show', '--namespace', $provider, '--subscription', $variables.subscription_id)
         if ($registration.registrationState -ne 'Registered') { throw "$provider is not registered. Register it in the target subscription before deployment." }
     }
     # Pin the environment to its original state backend and subscription. Never silently switch state.
     $identity = @{ subscription_id = $variables.subscription_id; backend_rg = $backend.resource_group_name; backend_storage = $backend.storage_account_name; backend_container = $backend.container_name; state_key = "$Environment.tfstate"; batch_mode = $variables.batch_mode; resource_group_name = $variables.resource_group_name; name_suffix = $variables.name_suffix }
+    foreach ($key in $durableSettings.Keys) { $identity[$key] = $durableSettings[$key] }
     $identityPath = Join-Path $work 'environment.json'
     if (Test-Path -LiteralPath $identityPath) {
         $previousIdentity = ConvertTo-DeploymentHashtable (Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json)
-        foreach ($key in $identity.Keys) { if ($previousIdentity[$key] -ne $identity[$key]) { throw "Environment identity changed ($key). Use a new Environment or perform an explicit state migration." } }
+        Assert-DeploymentEnvironmentIdentity -Previous $previousIdentity -Current $identity
     }
-    else { Write-DeploymentJson $identityPath $identity }
+    # A different local Environment must not silently reconfigure the same Function App.
+    foreach ($knownEnvironment in @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot '.deploy') -Directory)) {
+        $knownIdentityPath = Join-Path $knownEnvironment.FullName 'environment.json'
+        if ($knownIdentityPath -eq $identityPath -or -not (Test-Path -LiteralPath $knownIdentityPath -PathType Leaf)) { continue }
+        $other = ConvertTo-DeploymentHashtable (Get-Content -LiteralPath $knownIdentityPath -Raw | ConvertFrom-Json)
+        if ($other.subscription_id -eq $identity.subscription_id -and $other.resource_group_name -eq $identity.resource_group_name -and $other.name_suffix -eq $identity.name_suffix) {
+            Assert-DeploymentEnvironmentIdentity -Previous $other -Current $identity -DurableOnly
+        }
+    }
+    Write-DeploymentJson $identityPath $identity
 
     Write-Host 'Building and testing Function App...'
     $null = Invoke-Tool $dotnet @('restore', 'src/Poc.Functions/Poc.Functions.csproj') -LogPath (Join-Path $run 'restore-function.log')

@@ -3,6 +3,9 @@ subscription_id     = "00000000-0000-0000-0000-000000000000"
 # Existing RG for PoC resources. Never create/import the shared RG into state.
 resource_group_name = "existing-poc-rg"
 name_suffix         = "replaceunique001"
+# DTS requires a separate environment/state; Azure Storage history and entities are not migrated.
+durable_backend       = "azureStorage"
+durable_task_hub_name = "PocBatchHub"
 validation_vm_ssh_public_key = "ssh-ed25519 <your-public-key>"
 # Optional: explicitly grant the initiating user's/service principal's object ID access to the control container.
 # validation_operator_principal_id = "00000000-0000-0000-0000-000000000000"

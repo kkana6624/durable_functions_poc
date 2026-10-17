@@ -218,6 +218,18 @@ try {
     Assert-True ($result.packageSha256 -eq ('a'*64) -and $result.gitRevision -match '^[a-f0-9]{40}$') 'Evidence must record deployment hash and Git revision'
     Assert-True ($result.sourceSha256 -match '^[a-f0-9]{64}$') 'Evidence must identify local source including uncommitted files'
     Assert-True ($null -eq $result.settings.batchNodeType) 'Legacy results must not claim an observed capacity type'
+    Assert-True ($result.settings.durableBackend -ceq 'azureStorage' -and $result.settings.taskHubName -ceq 'PocBatchHub') 'Legacy results must retain configured original durable identity'
+    $script:outputs.durable_backend='durableTaskScheduler'; $script:outputs.task_hub_name='SchedulerHub'
+    @{ outputs=$script:outputs; package_sha256=('a'*64) } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
+    $scheduler=Invoke-TestCase success @('single') 0 Pass
+    Assert-True ($scheduler.settings.durableBackend -ceq 'durableTaskScheduler' -and $scheduler.settings.taskHubName -ceq 'SchedulerHub') 'Summary must retain configured Scheduler metadata without claiming provider validation'
+    $script:outputs.durable_backend='invalid'
+    @{ outputs=$script:outputs } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
+    $script:posts=0
+    $badDurable=Invoke-PocValidation -DeploymentResultPath $deployment -Scenarios @('single') -EvidenceDirectory (Join-Path $temporary 'invalid-durable')
+    Assert-True ($badDurable.ExitCode -eq 1 -and $badDurable.Scenarios[0].Reason -eq 'InvalidDurableSettings' -and $script:posts -eq 0) 'Untrusted durable metadata must fail before work submission'
+    $script:outputs.Remove('durable_backend'); $script:outputs.Remove('task_hub_name')
+    @{ outputs=$script:outputs; package_sha256=('a'*64) } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
     $accepted=Invoke-TestCase acceptedRunning @('single') 0 Pass
     Assert-True ($script:statusReads -eq 2 -and $accepted.Scenarios[0].Evidence.runs[0].statusHttpCounts['202'] -eq 1 -and $accepted.Scenarios[0].Evidence.runs[0].statusHttpCounts['200'] -eq 1) 'HTTP 202 Running must be polled until HTTP 200 Completed, preserving both observations'
     foreach ($invalid in @('invalidAccepted','missingAccepted')) {

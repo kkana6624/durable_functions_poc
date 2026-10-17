@@ -20,6 +20,21 @@ Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=
 Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_shared_image' @('create'))) }) -BatchMode new } 'reference-only'
 $converted=ConvertTo-DeploymentHashtable ([pscustomobject]@{ outer=[pscustomobject]@{ values=@('a','b') } })
 Assert-True ($converted -is [hashtable] -and $converted.outer -is [hashtable] -and $converted.outer.values.Count -eq 2) 'JSON conversion should preserve nested arrays'
+$defaults=Get-DeploymentDurableSettings -Variables @{}
+Assert-True ($defaults.durable_backend -ceq 'azureStorage' -and $defaults.durable_task_hub_name -ceq 'PocBatchHub') 'Legacy settings must preserve Azure Storage and original hub'
+$scheduler=Get-DeploymentDurableSettings -Variables @{ durable_backend='durableTaskScheduler'; task_hub_name='SchedulerHub' } -FromOutputs
+Assert-True ($scheduler.durable_backend -ceq 'durableTaskScheduler' -and $scheduler.durable_task_hub_name -ceq 'SchedulerHub') 'Scheduler output metadata must normalize to environment identity'
+Assert-Fails { Get-DeploymentDurableSettings -Variables @{ durable_backend='unknown' } } 'Invalid durable backend'
+Assert-Fails { Get-DeploymentDurableSettings -Variables @{ durable_task_hub_name='bad-hub' } } 'Invalid durable task hub'
+$oldIdentity=@{ subscription_id='sub' }
+$compatible=@{ subscription_id='sub'; durable_backend='azureStorage'; durable_task_hub_name='PocBatchHub' }
+Assert-DeploymentEnvironmentIdentity -Previous $oldIdentity -Current $compatible
+Assert-DeploymentEnvironmentIdentity -Previous $scheduler -Current $scheduler
+Assert-Fails { Assert-DeploymentEnvironmentIdentity -Previous $oldIdentity -Current @{ subscription_id='sub'; durable_backend='durableTaskScheduler'; durable_task_hub_name='PocBatchHub' } } 'identity changed.*durable_backend'
+Assert-Fails { Assert-DeploymentEnvironmentIdentity -Previous $compatible -Current @{ subscription_id='sub'; durable_backend='azureStorage'; durable_task_hub_name='OtherHub' } } 'identity changed.*durable_task_hub_name'
+Assert-Fails { Assert-DeploymentEnvironmentIdentity -Previous $scheduler -Current $compatible -DurableOnly } 'identity changed'
+$hostConfig=Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../src/Poc.Functions/host.json') -Raw | ConvertFrom-Json
+Assert-True ($hostConfig.extensions.durableTask.storageProvider.type -ceq 'azureStorage' -and $hostConfig.extensions.durableTask.hubName -ceq 'PocBatchHub') 'Installing Scheduler extension must not change the default provider or hub'
 
 $temporary=Join-Path ([IO.Path]::GetTempPath()) ('poc-common-tests-'+[Guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $temporary
