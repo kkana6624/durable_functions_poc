@@ -1,6 +1,68 @@
 variable "subscription_id" {
   type = string
 }
+variable "validation_operator_principal_id" {
+  type        = string
+  default     = null
+  description = "Optional explicitly authorized operator object ID granted Blob Contributor only on the VM control container. Never inferred from backend identity."
+  validation {
+    condition     = var.validation_operator_principal_id == null ? true : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.validation_operator_principal_id))
+    error_message = "Use an Entra principal object ID in GUID format, or null for pre-provisioned access."
+  }
+}
+variable "validation_vm_ssh_public_key" {
+  type        = string
+  description = "SSH public key only; private keys must never enter Terraform state. VM ingress remains denied."
+  validation {
+    condition     = can(regex("^ssh-(rsa|ed25519) [A-Za-z0-9+/=]+( .*)?$", trimspace(var.validation_vm_ssh_public_key)))
+    error_message = "Supply an OpenSSH RSA or Ed25519 public key, never a private key."
+  }
+}
+variable "validation_vm_admin_username" {
+  type    = string
+  default = "pocadmin"
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9_]{0,30}$", var.validation_vm_admin_username)) && !contains(["root", "admin", "administrator"], var.validation_vm_admin_username)
+    error_message = "Use a non-reserved lowercase Linux username."
+  }
+}
+variable "validation_vm_size" {
+  type    = string
+  default = "Standard_B2s"
+}
+variable "validation_vm_disk_controller_type" {
+  type        = string
+  default     = null
+  description = "Optional OS disk controller type. Leave null for Azure defaults; NVMe-only VM sizes require NVMe."
+  validation {
+    condition     = var.validation_vm_disk_controller_type == null ? true : contains(["SCSI", "NVMe"], var.validation_vm_disk_controller_type)
+    error_message = "Disk controller type must be null, SCSI, or NVMe."
+  }
+}
+variable "validation_vnet_address_space" {
+  type    = string
+  default = "10.80.0.0/16"
+  validation {
+    condition     = can(cidrnetmask(var.validation_vnet_address_space))
+    error_message = "Use an IPv4 VNet CIDR."
+  }
+}
+variable "validation_vm_subnet_prefix" {
+  type    = string
+  default = "10.80.1.0/24"
+  validation {
+    condition     = can(cidrnetmask(var.validation_vm_subnet_prefix))
+    error_message = "Use an IPv4 subnet CIDR within the validation VNet."
+  }
+}
+variable "validation_private_endpoint_subnet_prefix" {
+  type    = string
+  default = "10.80.2.0/24"
+  validation {
+    condition     = can(cidrnetmask(var.validation_private_endpoint_subnet_prefix))
+    error_message = "Use a separate IPv4 Private Endpoint subnet CIDR within the validation VNet."
+  }
+}
 variable "resource_group_name" {
   type        = string
   description = "Existing RG by default; new poc- RG when create_resource_group=true."
@@ -100,11 +162,21 @@ variable "batch_vm_size" {
   default = "Standard_D2s_v5"
 }
 variable "batch_node_count" {
-  type    = number
-  default = 1
+  type        = number
+  default     = 1
+  description = "Total target node count for new pools, allocated entirely to batch_node_type. Ignored for existing pools."
   validation {
     condition     = var.batch_node_count >= 1 && var.batch_node_count <= 3 && floor(var.batch_node_count) == var.batch_node_count
-    error_message = "Use 1-3 dedicated nodes so deployment readiness can be checked."
+    error_message = "Use 1-3 target nodes so deployment readiness can be checked."
+  }
+}
+variable "batch_node_type" {
+  type        = string
+  default     = "dedicated"
+  description = "New pools only: dedicated or spot (Batch low-priority nodes). No dedicated fallback for Spot. Existing pools are never resized."
+  validation {
+    condition     = contains(["dedicated", "spot"], var.batch_node_type)
+    error_message = "batch_node_type must be dedicated or spot."
   }
 }
 variable "batch_max_tasks_per_node" {

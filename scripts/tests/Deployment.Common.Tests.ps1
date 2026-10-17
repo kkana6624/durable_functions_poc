@@ -26,15 +26,24 @@ $null=New-Item -ItemType Directory -Path $temporary
 try {
     $publish=Join-Path $temporary 'publish'
     $null=New-Item -ItemType Directory -Path (Join-Path $publish '.azurefunctions') -Force
-    foreach ($file in @('host.json','worker.config.json','Poc.Functions.dll','.azurefunctions/worker.dll')) {
+    $null=New-Item -ItemType Directory -Path (Join-Path $publish '.azurefunctions/nested') -Force
+    $null=New-Item -ItemType Directory -Path (Join-Path $publish 'runtimes/linux-x64/native') -Force
+    foreach ($file in @('host.json','worker.config.json','Poc.Functions.dll','.azurefunctions/worker.dll','.azurefunctions/nested/extension.dll','runtimes/linux-x64/native/runtime.so')) {
         [IO.File]::WriteAllText((Join-Path $publish $file),'fixture')
     }
     $zip=Join-Path $temporary 'functions.zip'
     New-FunctionZip -PublishDirectory $publish -Destination $zip
     $archive=[IO.Compression.ZipFile]::OpenRead($zip)
     try {
-        $entries=@($archive.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
+        $entries=@($archive.Entries | ForEach-Object { $_.FullName })
         Assert-True ('host.json' -in $entries -and '.azurefunctions/worker.dll' -in $entries) 'ZIP must preserve root host.json and hidden extension directory'
+        Assert-True ('.azurefunctions/nested/extension.dll' -in $entries -and 'runtimes/linux-x64/native/runtime.so' -in $entries) 'Nested extension and runtime entries must use portable forward slashes'
+        Assert-True (@($entries | Where-Object { $_.Contains('\') }).Count -eq 0) 'Raw ZIP entry names must never contain backslashes'
+        foreach ($entry in $archive.Entries) {
+            $reader=[IO.StreamReader]::new($entry.Open())
+            try { Assert-True ($reader.ReadToEnd() -eq 'fixture') 'Portable ZIP entries must preserve file contents' }
+            finally { $reader.Dispose() }
+        }
     } finally { $archive.Dispose() }
     $native=Join-Path $temporary 'failure.cmd'
     [IO.File]::WriteAllText($native,"@echo off`r`necho PRIVATE-KEY-MARKER`r`nexit /b 7`r`n")
@@ -47,6 +56,13 @@ try {
     $script:AzPath=$native
     try { Invoke-AzJson -Arguments @('fake') -Sensitive | Out-Null; throw 'Expected JSON failure' }
     catch { Assert-True ($_.Exception.Message -match 'suppressed' -and $_.Exception.Message -notmatch 'PRIVATE-KEY-MARKER') 'Sensitive JSON parse failures must redact output' }
+    $script:DeploymentSubscriptionId='target-subscription'
+    $script:capturedArguments=@()
+    function Invoke-Tool { param([string]$FilePath,[string[]]$Arguments,[switch]$Sensitive); $script:capturedArguments=$Arguments; return '{}' }
+    $null=Invoke-AzJson -Arguments @('cloud','show')
+    Assert-True ('--subscription' -notin $script:capturedArguments) 'Local cloud metadata command must not receive an unsupported subscription argument'
+    $null=Invoke-AzJson -Arguments @('account','get-access-token','--resource','https://appservice.azure.com') -Sensitive
+    Assert-True ('--subscription' -in $script:capturedArguments -and 'target-subscription' -in $script:capturedArguments) 'Token acquisition must stay pinned to the target subscription'
 } finally {
     if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
 }

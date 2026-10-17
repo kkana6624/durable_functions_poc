@@ -89,7 +89,7 @@ function Get-PocBlobDocument {
     $temporary = Join-Path ([IO.Path]::GetTempPath()) ('poc-validation-' + [Guid]::NewGuid().ToString('N') + '.json')
     try {
         $null = Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,
-            '--container-name',$Outputs.blob_container_name,'--name',$Path,'--file',$temporary,'--overwrite','true','--auth-mode','login')
+            '--container-name',$Outputs.blob_container_name,'--name',$Path,'--file',$temporary,'--overwrite','true','--auth-mode','login','--no-progress')
         return Get-Content -LiteralPath $temporary -Raw | ConvertFrom-Json
     }
     finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
@@ -137,13 +137,13 @@ function Wait-PocWorkflow {
     $watch = [Diagnostics.Stopwatch]::StartNew()
     do {
         $response = Invoke-PocValidationHttp -Uri $StatusUri
-        if ($response.StatusCode -in @(200,404)) {
+        if ($response.StatusCode -in @(200,202,404)) {
             $code = [string]$response.StatusCode
             if (-not $Observation.ContainsKey($code)) { $Observation[$code]=0 }
             $Observation[$code]++
         }
         if ($response.StatusCode -ne 404) {
-            if ($response.StatusCode -ne 200 -or -not $response.Data) { Stop-PocValidation 'InvalidStatusResponse' }
+            if ($response.StatusCode -notin @(200,202) -or -not $response.Data -or -not $response.Data.PSObject.Properties['runtimeStatus'] -or $response.Data.runtimeStatus -notin @('Pending','Running','ContinuedAsNew','Completed','Failed','Terminated','Canceled','Suspended')) { Stop-PocValidation 'InvalidStatusResponse' }
             if ($response.Data.runtimeStatus -in @('Completed','Failed','Terminated','Canceled','Suspended')) { return $response.Data }
         }
         $remaining = $TimeoutSeconds - $watch.Elapsed.TotalSeconds
@@ -311,18 +311,30 @@ function Invoke-PocValidation {
     $directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EvidenceDirectory)
     $null = New-Item -ItemType Directory -Path $directory -Force
     $summary = [ordered]@{ schemaVersion=1; startedUtc=[DateTime]::UtcNow.ToString('o'); completedUtc=$null; validationKind='Azure';
-        gitRevision=$null; gitDirty=$null; sourceSha256=$null; packageSha256=$null; settings=@{ timeoutSeconds=$TimeoutSeconds; pollSeconds=$PollSeconds; dedicatedEnvironment=[bool]$DedicatedEnvironment };
-        Scenarios=@(); excluded=@('HostRecovery','PermissionFaults','NetworkFaults','ZeroNodeAutoscale','RealCpp'); ExitCode=1 }
+        gitRevision=$null; gitDirty=$null; sourceSha256=$null; packageSha256=$null; settings=@{ timeoutSeconds=$TimeoutSeconds; pollSeconds=$PollSeconds; dedicatedEnvironment=[bool]$DedicatedEnvironment; batchNodeType=$null };
+        Scenarios=@(); excluded=@('HostRecovery','PermissionFaults','NetworkFaults','ZeroNodeAutoscale','RealCpp','SpotEvictionRecovery'); ExitCode=1 }
     $key=$null
     try {
         if (-not $Scenarios -or $Scenarios.Count -eq 0) { Stop-PocValidation 'EmptyScenarioSelection' }
         $repository = Split-Path $PSScriptRoot -Parent
-        $revision = @(& git -C $repository rev-parse HEAD 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $revision.Count -eq 1 -and $revision[0] -match '^[0-9a-f]{40}$') { $summary.gitRevision=$revision[0]; $summary.gitDirty=[bool]@(& git -C $repository status --porcelain 2>$null).Count }
-        $summary.sourceSha256 = Get-PocSourceHash -Repository $repository
         $deployment = ConvertTo-DeploymentHashtable (Get-Content -LiteralPath $DeploymentResultPath -Raw | ConvertFrom-Json)
+        if ($deployment.ContainsKey('source_provenance')) {
+            $provenance=$deployment.source_provenance
+            if ($provenance.gitRevision -notmatch '^[0-9a-f]{40}$' -or $provenance.sourceSha256 -notmatch '^[0-9a-fA-F]{64}$' -or $provenance.gitDirty -isnot [bool]) { Stop-PocValidation 'InvalidSourceProvenance' }
+            $summary.gitRevision=$provenance.gitRevision
+            $summary.gitDirty=$provenance.gitDirty
+            $summary.sourceSha256=$provenance.sourceSha256
+        } else {
+            $revision = @(& git -C $repository rev-parse HEAD 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $revision.Count -eq 1 -and $revision[0] -match '^[0-9a-f]{40}$') { $summary.gitRevision=$revision[0]; $summary.gitDirty=[bool]@(& git -C $repository status --porcelain 2>$null).Count }
+            $summary.sourceSha256 = Get-PocSourceHash -Repository $repository
+        }
         if (-not $deployment.ContainsKey('outputs')) { Stop-PocValidation 'DeploymentOutputsMissing' }
         $outputs = $deployment.outputs
+        if ($outputs.ContainsKey('batch_node_type') -and $null -ne $outputs.batch_node_type) {
+            if ($outputs.batch_node_type -cnotin @('dedicated','spot')) { Stop-PocValidation 'InvalidBatchNodeType' }
+            $summary.settings.batchNodeType=$outputs.batch_node_type
+        }
         foreach ($field in @('subscription_id','resource_group_name','function_app_name','function_app_url','storage_account_name','blob_container_name','blob_endpoint','batch_endpoint','batch_pool_id')) {
             if (-not $outputs.ContainsKey($field) -or [string]::IsNullOrWhiteSpace([string]$outputs[$field])) { Stop-PocValidation 'RequiredDeploymentOutputMissing' }
         }
@@ -359,7 +371,7 @@ function Invoke-PocValidation {
         Write-DeploymentJson -Path (Join-Path $directory 'summary.json') -Value $summary
         $lines = @("PoC validation ($($summary.validationKind))", "Completed UTC: $($summary.completedUtc)", "Exit code: $($summary.ExitCode)")
         $lines += @($summary.Scenarios | ForEach-Object { '{0}: {1} ({2})' -f $_.Name,$_.Status,$_.Reason })
-        $lines += 'Excluded: host recovery, permission/network fault injection, zero-node autoscale, real C++.'
+        $lines += 'Excluded: host recovery, permission/network fault injection, zero-node autoscale, real C++, Spot eviction recovery.'
         [IO.File]::WriteAllLines((Join-Path $directory 'summary.txt'),[string[]]$lines,[Text.UTF8Encoding]::new($false))
     }
     return [pscustomobject]$summary

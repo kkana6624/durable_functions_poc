@@ -54,7 +54,7 @@ function Invoke-Tool {
 function Invoke-AzJson {
     param([Parameter(Mandatory)][string[]] $Arguments, [switch] $Sensitive)
     $subscription = Get-Variable -Name DeploymentSubscriptionId -Scope Script -ErrorAction SilentlyContinue
-    if ($subscription -and $subscription.Value -and $Arguments[0] -ne 'version' -and '--subscription' -notin $Arguments) {
+    if ($subscription -and $subscription.Value -and $Arguments[0] -notin @('version','cloud') -and '--subscription' -notin $Arguments) {
         $Arguments += @('--subscription', [string]$subscription.Value)
     }
     $output = Invoke-Tool -FilePath $script:AzPath -Arguments ($Arguments + @('--only-show-errors', '--output', 'json')) -Sensitive:$Sensitive
@@ -92,7 +92,25 @@ function New-FunctionZip {
     foreach ($required in @('host.json', 'worker.config.json', 'Poc.Functions.dll', '.azurefunctions')) {
         if (-not (Test-Path -LiteralPath (Join-Path $PublishDirectory $required))) { throw "Publish output is incomplete: $required" }
     }
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    # ZipFile includes dot directories on all supported hosts; host.json stays at the archive root.
-    [IO.Compression.ZipFile]::CreateFromDirectory($PublishDirectory, $Destination, [IO.Compression.CompressionLevel]::Optimal, $false)
+    # .NET Framework's CreateFromDirectory writes Windows separators into ZIP
+    # entries. Linux treats those as literal filename characters, hiding the
+    # .azurefunctions payload from the host. Build portable entry names explicitly.
+    $root=[IO.Path]::GetFullPath($PublishDirectory).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar
+    $stream=[IO.File]::Open([IO.Path]::GetFullPath($Destination),[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    try {
+        $archive=[IO.Compression.ZipArchive]::new($stream,[IO.Compression.ZipArchiveMode]::Create,$true)
+        try {
+            foreach ($file in [IO.Directory]::EnumerateFiles($root,'*',[IO.SearchOption]::AllDirectories)) {
+                $name=$file.Substring($root.Length).Replace('\','/')
+                $entry=$archive.CreateEntry($name,[IO.Compression.CompressionLevel]::Optimal)
+                $source=[IO.File]::OpenRead($file)
+                try {
+                    $target=$entry.Open()
+                    try { $source.CopyTo($target) } finally { $target.Dispose() }
+                } finally { $source.Dispose() }
+            }
+        } finally { $archive.Dispose() }
+    } finally { $stream.Dispose() }
 }

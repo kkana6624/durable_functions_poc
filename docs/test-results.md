@@ -1,6 +1,80 @@
 # PoC 検証結果
 
-## 2026-10-17 独立検証ランナーの追加と単体テスト拡充（最新）
+## 2026-10-17 RHEL 9 VM・Private Function・3 Task の Azure 実証
+
+Private SCM への配置、12 Functions の登録、VNet 内の VM からの HTTP 受付、Windows Batch Spot ノードでの3 Task、結果 Blob の回収・集約が実 Azure 上で成功しました。以下の節は過去のチェックポイントとして保持し、最新状態はこの節を優先します。
+
+| 対象 | 実環境の結果 |
+|---|---|
+| インフラ | RHEL 設定の残り apply 成功（12件追加・変更削除0）。Batch Spot コア枠2、Spot1台・専用0台、データプレーンでノード ready を確認 |
+| 検証 VM | 通常 `Standard_F1as_v7` + NVMe、RHEL 9.8（image `9.8.2026080415`）。cloud-init `done`、CLI 2.91.0、PowerShell 7.6.7、ready marker を Run Command で確認 |
+| Function の受信 | `publicNetworkAccess=Disabled`、Private Endpoint 接続 `Approved` を確認。外部からの HTTP 拒否試験とは区別 |
+| Private SCM / Functions | ZIP 配置成功、12 Functions の登録を確認 |
+| 3 Task smoke | `exit_code=0`、`Ready=true`、`Smoke=Pass`、`TaskCount=3`、`Sum=3`。HTTP 受付から結果・Manifest の整合性検証まで成功 |
+| 標準6シナリオ | HTTP 202 対応修正後、single / three / classification / failure / conflict の5件 Pass、admission20 は `AdmissionObservedButExecutionHistoryUnavailable` による NotRun。summary 終了コード2で完了 |
+
+成功証跡は `artifacts/deployment-recovery/rhel-private-deploy/vm-operation.json`（完了 `2026-10-17T13:06:18Z`）、配置結果は `artifacts/deployment-recovery/deployment-result.json` です。独立検証の初回失敗証跡は `artifacts/deployment-recovery/rhel-validation/` に保持し、修正版の再検証先は `artifacts/deployment-recovery/rhel-validation-202/` です。いずれも Git 管理外です。Function キー・トークン・Durable 管理 URL・生の例外本文は記録しません。
+
+実機で確認した不具合と修正は次のとおりです。
+
+- Windows PowerShell / .NET Framework の ZIP にバックスラッシュを含む37エントリが入り、Linux host で `.azurefunctions` を認識できませんでした。相対 POSIX パスで ZIP を作成するよう修正し、実89エントリでバックスラッシュ0・`.azurefunctions/` 配下36件を確認して再配置しました。新 SDK は DLL に metadata provider を生成するため、`functions.metadata` 不在自体は不備ではありません。
+- `az functionapp show` の補助的な構成・公開プロファイル取得が最小権限で失敗したため、SCM ホスト名の取得を `sites/read` の ARM GET へ変更しました。権限は追加していません。
+- CLI の転送進捗が JSON へ混入する問題は、Blob 転送すべての `--no-progress` 指定で修正しました。
+- Run Command の集約応答を stdout と認識せず、成功したゲスト結果を誤失敗にしていました。個別 stdout と `[stdout]` / `[stderr]` 集約形式の両方を扱い、stderr の成功文字列では誤成功にならないよう修正しました。
+- 独立ランナーは Durable 状態 API の進行中 HTTP 202 を不正扱いしていました。HTTP 200 / 202 の双方を受理し、既知の `runtimeStatus` を必須として、202 の観測回数も証跡へ記録します。オフライン試験で 202 Running → 200 Completed の成功、202 の不明・欠落ステータスの即時拒否を確認しました。修正後の Azure 再検証は `2026-10-17T13:14:57Z` に5件 Pass・1件 NotRun で完了しました。admission20 の NotRun は全世代の起動履歴を取得できないためであり、厳密な起動一意性の実証ではありません。
+- summary の終了コード2は Worker の子 `PowerShell -Command` で1へ変換されていたため、`exit $LASTEXITCODE` を明示しました。実際の Worker コマンドを子プロセスで実行する回帰試験は Pass です。修正後の Azure admission20 単独実行は `2026-10-17T13:17:59Z` に完了し、`artifacts/deployment-recovery/rhel-validation-exitcode/` で summary 終了コード2、RHEL guest の `vm-operation.json` の `exit_code=2`・`error_code=null`・`failure_stage=null`・`summary_available=true` を確認しました。wrapper スクリプトも2を返します。自動化で `powershell -Command` から呼ぶ場合は、呼び出し元の末尾にも `exit $LASTEXITCODE` を指定します。省略時に外側シェルが1を返すことは PowerShell の挙動であり、検証失敗ではありません。標準6シナリオの最終結果は5件 Pass・admission20 NotRun です。
+
+標準6シナリオの来歴は Git revision `a8a84344315e553752c2bfc970cd3c33697553b3`・dirty=true、source SHA-256 `f5b62dc38172c2b8451d13d393d1b33d9480bae46a1ce60cc9c0d16b84c9fe2a`、package SHA-256 `92753cc6c3f407bc879370ca2fab24d295f8ccdaaa461b5506cf99141e9fbef7` です。これらは実行時に渡した来歴情報であり、Azure host のロード済みバイナリの直接照合値ではありません。
+
+ローカルでは Terraform main Mock18件・fmt・validate が成功しました。修正対象の PowerShell 試験4組（Deployment.Common / Test-Deployment / PocValidation / PrivateVm）も成功し、raw ZIP エントリ名と内容、進捗抑止、ARM GET、固定値だけの失敗診断、Run Command の成功・失敗判定を確認しました。.NET91件・Release publish の過去の成功記録とは区別します。期限停止、host 復旧、Spot 回収復旧、実 C++ 連携、Storage / Batch の全面閉域化は未実証です。
+
+
+## 2026-10-17 Batch Spot 対応（ローカル更新）
+
+ユーザーから Spot コア増枠申請済みとの報告を受け、承認待ちの間にローカル資材を更新しています。承認は未確認で、今回 Azure の再照会・変更は行いません。新規 Batch のノード種別を `dedicated` / `spot` から選択でき、省略時は従来互換の `dedicated`、PoC サンプルと実設定は Spot 1台・専用0台です。Linux 検証 VM は通常 VM のままです。
+
+| 対象 | 今回の結果 |
+|---|---|
+| Terraform Mock | main 16件 + bootstrap 1件、計17件 Pass。既定の専用ノード互換性、Spot 台数・output、不正な種別の拒否、既存 Pool 参照維持を確認 |
+| PowerShell オフライン試験 | 5組 Pass（Deployment.Common / Test-Deployment / Deploy.Workflow / PocValidation / PrivateVm）。種別の引き継ぎ、準備完了ノードの種別照合、回収済み・利用不能・無効ノードの除外、空の Spot Pool の待機期限、設定種別の要約記録を Fake で確認 |
+| 構文・書式 | PowerShell parse、Terraform fmt / validate が Pass |
+| .NET 単体テスト / Release publish | 今回 C# 変更なしのため再実行なし。前回の91件 Pass・publish 成功記録を維持 |
+
+証跡は `artifacts/spot-validation/` に保存します（Git 管理外）。ランナーは `summary.settings.batchNodeType` に設定上の種別を記録します。Azure ノードの実測値ではありません。Spot 回収・復旧はシナリオ対象外（`SpotEvictionRecovery`）とし、Azure での Spot ノード確保、回収時の Task 再キュー、結果回収は未検証です。ローカル結果は Activity による取得前にノードを失うと回収できない場合があり、Task から Blob への直接永続化は今回実装していません。
+
+配置再開には、対象 Batch account の Spot コア（API 名 `lowPriorityCoreQuota`）が最低2であることの Azure 上での確認と、同じ設定・state による再 plan が必要です。以下のクォータ値と35リソースの plan は過去の確認記録で、現在値や今回の Spot plan の証跡ではありません。古い保存 plan は適用しません。
+
+## 2026-10-17 実設定での事前確認
+
+**当時の実環境の停止条件**: state 基盤4リソースと専用 PoC RG / Batch account の2リソースを作成しました。Batch account の実値は `dedicatedCoreQuota=0`、`lowPriorityCoreQuota=0`、`poolQuota=20` でした。当時予定していた `Standard_D2s_v5` 専用1台には専用 core quota が最低2必要だったため、Pool / VM / Function / NAT は未作成です。現在は上記 Spot 方針へ変更しています。Azure ワークフロー試験は未実施のままです。
+
+main の plan は新規35リソースで削除・置換なしでした。クォータ確認では同じ remote state に対し、対象型が RG / Batch account のみであることを検査してから target apply しました。state が更新されたため、この時点より前の保存 full plan は再利用しません。再開時は `deploy.ps1` により再 plan します。証跡は Git 管理外の `.deploy/poc/` 配下です。
+
+Azure CLI 2.91.0 のログイン、Owner 権限、必要 Provider の登録、既存 Windows Gallery image の metadata と Japan East replica、検証 VM 用 vCPU 枠を Azure 管理プレーンで確認しました。実設定は Git 管理外の `environments/poc.psd1` を使用します。
+
+実設定を用いた build、単体テスト91件（失敗0・skip0）、Release publish が成功しました。初回の `-PlanOnly` は state backend 未作成のため bootstrap plan のみを保存し、apply・コード配置を実行しませんでした。初回確認で判明した CLI PATH の引き継ぎ不備を修正し、オフライン回帰試験と再実行で確認しました。
+
+これは管理プレーンの事前確認であり、Function の起動・Private DNS / SCM・VM Identity・Batch Task 実行の合格判定ではありません。
+
+## 2026-10-17 Function 受信閉域化・検証 VM（今回）
+
+VNet 内の検証 VM、NAT、Function Private Endpoint / Private DNS、公開ネットワークアクセス無効化、および VM Run Command 経由の配置・独立検証を追加する作業です。今回のローカル試験では以下を確認しました。いずれも Azure 実環境での検証ではありません。
+
+| 対象 | 今回の結果 |
+|---|---|
+| PowerShell オフライン試験 | 5 組 Pass（Deployment.Common / Test-Deployment / Deploy.Workflow / PocValidation / PrivateVm）。VM 転送・実行の制御、証跡回収、エラー時の抑止、配置経路変更を Fake で検証 |
+| Terraform Mock | main 13 件 + bootstrap 1 件、計14件 Pass。Function 公開アクセス無効化、Private Endpoint / DNS、VM Public IP なし、NAT と権限、任意 operator ID の未指定・明示指定・不正 GUID を含む |
+| スクリプト構文 | PowerShell parse とゲスト実行 shell の Bash -n が Pass |
+| .NET 単体テスト | 2026-10-17 の VM 実装前チェックポイント（HEAD `a8a8434`）で91件 Pass を再確認。今回 C# 変更なしのため再実行なし |
+| Release publish | 既存の成功記録を維持。今回は再実行なし |
+
+今回のローカル証跡は `artifacts/private-vm-validation/` に保存しています（Git 管理外）。
+
+以下の PowerShell 4 組・Terraform 8 件は以前のベースラインの記録です。
+
+Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Identity の権限反映、公開アクセス拒否、Job 投入・結果回収は **未検証** です。実環境の設定・SSH 公開鍵・権限が必要です。
+
+## 2026-10-17 独立検証ランナーの追加と単体テスト拡充（既存ベースライン）
 
 `Invoke-PocValidation.ps1` を追加し、デプロイ済み環境に対する検証処理をデプロイ実行スクリプトから分離しました。あわせて HTTP レイヤー（`StartWorkflow`）および回復性・受付制御の単体テストを大幅に拡充し、.NET 単体テストは **全 7 テストクラス・91 件すべてが合格（91 Pass / 0 Fail / 0 Skip）** しています。なお、Azure 実環境への実接続試験は引き続き未実施です。
 各処理の順序、生成される成果物、およびシナリオ別の詳細な判定基準については [検証ランナーの処理フロー](validation-runner-flow.md) を参照してください。
@@ -18,7 +92,7 @@
 
 `admission20` シナリオでは、同一インスタンスへの集約、期待される Task 数、および完了後の再送動作を観測します。しかし、現在の Azure Functions / Durable 管理 API のみでは全世代にわたる Main オーケストレーションの起動履歴を完全には証明できないため、検証ランナーは観測値を記録したうえで `NotRun / AdmissionObservedButExecutionHistoryUnavailable` を返します。ローカル Fake 環境で履歴を擬似的に与えたテストの合格をもって、Azure 実環境における「1 度限りの起動保証」が実証されたとはみなしていません。
 
-個人の検証環境では公開エンドポイントを用いて検証を開始する前提とし、VPN / ExpressRoute 回線と共通 VNet の接続境界については [接続設計](network-connectivity-design.md) に記録しました。現段階では Azure 上のネットワークリソースは作成していません。
+上記はネットワーク実装前のローカル検証記録です。現在の個人検証方針は、VNet 内の VM から Function Private Endpoint へ接続する方式へ変更しました。[接続設計](network-connectivity-design.md) を参照してください。Azure 上でのリソース作成・到達性・認証・配置の検証は未実施です。
 
 > [!NOTE]
 > Azure 実環境への接続値・資格情報が未提供のため、現時点での検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しています。Azure 実環境での動作検証は未実施です。

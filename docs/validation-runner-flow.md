@@ -2,11 +2,15 @@
 
 更新日: 2026-10-17
 
-本書では、`scripts/Invoke-PocValidation.ps1` による一括検証の処理フローと、ワークフロー開始 API から Durable Functions、Azure Batch、Blob Storage へ至る一連のシーケンスを解説します。個人の検証環境における現行の接続形態はパブリックエンドポイントです。VPN / ExpressRoute、Private Endpoint、Web App 等の閉域インフラは本 runner の作成スコープ外であり、将来の業務接続構成については [共通ネットワーク設計](network-connectivity-design.md) を参照してください。
+本書では、`scripts/Invoke-PocValidation.ps1` による一括検証の処理フローと、ワークフロー開始 API から Durable Functions、Azure Batch、Blob Storage へ至る一連のシーケンスを解説します。個人検証では `Invoke-PrivatePocValidation.ps1` が検証 VM の Run Command を起動し、VM 上から Function の Private Endpoint を呼び出します。Azure CLI は VM の Managed Identity でログインし、Function key を取得します。Function の公開ネットワークアクセスは無効化します。Storage / Batch の送信経路、VPN / ExpressRoute、Web App の後続構成については [共通ネットワーク設計](network-connectivity-design.md) を参照してください。
 
 ## runnerの全体フロー
 
+VM 実行時の Git revision・ソース fingerprint・package hash はローカル checkout から bundle に含めて渡します。ゲストには .git はなく、来歴情報をゲスト checkout から再計算したものではありません。転送専用 poc-vm-control Blob と Run Command で実行・証跡回収を行います。cloud-init 待ちの900秒とゲスト操作全体の4200秒上限があり、長い検証は Scenarios を分割します。
+
 runner はデプロイ結果ファイル（`deployment-result.json`）を読み込み、指定された検証シナリオを順次実行します。シナリオのうち `classification` は複数パターンのワークフローを連続実行し、`admission20` は HTTP 20 並行リクエストの送信を行います。
+
+`summary.settings.batchNodeType` は配置設定の `dedicated` / `spot` を記録する欄であり、実ノードを観測した種別ではありません。Spot の回収・復旧はシナリオ対象外の `SpotEvictionRecovery` として記録します。`-DedicatedEnvironment` は試験専用環境の指定であり、専用 Batch ノードの指定ではないため Spot 環境でも使用します。
 
 ```mermaid
 flowchart TD

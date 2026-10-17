@@ -3,6 +3,9 @@ resource_group_name   = "poc-durable-batch"
 create_resource_group = true
 location              = "japaneast"
 name_suffix           = "replaceunique001"
+validation_vm_ssh_public_key = "ssh-ed25519 <your-public-key>"
+# Optional: explicitly grant the initiating user's/service principal's object ID access to the control container.
+# validation_operator_principal_id = "00000000-0000-0000-0000-000000000000"
 batch_mode            = "new"
 
 # Only existing image version is read, never changed or given permissions automatically.
@@ -10,6 +13,9 @@ batch_image_source = "gallery"
 gallery_image_version_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/existing-image-rg/providers/Microsoft.Compute/galleries/existinggallery/images/windows/versions/1.0.0"
 batch_node_agent_sku_id = "batch.node.windows amd64"
 batch_vm_size          = "Standard_D2s_v5"
+# PoC uses Spot Batch nodes; validation VM remains a regular VM.
+# Requires Batch lowPriorityCoreQuota; Spot capacity and continued allocation are not guaranteed.
+batch_node_type         = "spot"
 batch_node_count        = 1
 batch_max_tasks_per_node = 1
 batch_diagnostics_enabled = false

@@ -7,8 +7,9 @@ $oldTrace=$env:POC_FAKE_TRACE
 $oldDefault=$env:POC_FAKE_DEFAULT
 $oldRequest=$env:POC_FAKE_REQUESTID
 $oldBackend=$env:POC_FAKE_BACKEND
+$oldPath=$env:Path
 try {
-    foreach ($file in @('deploy.ps1','Deployment.Common.ps1','Test-Deployment.ps1','Validation.Assertions.ps1')) {
+    foreach ($file in @('deploy.ps1','Deployment.Common.ps1','Test-Deployment.ps1','Validation.Assertions.ps1','Invoke-PrivateVmOperation.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "../$file") -Destination (Join-Path $temporary "scripts/$file")
     }
     @'
@@ -23,6 +24,15 @@ function Invoke-ValidationHttp {
     return @{ StatusCode=200; Data=[pscustomobject]@{ runtimeStatus='Completed'; output=[pscustomobject]@{ state='Succeeded' } } }
 }
 '@ | Add-Content -LiteralPath (Join-Path $temporary 'scripts/Test-Deployment.ps1') -Encoding UTF8
+    @'
+# The isolated workflow tests exercise orchestration; transport is tested separately.
+function Invoke-PrivateVmOperation {
+    param([hashtable]$Outputs,[string]$Operation,[string]$PackagePath,[string]$EvidenceDirectory,[int]$TimeoutSeconds,[switch]$Smoke)
+    if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) { throw 'Missing Function package' }
+    [IO.File]::AppendAllText($env:POC_FAKE_TRACE,"vm-operation $Operation package smoke=$([bool]$Smoke) timeout=$TimeoutSeconds`n")
+    return [pscustomobject]@{ validation=@{Ready=$true;Smoke='Pass'} }
+}
+'@ | Add-Content -LiteralPath (Join-Path $temporary 'scripts/Invoke-PrivateVmOperation.ps1') -Encoding UTF8
     $env:POC_FAKE_TRACE=Join-Path $temporary 'trace.txt'
     $fakeDotnet=Join-Path $temporary 'dotnet.ps1'
     @'
@@ -40,9 +50,10 @@ exit 0
     $fakeTerraform=Join-Path $temporary 'terraform.ps1'
     @'
 [IO.File]::AppendAllText($env:POC_FAKE_TRACE,"terraform $($args -join ' ')`n")
+if (($env:Path -split [regex]::Escape([string][IO.Path]::PathSeparator))[0] -ne $PSScriptRoot) { throw 'Terraform must inherit the configured Azure CLI directory in PATH.' }
 if ('show' -in $args) { '{"resource_changes":[]}' }
 elseif ('output' -in $args) {
-    '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null}'
+    '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null,"validation_vm_name":"poc-vm","vm_control_container_name":"vm-control","function_private_ip":"10.20.2.4"}'
 }
 else { 'fake terraform success' }
 exit 0
@@ -91,26 +102,29 @@ exit 0
 "@
     Set-Content -LiteralPath $configPath -Value $config -Encoding UTF8
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath -PlanOnly
+    Assert-True ($env:Path -eq $oldPath) 'Deployment must restore the caller PATH after PlanOnly'
     $trace=Get-Content -LiteralPath $env:POC_FAKE_TRACE
-    Assert-True (@($trace | Where-Object { $_ -match 'terraform .* apply |config-zip' }).Count -eq 0) 'PlanOnly must not apply or deploy code'
+    Assert-True (@($trace | Where-Object { $_ -match 'terraform .* apply |config-zip|vm-operation' }).Count -eq 0) 'PlanOnly must not apply or deploy code'
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath
     $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
     $joined=$trace -join "`n"
     $apply=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match 'terraform .* apply ' })
     $pool=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^az rest ' })
-    $zip=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match 'config-zip' })
-    $functions=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match 'functionapp function list' })
-    Assert-True ($apply -ge 0 -and $pool -gt $apply -and $zip -gt $pool -and $functions -gt $zip) 'Expected apply -> pool readiness -> ZIP deployment -> Function indexing'
+    $vm=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation Deploy ' })
+    Assert-True ($apply -ge 0 -and $pool -gt $apply -and $vm -gt $pool) 'Expected apply -> pool readiness -> deployment on private VM'
+    Assert-True ($trace[$vm] -match 'smoke=False timeout=60') 'Default deployment must pass timeout and omit VM smoke'
+    Assert-True (@($trace | Where-Object { $_ -match 'config-zip|^http |dotnet run --project tools/BatchSmoke' }).Count -eq 0) 'Deployment must not call the private endpoints or Batch smoke locally'
+    $resultFile=Get-ChildItem -LiteralPath (Join-Path $temporary '.deploy/offline') -Filter deployment-result.json -Recurse | Select-Object -First 1
+    $result=Get-Content -LiteralPath $resultFile.FullName -Raw | ConvertFrom-Json
+    Assert-True ($result.validation.Ready -eq $true -and $result.validation.Smoke -eq 'Pass' -and $result.smoke_requested -eq $false) 'Deployment summary must retain VM validation results and requested smoke mode'
     Assert-True ($joined -match 'dotnet .*test --project' -and $joined -match 'dotnet publish') 'Deployment should test and publish the Functions'
     Assert-True (@($trace | Where-Object { $_ -match '^az ' -and $_ -notmatch '^az version' -and $_ -notmatch '--subscription target-subscription' }).Count -eq 0) 'Every Azure resource call must target configured subscription'
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath -Smoke
     $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
-    $single=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match 'dotnet run --project tools/BatchSmoke/BatchSmoke.csproj' })
-    $post=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -eq 'http Post' })
-    Assert-True ($single -ge 0 -and $post -gt $single) 'Smoke switch must survive dot-sourcing and run single Batch task before HTTP three-task workflow'
-    Assert-True ($trace[$single] -match '--timeout-seconds 60') 'Batch smoke must use the configured deployment timeout'
+    $vm=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation Deploy ' })
+    Assert-True ($vm -ge 0 -and $trace[$vm] -match 'smoke=True timeout=60') 'Smoke switch and configured timeout must survive dot-sourcing and reach the VM'
     Assert-True (@($trace | Where-Object { $_ -match '^az rest .*?/nodes\?' }).Count -eq 0) 'Existing pool smoke must submit tasks without a node-allocation precondition'
     Assert-True (($trace -join "`n") -notmatch 'PRIVATE-FUNCTION-KEY|code=PRIVATE') 'Trace must not contain Function or Durable status keys'
     $bootstrapConfigPath=Join-Path $temporary 'bootstrap-config.psd1'
@@ -123,7 +137,7 @@ exit 0
     $bootstrapInit=@($trace | Where-Object { $_ -match '^terraform -chdir=infra/bootstrap init ' })
     Assert-True ($bootstrapInit.Count -eq 1) 'Backend.Create=true PlanOnly must initialize bootstrap'
     Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra/bootstrap plan ' }).Count -eq 1) 'Backend PlanOnly must create bootstrap plan'
-    Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra init |terraform .* apply |config-zip' }).Count -eq 0) 'Bootstrap PlanOnly must not initialize main backend, apply any plan, or deploy code'
+    Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra init |terraform .* apply |config-zip|vm-operation' }).Count -eq 0) 'Bootstrap PlanOnly must not initialize main backend, apply any plan, or deploy code'
     $expectedState=Join-Path $temporary '.deploy/offline-bootstrap/bootstrap/terraform.tfstate'
     Assert-True ([IO.Path]::IsPathRooted($expectedState)) 'Expected bootstrap state path must be absolute'
     Assert-True ($bootstrapInit[0] -match [regex]::Escape("-backend-config=path=$expectedState")) 'Bootstrap init must explicitly pin absolute local state path'
@@ -132,7 +146,7 @@ exit 0
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline-bootstrap' -ConfigFile $bootstrapConfigPath -PlanOnly
     $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
     Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra plan ' }).Count -eq 1) 'Existing backend must allow main plan with Create=true'
-    Assert-True (@($trace | Where-Object { $_ -match 'terraform .* apply |config-zip' }).Count -eq 0) 'Existing backend PlanOnly must not apply or deploy'
+    Assert-True (@($trace | Where-Object { $_ -match 'terraform .* apply |config-zip|vm-operation' }).Count -eq 0) 'Existing backend PlanOnly must not apply or deploy'
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     $env:POC_FAKE_BACKEND='forbidden'
     $failed=$false
@@ -140,7 +154,7 @@ exit 0
     catch { $failed=$_.Exception.Message -match 'AuthorizationFailed' }
     Assert-True $failed 'Backend permission errors must fail instead of reporting absence'
     $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
-    Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra init |terraform .* apply |config-zip' }).Count -eq 0) 'Failed backend probe must stop deployment'
+    Assert-True (@($trace | Where-Object { $_ -match '^terraform -chdir=infra init |terraform .* apply |config-zip|vm-operation' }).Count -eq 0) 'Failed backend probe must stop deployment'
     $env:POC_FAKE_BACKEND='present'
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline-bootstrap' -ConfigFile $bootstrapConfigPath
@@ -157,7 +171,7 @@ exit 0
     try { & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath }
     catch { $failed=$_.Exception.Message -match 'identity changed' }
     Assert-True $failed 'Deployment must reject changing persisted environment identity'
-    Write-Host 'Deploy workflow offline tests: PASS (PlanOnly, bootstrap PlanOnly/apply/state path, sequence, subscription, Smoke single-task then HTTP, environment identity; no Azure calls).'
+    Write-Host 'Deploy workflow offline tests: PASS (PlanOnly, bootstrap PlanOnly/apply/state path, private VM sequence, subscription, VM Smoke switch, environment identity; no Azure calls).'
 } finally {
     $env:POC_FAKE_TRACE=$oldTrace
     $env:POC_FAKE_DEFAULT=$oldDefault

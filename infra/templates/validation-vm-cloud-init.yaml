@@ -1,0 +1,24 @@
+#cloud-config
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - unzip
+write_files:
+  - path: /usr/local/sbin/install-poc-tools
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # Azure CLI's official RHEL 9 repository also supplies PowerShell.
+      # Register it once so both tools use the same signed Microsoft RPM source.
+      rpm --import https://packages.microsoft.com/keys/microsoft.asc
+      dnf install -y https://packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm
+      dnf install -y azure-cli powershell
+      az version --output none
+      pwsh -NoLogo -NoProfile -Command '$ErrorActionPreference="Stop"; $PSVersionTable.PSVersion.ToString()'
+      touch /var/lib/cloud/instance/poc-tools-ready
+runcmd:
+  - [bash, /usr/local/sbin/install-poc-tools]

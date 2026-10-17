@@ -27,6 +27,18 @@ function Invoke-AzJson {
         return [pscustomobject]@{ allocationState='steady' }
     }
     if ($command -match '^rest .*?/nodes\?') {
+        if ($script:scenario -in @('spotrecovery','spotonlydedicated','dedicatedonlyspot','missingcapacity')) {
+            $nodes=@([pscustomobject]@{ state='idle'; schedulingState='enabled'; isDedicated=$true })
+            if ($script:scenario -eq 'spotrecovery') {
+                $nodes+= [pscustomobject]@{ state='preempted'; schedulingState='enabled'; isDedicated=$false }
+                $nodes+= [pscustomobject]@{ state='unusable'; schedulingState='enabled'; isDedicated=$false }
+                $nodes+= [pscustomobject]@{ state='idle'; schedulingState='disabled'; isDedicated=$false }
+                if ($script:poolReads -ge 2) { $nodes+= [pscustomobject]@{ state='running'; schedulingState='enabled'; isDedicated=$false } }
+            }
+            if ($script:scenario -eq 'dedicatedonlyspot') { $nodes[0].isDedicated=$false }
+            if ($script:scenario -eq 'missingcapacity') { $nodes=@([pscustomobject]@{ state='idle'; schedulingState='enabled' }) }
+            return [pscustomobject]@{ value=$nodes }
+        }
         if ($script:scenario -eq 'paging') {
             $page=[pscustomobject]@{ value=@([pscustomobject]@{ state='idle'; schedulingState='enabled' }) }
             if ($command -notmatch 'skiptoken') { $page | Add-Member -NotePropertyName 'odata.nextLink' -NotePropertyValue 'https://batch.example/pools/pool/nodes?api-version=2025-06-01&skiptoken=next' }
@@ -49,6 +61,7 @@ function Invoke-AzJson {
         return [pscustomobject]@{ default='DO-NOT-LOG-FUNCTION-KEY' }
     }
     if ($command -match '^storage blob download ') {
+        Assert-True ('--no-progress' -in $Arguments) 'Blob transfer progress must not contaminate Azure CLI JSON'
         Assert-True ($command -match '--auth-mode login') 'Blob read must use Entra authentication'
         $file=$Arguments[[Array]::IndexOf($Arguments,'--file')+1]
         $sum=if ($script:scenario -eq 'corrupt') { 99 } else { 3 }
@@ -104,10 +117,33 @@ $script:scenario='permission'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'permission'
 $script:scenario='neverready'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'timed out'
+$outputs.batch_mode='new'; $outputs.batch_node_type='spot'
+$script:scenario='spotrecovery'; $script:poolReads=0
+$result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 3 -PollSeconds 1
+Assert-True ($script:poolReads -eq 2 -and $result.Ready -and $result.BatchNodeType -eq 'spot') 'Spot readiness must ignore dedicated/preempted/unusable/disabled nodes until a runnable Spot node appears'
+$script:scenario='spotonlydedicated'
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'Spot Batch node readiness.*capacity is not guaranteed.*timed out'
+$outputs.batch_node_type='dedicated'
+$result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1
+Assert-True ($result.Ready -and $result.BatchNodeType -eq 'dedicated') 'Typed dedicated metadata must accept runnable dedicated nodes'
+$outputs.batch_node_type='dedicated'; $script:scenario='dedicatedonlyspot'
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'timed out'
+$outputs.batch_node_type='spot'; $script:scenario='missingcapacity'; $script:poolReads=0
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'capacity type is missing'
+Assert-True ($script:poolReads -eq 1) 'Missing capacity metadata must fail immediately instead of counting an unknown node'
+$outputs.batch_node_type='invalid'; $script:calls.Clear()
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'batch_node_type'
+Assert-True ($script:calls.Count -eq 0) 'Invalid capacity metadata must fail before Azure calls'
+$outputs.Remove('batch_node_type'); $outputs.Remove('batch_mode')
 $outputs.Remove('batch_node_count')
 $script:calls.Clear()
 $result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1
 Assert-True ($result.Ready -and @($script:calls | Where-Object { $_ -match '/nodes\?' }).Count -eq 0) 'Existing zero-node pool must pass accessibility without waiting for allocation'
+$outputs.batch_mode='existing'; $outputs.batch_node_count=$null; $outputs.batch_node_type=$null
+$outputs.batch_dedicated_node_count=$null; $outputs.batch_spot_node_count=$null
+$script:calls.Clear()
+$result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1
+Assert-True ($result.Ready -and $null -eq $result.BatchNodeType -and @($script:calls | Where-Object { $_ -match '/nodes\?' }).Count -eq 0) 'New reference-only null metadata must preserve existing zero-node pool access checks'
 $script:scenario='permission'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'permission'
 $script:scenario='missingfunction'
@@ -142,4 +178,4 @@ foreach ($status in @(401,403)) {
         Assert-True ($_.Exception.Data['PermanentValidation'] -and $_.Exception.Message -notmatch 'DO-NOT-LOG') 'HTTP authorization failures must stop retries and suppress credentials'
     }
 }
-Write-Host 'Deployment validation offline tests: PASS (node pagination, existing zero-node pools, readiness, smoke, redaction; no Azure calls).'
+Write-Host 'Deployment validation offline tests: PASS (node pagination, Spot/dedicated capacity types, preempted-node exclusion, existing zero-node pools, readiness, smoke, redaction; no Azure calls).'

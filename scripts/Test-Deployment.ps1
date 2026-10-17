@@ -82,7 +82,15 @@ function Invoke-DeploymentValidation {
     $minimumNodes = if ($Outputs.ContainsKey('batch_node_count') -and $null -ne $Outputs.batch_node_count) { [int]$Outputs.batch_node_count } else { 0 }
     if ($minimumNodes -lt 0) { throw 'batch_node_count cannot be negative.' }
     if ($Outputs.ContainsKey('batch_mode') -and $Outputs.batch_mode -eq 'new' -and $minimumNodes -lt 1) { throw 'New pools require a positive batch_node_count.' }
-    $null = Wait-ValidationCondition -RetryErrors -Description 'Batch node readiness' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
+    # New metadata identifies the requested capacity type. Older deployment
+    # results and reference-only pools retain the previous readiness behavior.
+    $nodeType=$null
+    if ($Outputs.ContainsKey('batch_mode') -and $Outputs.batch_mode -eq 'new' -and $Outputs.ContainsKey('batch_node_type') -and $null -ne $Outputs.batch_node_type) {
+        $nodeType=[string]$Outputs.batch_node_type
+        if ($nodeType -cnotin @('dedicated','spot')) { throw 'batch_node_type must be dedicated or spot.' }
+    }
+    $readinessDescription=if ($nodeType -eq 'spot') { 'Spot Batch node readiness (capacity is not guaranteed)' } else { 'Batch node readiness' }
+    $null = Wait-ValidationCondition -RetryErrors -Description $readinessDescription -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
         $pool = Invoke-AzJson -Arguments @('rest','--method','get','--url',"$endpoint/pools/$poolId`?api-version=2025-06-01",'--resource','https://batch.core.windows.net/')
         if ($minimumNodes -eq 0) { return $true }
         if ($pool.PSObject.Properties['resizeErrors'] -and @($pool.resizeErrors).Count -gt 0) {
@@ -102,11 +110,20 @@ function Invoke-DeploymentValidation {
             $nodes += @($page.value)
             $next = if ($page.PSObject.Properties['odata.nextLink']) { [string]$page.'odata.nextLink' } else { $null }
         }
-        return @($nodes | Where-Object { $_.state -in @('idle','running') -and $_.schedulingState -ne 'disabled' }).Count -ge $minimumNodes
+        # Preempted/unusable nodes remain in the API list, but cannot run tasks.
+        $readyNodes=@($nodes | Where-Object { $_.state -in @('idle','running') -and $_.schedulingState -ne 'disabled' })
+        if ($nodeType) {
+            foreach ($node in $readyNodes) {
+                if (-not $node.PSObject.Properties['isDedicated'] -or $node.isDedicated -isnot [bool]) { Stop-Validation 'Batch node capacity type is missing; readiness cannot be verified.' }
+            }
+            $readyNodes=@($readyNodes | Where-Object { $_.isDedicated -eq ($nodeType -eq 'dedicated') })
+        }
+        return $readyNodes.Count -ge $minimumNodes
     }
     if ($minimumNodes -eq 0) { Write-Host 'Existing Batch pool is accessible; tasks may trigger node allocation.' }
+    elseif ($nodeType) { Write-Host "All configured $nodeType Batch nodes are ready." }
     else { Write-Host 'All configured Batch nodes are ready.' }
-    if ($Phase -eq 'Pool') { return [pscustomobject]@{ Ready=$true; Phase='Pool'; Smoke='Not tested' } }
+    if ($Phase -eq 'Pool') { return [pscustomobject]@{ Ready=$true; Phase='Pool'; Smoke='Not tested'; BatchNodeType=$nodeType } }
     }
     $expected = @('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity',
         'EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',
@@ -161,7 +178,7 @@ function Invoke-DeploymentValidation {
             $file = Join-Path $tempDirectory "$name.json"
             $null = Wait-ValidationCondition -RetryErrors -Description "Blob $name availability (requires Blob data read permission)" -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
                 $null = Invoke-AzJson -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,
-                    '--container-name',$Outputs.blob_container_name,'--name',"runs/poc-$requestId/final/$name.json",'--file',$file,'--overwrite','true','--auth-mode','login')
+                    '--container-name',$Outputs.blob_container_name,'--name',"runs/poc-$requestId/final/$name.json",'--file',$file,'--overwrite','true','--auth-mode','login','--no-progress')
                 return $true
             }
             $documents[$name] = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json

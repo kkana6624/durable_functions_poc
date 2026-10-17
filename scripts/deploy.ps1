@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . "$PSScriptRoot/Deployment.Common.ps1"
 . "$PSScriptRoot/Test-Deployment.ps1" -Smoke:$Smoke
+. "$PSScriptRoot/Invoke-PrivateVmOperation.ps1"
 
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $config = Import-PowerShellDataFile -LiteralPath (Resolve-Path -LiteralPath $ConfigFile).Path
@@ -25,7 +26,7 @@ $dotnet = Resolve-DeploymentTool -Name dotnet -ConfiguredPath $tools['DotNet'] -
 $terraform = Resolve-DeploymentTool -Name terraform -ConfiguredPath $tools['Terraform'] -RepositoryRoot $repositoryRoot
 $script:AzPath = Resolve-DeploymentTool -Name az -ConfiguredPath $tools['AzureCli'] -RepositoryRoot $repositoryRoot
 $timeout = if ($config.ContainsKey('TimeoutSeconds')) { [int]$config.TimeoutSeconds } else { 1800 }
-if ($timeout -lt 60 -or $timeout -gt 7200) { throw 'TimeoutSeconds must be between 60 and 7200.' }
+if ($timeout -lt 60 -or $timeout -gt 3600) { throw 'TimeoutSeconds must be between 60 and 3600 for private VM operations.' }
 $backend = $config.Backend
 foreach ($key in @('resource_group_name', 'storage_account_name', 'container_name')) {
     if (-not $backend.ContainsKey($key) -or -not $backend[$key]) { throw "Backend.$key is required." }
@@ -39,9 +40,13 @@ New-Item -ItemType Directory -Path $run | Out-Null
 $previousData = $env:TF_DATA_DIR
 $previousSubscription = $env:ARM_SUBSCRIPTION_ID
 $previousAad = $env:ARM_USE_AZUREAD
+$previousPath = $env:Path
 $previousRoot = Get-Location
 try {
     Set-Location $repositoryRoot
+    # AzureRM launches az by name even when Config.Tools.AzureCli is explicit.
+    # This also supports CLI installs made after this shell was started.
+    $env:Path = (Split-Path $script:AzPath -Parent) + [IO.Path]::PathSeparator + $env:Path
     $env:ARM_SUBSCRIPTION_ID = $variables.subscription_id
     $env:ARM_USE_AZUREAD = 'true'
     Write-Host 'Checking tools, Azure login and resource providers...'
@@ -51,7 +56,7 @@ try {
     if ([version]$cliVersion.'azure-cli' -lt [version]'2.48.1') { throw 'Azure CLI 2.48.1 or later is required for Entra ZIP deployment with Basic authentication disabled.' }
     $account = Invoke-AzJson @('account', 'show', '--subscription', $variables.subscription_id)
     if ($account.id -ne $variables.subscription_id -or $account.state -ne 'Enabled') { throw 'The target subscription is unavailable.' }
-    foreach ($provider in @('Microsoft.Web', 'Microsoft.Storage', 'Microsoft.Insights', 'Microsoft.OperationalInsights', 'Microsoft.Batch', 'Microsoft.Compute')) {
+    foreach ($provider in @('Microsoft.Web', 'Microsoft.Storage', 'Microsoft.Insights', 'Microsoft.OperationalInsights', 'Microsoft.Batch', 'Microsoft.Compute', 'Microsoft.Network')) {
         $registration = Invoke-AzJson @('provider', 'show', '--namespace', $provider, '--subscription', $variables.subscription_id)
         if ($registration.registrationState -ne 'Registered') { throw "$provider is not registered. Register it in the target subscription before deployment." }
     }
@@ -143,27 +148,9 @@ try {
     $outputs = ConvertTo-DeploymentHashtable (Invoke-Tool $terraform @('-chdir=infra', 'output', '-json', 'deployment') | ConvertFrom-Json)
     $null = Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $timeout
 
-    Write-Host 'Deploying Function package using Microsoft Entra authentication...'
-    $null = Invoke-AzJson @('functionapp', 'deployment', 'source', 'config-zip', '--subscription', $variables.subscription_id, '--resource-group', $outputs.resource_group_name, '--name', $outputs.function_app_name, '--src', $zip, '--build-remote', 'false', '--timeout', [string]$timeout) -Sensitive
-    if ($Smoke) {
-        Write-Host 'Running a single-task Batch smoke test...'
-        $previousBatchEndpoint = $env:BATCH_ENDPOINT
-        $previousPoolId = $env:BATCH_POOL_ID
-        $previousTenant = $env:AZURE_TENANT_ID
-        try {
-            $env:BATCH_ENDPOINT = $outputs.batch_endpoint
-            $env:BATCH_POOL_ID = $outputs.batch_pool_id
-            $env:AZURE_TENANT_ID = $account.tenantId
-            $smokeId = 'deploy-smoke-' + [Guid]::NewGuid().ToString('N')
-            $null = Invoke-Tool $dotnet @('run', '--project', 'tools/BatchSmoke/BatchSmoke.csproj', '--no-build', '--', $smokeId, '--timeout-seconds', [string]$timeout) -LogPath (Join-Path $run 'batch-smoke.log')
-        }
-        finally {
-            $env:BATCH_ENDPOINT = $previousBatchEndpoint
-            $env:BATCH_POOL_ID = $previousPoolId
-            $env:AZURE_TENANT_ID = $previousTenant
-        }
-    }
-    $validation = Invoke-DeploymentValidation -Outputs $outputs -Phase Functions -TimeoutSeconds $timeout -Smoke:$Smoke
+    Write-Host 'Deploying and checking the private Function from the validation VM...'
+    $privateResult = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -EvidenceDirectory (Join-Path $run 'private-vm') -TimeoutSeconds $timeout -Smoke:$Smoke
+    $validation = $privateResult.validation
     $summary = @{ environment = $Environment; completed_utc = [DateTime]::UtcNow.ToString('o'); package_sha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash; outputs = $outputs; validation = $validation; smoke_requested = [bool]$Smoke }
     Write-DeploymentJson (Join-Path $run 'deployment-result.json') $summary
     Write-Host "Deployment completed: $($outputs.function_app_name). Logs: $run"
@@ -172,5 +159,6 @@ finally {
     $env:TF_DATA_DIR = $previousData
     $env:ARM_SUBSCRIPTION_ID = $previousSubscription
     $env:ARM_USE_AZUREAD = $previousAad
+    $env:Path = $previousPath
     Set-Location $previousRoot
 }

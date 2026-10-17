@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot '../Invoke-PocValidation.ps1')
 $realConcurrentAdmission = ${function:Invoke-PocConcurrentAdmission}
+$realGetPocBlobDocument = ${function:Get-PocBlobDocument}
 
 $knownRequest=@{ requestId='known'; classification='auto'; taskCount=3; failTaskIndex=$null; lightDelaySeconds=1; heavyDelaySeconds=3 }
 if ((Get-PocFingerprint -Request $knownRequest -Classification light) -ne '9f1c210ac5e0ca49867405274e67c50520202799d4a2ebed5e64db20e9518e08') { throw 'Canonical fingerprint differs from actual Poc.Core fixture (auto).' }
@@ -97,6 +98,9 @@ function Invoke-PocValidationHttp {
     }
     $script:statusReads++
     if ($script:mode -eq 'pending' -and $script:statusReads -eq 1) { return @{ StatusCode=404; Data=$null } }
+    if ($script:mode -eq 'acceptedRunning' -and $script:statusReads -eq 1) { return @{ StatusCode=202; Data=[pscustomobject]@{runtimeStatus='Running'} } }
+    if ($script:mode -eq 'invalidAccepted') { return @{ StatusCode=202; Data=[pscustomobject]@{runtimeStatus='invalid'} } }
+    if ($script:mode -eq 'missingAccepted') { return @{ StatusCode=202; Data=[pscustomobject]@{unexpected=$script:secret} } }
     if ($script:mode -eq 'neverStarted') { return @{ StatusCode=404; Data=$null } }
     if ($script:mode -eq 'running') { return @{ StatusCode=200; Data=[pscustomobject]@{ runtimeStatus='Running' } } }
     if ($script:mode -in @('401','403')) { return @{ StatusCode=[int]$script:mode; Data=[pscustomobject]@{ error=$script:secret } } }
@@ -180,6 +184,14 @@ function Get-PocBatchObservation {
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('poc-validation-tests-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $temporary
 try {
+    function Invoke-AzJson {
+        param([string[]]$Arguments,[switch]$Sensitive)
+        Assert-True ($Sensitive -and $Arguments[0] -eq 'storage' -and $Arguments[2] -eq 'download' -and '--no-progress' -in $Arguments) 'Runner Blob transfer must suppress progress and sensitive output'
+        $file=$Arguments[[Array]::IndexOf($Arguments,'--file')+1]
+        [IO.File]::WriteAllText($file,'{"transfer":"checked"}')
+    }
+    $transfer=& $realGetPocBlobDocument -Outputs $script:outputs -Path 'fixture.json'
+    Assert-True ($transfer.transfer -eq 'checked') 'Real Blob document reader must parse the downloaded JSON'
     $deployment=Join-Path $temporary 'deployment-result.json'
     @{ outputs=$script:outputs; package_sha256=('a'*64); secret=$script:secret } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
     $script:caseNumber=0
@@ -205,6 +217,40 @@ try {
     Assert-True ($result.Scenarios[2].Evidence.runs.Count -eq 3) 'Classification must cover explicit light, heavy and auto'
     Assert-True ($result.packageSha256 -eq ('a'*64) -and $result.gitRevision -match '^[a-f0-9]{40}$') 'Evidence must record deployment hash and Git revision'
     Assert-True ($result.sourceSha256 -match '^[a-f0-9]{64}$') 'Evidence must identify local source including uncommitted files'
+    Assert-True ($null -eq $result.settings.batchNodeType) 'Legacy results must not claim an observed capacity type'
+    $accepted=Invoke-TestCase acceptedRunning @('single') 0 Pass
+    Assert-True ($script:statusReads -eq 2 -and $accepted.Scenarios[0].Evidence.runs[0].statusHttpCounts['202'] -eq 1 -and $accepted.Scenarios[0].Evidence.runs[0].statusHttpCounts['200'] -eq 1) 'HTTP 202 Running must be polled until HTTP 200 Completed, preserving both observations'
+    foreach ($invalid in @('invalidAccepted','missingAccepted')) {
+        $invalidStatus=Invoke-TestCase $invalid @('single') 1 Fail
+        Assert-True ($invalidStatus.Scenarios[0].Reason -eq 'InvalidStatusResponse' -and $script:statusReads -eq 1) 'HTTP 202 with absent or unknown runtime status must fail immediately'
+    }
+    $script:outputs.batch_node_type='spot'
+    @{ outputs=$script:outputs; package_sha256=('a'*64) } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
+    $spot=Invoke-TestCase success @('single') 0 Pass
+    Assert-True ($spot.settings.batchNodeType -eq 'spot' -and 'SpotEvictionRecovery' -in $spot.excluded) 'Evidence must record configured Spot capacity and leave eviction recovery unvalidated'
+    $script:outputs.batch_node_type='invalid'
+    @{ outputs=$script:outputs } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
+    $script:posts=0
+    $invalidType=Invoke-PocValidation -DeploymentResultPath $deployment -Scenarios @('single') -EvidenceDirectory (Join-Path $temporary 'invalid-capacity')
+    Assert-True ($invalidType.ExitCode -eq 1 -and $invalidType.Scenarios[0].Reason -eq 'InvalidBatchNodeType' -and $script:posts -eq 0) 'Invalid capacity metadata must fail without task submission'
+    $script:outputs.Remove('batch_node_type')
+    # A VM bundle has no .git. It must preserve validated source identity from the
+    # initiating checkout, without trying to inspect a nonexistent guest checkout.
+    $provenance=@{ gitRevision=('b'*40); gitDirty=$true; sourceSha256=('c'*64) }
+    @{ outputs=$script:outputs; package_sha256=('a'*64); source_provenance=$provenance } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
+    function git { throw 'Guest bundle must not invoke Git.' }
+    $realResolver=${function:Resolve-DeploymentTool}
+    function Resolve-DeploymentTool { param([string]$Name,[string]$RepositoryRoot); if (-not $RepositoryRoot) { throw 'Missing tool resolution root.' }; return 'guest-fake-az' }
+    Remove-Variable AzPath -Scope Script
+    try {
+        $remote=Invoke-TestCase success @('single') 0 Pass
+        Assert-True ($remote.gitRevision -eq ('b'*40) -and $remote.gitDirty -and $remote.sourceSha256 -eq ('c'*64)) 'Guest must preserve the initiating source identity'
+        $provenance.sourceSha256='malformed'
+        @{ outputs=$script:outputs; source_provenance=$provenance } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
+        $invalid=Invoke-PocValidation -DeploymentResultPath $deployment -Scenarios @('single') -EvidenceDirectory (Join-Path $temporary 'invalid-provenance')
+        Assert-True ($invalid.ExitCode -eq 1 -and $invalid.Scenarios[0].Reason -eq 'InvalidSourceProvenance') 'Invalid provenance must fail before any workflow is submitted'
+    } finally { Remove-Item Function:\git; Set-Item Function:\Resolve-DeploymentTool $realResolver; $script:AzPath='unused-fake-az' }
+    @{ outputs=$script:outputs; package_sha256=('a'*64); secret=$script:secret } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $deployment
     $result=Invoke-TestCase pending @('single') 0 Pass -Wait 3
     Assert-True ($script:statusReads -eq 2) 'Transient initial 404 must be retried'
     Assert-True ($result.Scenarios[0].Evidence.runs[0].statusHttpCounts['404'] -eq 1 -and $result.Scenarios[0].Evidence.runs[0].statusHttpCounts['200'] -eq 1) 'Polling evidence must retain safe HTTP counts'

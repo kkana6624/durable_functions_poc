@@ -6,7 +6,7 @@ Windows Batch Pool への PowerShell Task 投入から、Durable Functions（子
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> 現時点ではローカル環境での単体テストおよびオフライン検証（Mock / Fake を用いた試験）のみが完了しており、Azure 実環境でのデプロイ・実接続検証は未実施です。ローカル試験の成功は Azure 実環境（実 Pool の実行ポリシー、実 host の永続化・復旧、権限・クォータ等）の動作を保証するものではありません。実環境での検証状況は [検証結果](docs/test-results.md) と [実現性評価](docs/feasibility-matrix.md) に記録します。
+> Azure へのインフラ配置と RHEL 9 検証 VM の初期設定が完了し、Private SCM 配置、12 Functions の登録、VM から Private Endpoint 経由で投入した3 Task の実行・結果回収・sum=3 の集約が成功しました。Function の公開アクセス無効化と Private Endpoint 接続 Approved を確認しています。標準6シナリオは HTTP 202 対応修正後に5件 Pass、admission20 は起動履歴取得の制限による NotRun で完了しました（summary 終了コード2）。host 再起動復旧、期限停止、Spot 回収復旧は未実証です。実環境の証跡とローカル試験は [検証結果](docs/test-results.md) と [実現性評価](docs/feasibility-matrix.md) に分けて記録します。
 
 ---
 
@@ -16,7 +16,7 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 
 - 新規 PoC 用 Batch Account / Windows Pool の作成、または既存 Batch 環境の参照
 - Terraform state backend の準備（新規作成または既存参照）
-- Function App のビルド・テスト・パッケージングと Entra 認証による ZIP デプロイ
+- Function App のビルド・テスト・パッケージングと、検証 VM から Private SCM への Entra 認証 ZIP デプロイ
 - デプロイ後の準備完了確認（Pool ノード状態および Functions 検出）
 
 ### 1. 事前準備
@@ -30,7 +30,7 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 
 **前提条件とスコープ外項目**
 - **事前準備が必要な項目**: Resource Provider の登録、クォータ増枠、VM 容量の確保、Marketplace 利用条件の有効化、Azure Compute Gallery の元イメージ準備（スクリプトでは Provider 登録状況の確認、および Pool の resize エラー・準備期限超過の検出を行います）。
-- **現スクリプトの対象外**: 閉域化構成、UserSubscription 方式、Gallery 内のイメージバージョン自体の作成処理、CI/OIDC 連携。
+- **現スクリプトの対象外**: Storage / Batch の全面閉域化、VPN / ExpressRoute 回線接続、UserSubscription 方式、Gallery 内のイメージバージョン自体の作成処理、CI/OIDC 連携。Function の受信は Private Endpoint のみとし、公開ネットワークアクセスを無効化します。
 
 ### 2. 設定ファイルの作成
 
@@ -40,11 +40,18 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 - サブスクリプション ID、リージョン、グローバルに一意な名前 suffix
 - 既存 Gallery の正確な image version ID（新規の Compute Gallery やイメージバージョン自体を作成する処理は含みません）
   - Marketplace の Windows イメージを使用する場合は、`batch_image_source='marketplace'` と正確な image version を指定し、Gallery ID は省略します。
-- Terraform state backend 名、デプロイ実行者の Object ID
+- Terraform state backend 名、デプロイ実行者の Object ID、および検証 VM 用 SSH 公開鍵（validation_vm_ssh_public_key）。公開鍵のサンプル値は必ず実際の公開鍵へ置換してください。秘密鍵は設定ファイルへ保存しません。
 
 新規作成される Batch 環境の仕様は以下のとおりです。
 - **構成**: `BatchService` 方式、Entra 認証のみ、公開エンドポイント、`Simplified` 通信の Windows Pool（新規ノード数は 1〜3 台）
+- **計算ノードの種別**: `batch_node_type='spot'` または `'dedicated'` を指定します。省略時は従来互換の `dedicated` です。PoC サンプルは `spot`・`batch_node_count=1` とし、Spot 1 台・専用ノード 0 台を要求します。`batch_node_count` は選択した種別の総台数で、混在構成は対象外です。RHEL 検証 VM は通常 VM のままです。
 - **並行動作**: 1 台・1 slot 構成の場合、3 つの Task は順次実行され、3 本の監視オーケストレーションは並行して進みます。
+
+#### Spot 利用時の条件と再開手順
+
+Spot は容量が保証されず、実行中に回収される可能性があります。クォータ承認後もノードを確保できず、Pool 準備待ちやワークフローが期限に達する場合があります。Batch による回収時の Task 再キューは、非ゼロ終了に対する `MaxTaskRetryCount=0` と別の動作です。現行 Task は結果をノードローカルへ出力し、後から Activity が回収するため、回収前にノードを失うと結果を取得できない場合があります。Task から Blob への直接永続化は未実装であり、今回の Spot 対応でも C# の処理は変更しません。[Batch Spot の仕様](https://learn.microsoft.com/en-us/azure/batch/batch-spot-vms)
+
+2026-10-17 に Spot コア枠2への増枠を確認し、`Standard_D2s_v5` の Spot 1台を配置して3 Task smoke を実証しました。今後の配置変更も同じ設定・state で再 plan してから apply し、state やノード種別の変更前に保存した古い plan は適用しません。新しい環境では必要なクォータと容量を個別確認します。[クォータの確認](https://learn.microsoft.com/en-us/azure/batch/batch-quota-limit)
 
 #### 既存の Batch 基盤を使用する場合 (`batch_mode='existing'`)
 `environments/existing.example.psd1` をコピーして使用します。
@@ -61,26 +68,26 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 # 保存 plan の確認のみ（apply およびコード配置を行わない）
 ./scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -PlanOnly
 
-# 配置後に単一 Task smoke と 3 Task workflow を実行し、sum=3 まで検証
+# 配置後、VM から 3 Task HTTP workflow を実行し、sum=3 まで検証
 ./scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke
 ```
 
 #### 実行フローとオプションの挙動
-1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → Entra 認証 ZIP 配置 → 12 個の Functions のインデックス登録（ロード）検出（`-PlanOnly` を指定しない限り、Terraform の `apply` もスクリプト内で自動実行されます）。
+1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → VM Run Command による Private SCM への Entra 認証 ZIP 配置 → 12 個の Functions のインデックス登録（ロード）検出（`-PlanOnly` を指定しない限り、Terraform の `apply` もスクリプト内で自動実行されます）。
 2. **`-PlanOnly` 指定時**: `apply` とコード配置は行いません。`Backend.Create=true` の場合、backend が作成済みであれば main plan の作成まで進み、未作成であれば bootstrap plan のみを保存します。なお、backend 参照時の権限不足や通信失敗は「未作成（不存在）」とは区別してエラー停止します。
 3. **Pool 確認と `-Smoke` 指定時**:
    - **新規 Pool**: 指定した全台数が準備完了になるまで待機します（ノード一覧取得時のページネーションに対応し、全ノードの状態を確認します）。
    - **既存 Pool**: 存在と参照権限のみを確認するため、ノード数が 0 台の状態でもコードを配置できます。
-   - **`-Smoke` 実行時**: 自動拡張（autoscale）設定自体は変更せず、先に Task を投入して自動拡張と完了を待機します。単一 Task smoke のタイムアウトには配置設定の `TimeoutSeconds` が使用されます。
+   - **`-Smoke` 実行時**: 自動拡張（autoscale）設定自体は変更せず、先に Task を投入して自動拡張と完了を待機します。配置設定の `TimeoutSeconds` を用いて VM 上で 3 Task HTTP workflow を検証します。単一 Task の検証には独立ランナーの `-Scenarios single` を使用します。
 
 ### 4. 必要な権限
 
-Function の Managed Identity に対する権限付与は Terraform 内で実装済みですが、デプロイ実行者自身の権限をスクリプトが自動拡張することはありません。実行者には事前に以下の権限が必要です。
+Function の Managed Identity に対する権限付与は Terraform 内で実装済みですが、デプロイ実行者自身の権限は、明示した `validation_operator_principal_id` への転送専用コンテナの Blob 権限を除き自動拡張しません。実行者には事前に以下の権限が必要です。
 
 - **インフラ作成時**: 対象リソースグループでのリソース作成権限、RBAC 割当権限（Owner の自動付与は行いません）
 - **Gallery 利用時**: Pool 作成者のイメージ利用権限、および対象リージョンへの replica 配置
 - **Batch 操作**: Batch データプレーンの Pool / Node 参照権限
-- **`-Smoke` 実行時**: 上記に加え、Job / Task 操作権限、Function key 取得権限、結果 Blob 参照権限
+- **VM 経由の配置・検証**: 実行者には VM Run Command 操作権限、カスタムロール定義の作成権限が事前に必要です。転送専用 `poc-vm-control` コンテナの Storage Blob Data Contributor は、任意の `validation_operator_principal_id` に実行者の Object ID を指定した場合のみ Terraform で付与します（Backend.deployer_principal_id と同じ ID を指定できます）。未指定の場合は実行者が Blob データ権限を事前に用意してください。VM の Managed Identity には、Function アプリに限定した5操作のカスタムロール（参照・key取得・配置）、Batch account の Azure Batch Account Reader、Storage の Storage Blob Data Reader、および転送専用コンテナの Storage Blob Data Contributor を Terraform で付与します。Function HTTP 呼び出しは既存の Function key 認証を継続します。
 
 ### 5. 出力ファイル・State 管理・安全機構
 
@@ -105,6 +112,9 @@ Function の Managed Identity に対する権限付与は Terraform 内で実装
 | PoC Linux Function App / B1 Dedicated plan | Terraform で新規作成。Always On 有効 |
 | PoC Storage / `poc-results` container | Terraform で新規作成。Storage 名は Azure の制約により `poc` + suffix（ハイフンなし） |
 | PoC Application Insights / Log Analytics | Terraform で新規作成 |
+| VNet / VM・Private Endpoint 用 subnet / NSG / NAT Gateway | Terraform で新規作成。検証 VM の NIC に Public IP を付けず、SSH 受信を拒否 |
+| Function Private Endpoint / Private DNS | Function・SCM を Private IP へ解決し、Function の公開ネットワークアクセスを無効化 |
+| RHEL 9 検証 VM / Managed Identity | cloud-init で Azure CLI・PowerShell を準備。Run Command から配置・投入・検証を実行 |
 | Function system-assigned identity / RBAC | Terraform で作成。PoC Storage と既存 Batch account に限定 |
 | state backend | 独立 bootstrap root で PoC 専用 RG / Storage / Container と実行者 Blob 権限を作成、または既存 backend 参照 |
 | PoC Batch Jobs / Tasks / 結果 Blob | Activity / smoke tool で実行時に作成。Terraform 管理外 |
@@ -142,6 +152,7 @@ dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore
 ./scripts/tests/Test-Deployment.Tests.ps1
 ./scripts/tests/Deploy.Workflow.Tests.ps1
 ./scripts/tests/PocValidation.Tests.ps1
+./scripts/tests/PrivateVm.Tests.ps1
 
 # Terraform mock_provider試験（providerの取得後、Azureへ接続しない）
 terraform -chdir=infra test
@@ -150,33 +161,35 @@ terraform -chdir=infra/bootstrap test
 
 ### 配置済み環境を独立して検証する
 
-`Invoke-PocValidation.ps1` は、デプロイ済みの環境に対して独立してシナリオ検証を実行するためのテスト実行スクリプト（ランナー）です。デプロイ処理や Pool 設定の変更は行わず、HTTP 経由でテスト用 Job / Task を投入して動作を検証します。実行には `az login` が完了していることに加え、デプロイ結果ファイルに記録されたサブスクリプションにおける Function キー取得・設定参照権限、Batch Job / Task の参照権限、および結果 Blob の読み取り権限が必要です。
+`Invoke-PrivatePocValidation.ps1` は VM Run Command 経由で検証を開始する入口です。VM 上では `az login --identity` 後に `Invoke-PocValidation.ps1` を実行します。`Invoke-PocValidation.ps1` は、デプロイ済みの環境に対して独立してシナリオ検証を実行するためのテスト実行スクリプト（ランナー）です。デプロイ処理や Pool 設定の変更は行わず、HTTP 経由でテスト用 Job / Task を投入して動作を検証します。実行には `az login` が完了していることに加え、デプロイ結果ファイルに記録されたサブスクリプションにおける Function キー取得・設定参照権限、Batch Job / Task の参照権限、および結果 Blob の読み取り権限が必要です。
 
 ```powershell
 # インフラの再デプロイを行わず、正常系・分類・意図的な Task 失敗シナリオを検証
-./scripts/Invoke-PocValidation.ps1 `
+./scripts/Invoke-PrivatePocValidation.ps1 `
   -DeploymentResultPath .deploy/poc/<run>/deployment-result.json `
   -Scenarios single,three,classification,failure `
   -EvidenceDirectory artifacts/validation/first-run
 
 # 同一入力の 20 並列投入・完了後再送、および異なる入力パラメータによる 409 競合を検証
-./scripts/Invoke-PocValidation.ps1 `
+./scripts/Invoke-PrivatePocValidation.ps1 `
   -DeploymentResultPath .deploy/poc/<run>/deployment-result.json `
   -Scenarios admission20,conflict
 
 # 監視期限試験: 短い WORKFLOW_TIMEOUT_MIN を設定した専用環境のみ
-./scripts/Invoke-PocValidation.ps1 `
+./scripts/Invoke-PrivatePocValidation.ps1 `
   -DeploymentResultPath .deploy/timeout-poc/<run>/deployment-result.json `
   -Scenarios timeout -DedicatedEnvironment -TimeoutSeconds 900
 ```
 
-デフォルトで実行されるシナリオは `single,three,classification,failure,admission20,conflict` で、最大待機時間は 900 秒、ポーリング間隔は 10 秒です。タイムアウト試験（`timeout`）では実際のデプロイ設定値を確認し、設定された Task 遅延時間とランナーの待機上限の組み合わせでタイムアウトを安全に観測できない構成の場合は `NotRun` と判定します。なお、ランナー側の待機期限が超過した場合でも、Azure 上の計算 Job が正常に停止完了したとはみなしません。
+デフォルトのシナリオは `single,three,classification,failure,admission20,conflict` です。`TimeoutSeconds` はシナリオ内の待機に適用され、既定 900 秒、指定範囲 60〜3600 秒、ポーリング間隔は 10 秒です。Run Command では cloud-init の準備待ちを最大 900 秒、以後のゲスト操作全体を最大 4200 秒（70 分）に制限し、Action Run Command の90分制限内に収めます。長い検証は `-Scenarios` を指定して複数回に分けてください。タイムアウト試験（`timeout`）では実際のデプロイ設定値を確認し、設定された Task 遅延時間とランナーの待機上限の組み合わせでタイムアウトを安全に観測できない構成の場合は `NotRun` と判定します。なお、ランナー側の待機期限が超過した場合でも、Azure 上の計算 Job が正常に停止完了したとはみなしません。
 
-検証結果は `summary.json` および `summary.txt` に出力され、シナリオごとの合否判定（`Pass` / `Fail` / `NotRun`）、UTC 実行時刻、Git コミット情報、デプロイパッケージのハッシュ値、各種観測値が保存されます。既定の保存先は `artifacts/validation/<run>/` であり、プロセスの終了コードは「全選択試験が Pass」で `0`、「Fail が 1 件以上あり」で `1`、「Fail はないが NotRun が含まれる」で `2` となります。認証情報、キー、シークレットを含む URL、生の例外スタックトレースは証跡ファイルへ出力されません。なお、同一の出力先を指定すると前回の結果要約が上書きされるため、実行ごとに個別のディレクトリを指定してください。
+`-DedicatedEnvironment` は試験専用の環境を指定するスイッチであり、専用 Batch ノードを指定するものではありません。Spot ノードを使用する試験専用環境でも指定します。
+
+検証結果は `summary.json` および `summary.txt` に出力され、シナリオごとの合否判定（`Pass` / `Fail` / `NotRun`）、UTC 実行時刻、Git コミット情報、デプロイパッケージのハッシュ値、各種観測値が保存されます。VM 経由ラッパーの既定の回収先は `artifacts/private-validation/<run>/` です。VM 内で直接使用するランナーの既定保存先は `artifacts/validation/<run>/` であり、プロセスの終了コードは「全選択試験が Pass」で `0`、「Fail が 1 件以上あり」で `1`、「Fail はないが NotRun が含まれる」で `2` となります。認証情報、キー、シークレットを含む URL、生の例外スタックトレースは証跡ファイルへ出力されません。なお、同一の出力先を指定すると前回の結果要約が上書きされるため、実行ごとに個別のディレクトリを指定してください。
 
 `admission20` シナリオでは、同一インスタンスへの集約、投入 Task 数、完了後の再送動作を観測します。ただし、現在の Azure Functions / Durable 管理 API のみでは全世代にわたる Main オーケストレーションの起動履歴を完全には証明できないため、観測値を記録したうえでステータスを `NotRun`（未実証）とし、厳密な「1 度限りの起動（exactly-once schedule）」が実環境で成立したとは断定しません。また、検証完了後も調査用にリクエスト入力、Entity 状態、Main オーケストレーション履歴を保持し、自動クリーンアップは行いません。
 
-個人の検証環境では現行の公開エンドポイントを使用して検証を開始します。VPN / ExpressRoute を用いた閉域化への切り替えやオンプレミス向けの小型 WebApp の導入は、[共通ネットワーク設計](docs/network-connectivity-design.md) にまとめた後続フェーズでの実装となります。なお、ローカル環境での Fake / Mock によるテスト成功と、Azure 実環境での接続試験の結果は明確に区別して評価してください。
+個人の検証環境では VNet 内の検証 VM から Function の Private Endpoint を呼び出します。ローカル端末から Function への直接到達性は不要です。転送用 bundle を専用の転送 Blob コンテナにアップロードし、VM の Managed Identity で取得して実行し、安全な証跡のみ Blob 経由で回収します。NAT Gateway を通る外部通信と Storage / Batch の公開データエンドポイントは今回維持します。VPN / ExpressRoute 接続と Storage / Batch の全面閉域化は [共通ネットワーク設計](docs/network-connectivity-design.md) に記載した後続フェーズです。なお、ローカル環境での Fake / Mock によるテスト成功と、Azure 実環境での接続試験の結果は明確に区別して評価してください。
 
 ランナーと Azure 側の処理順序、生成される成果物、およびシナリオ別の詳細な判定条件については [検証ランナーの処理フロー](docs/validation-runner-flow.md) を参照してください。
 
@@ -247,7 +260,7 @@ terraform -chdir=infra output
 
 ## 4. Step A: 既存 Windows Pool の smoke テスト
 
-まず Batch エンドポイントと Pool ID を環境変数に設定し、単一 Task のコマンド実行と `wd/result.txt` の取得が成功することを確認します。
+通常の単一 Task 検証は `Invoke-PrivatePocValidation.ps1 -Scenarios single` で VM から HTTP workflow を起動します。以下の BatchSmoke は、Batch エンドポイントへ直接接続できる開発端末で使う補助診断ツールです。ワンコマンド配置の `-Smoke` からは呼び出しません。
 
 ```powershell
 $env:BATCH_ENDPOINT = 'https://<account>.<region>.batch.azure.com'
@@ -273,14 +286,11 @@ func start
 Pop-Location
 ```
 
-**Azure Function App へ手動で ZIP デプロイする場合:**
-Terraform 適用後、`publish` ディレクトリの中身を ZIP 化して Azure CLI の Entra 認証でデプロイします（`host.json` が ZIP のルート直下に配置されている必要があります）。
+**Azure Function App へ配置する場合:**
+Azure への配置は冒頭の `deploy.ps1` を使用します。ローカル端末でビルドした ZIP を検証 VM へ渡し、VM 内で Managed Identity のトークンを取得して Private SCM の ZIP API へ配置します。VM に .NET SDK や Terraform を追加する必要はありません。
 
 ```powershell
-dotnet publish src/Poc.Functions/Poc.Functions.csproj -c Release -o artifacts/publish
-Compress-Archive -Path artifacts/publish/* -DestinationPath artifacts/functions.zip -Force
-$functionName = terraform -chdir=infra output -raw function_app_name
-az functionapp deployment source config-zip --resource-group <poc-resource-group> --name $functionName --src artifacts/functions.zip
+./scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1
 ```
 
 ### 2. ワークフローの開始と状態照会

@@ -84,6 +84,7 @@ resource "azurerm_linux_function_app" "poc" {
   builtin_logging_enabled                        = false
   functions_extension_version                    = "~4"
   https_only                                     = true
+  public_network_access_enabled                  = false
   ftp_publish_basic_authentication_enabled       = false
   webdeploy_publish_basic_authentication_enabled = false
   tags                                           = local.tags

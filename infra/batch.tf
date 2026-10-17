@@ -27,8 +27,8 @@ resource "azurerm_batch_pool" "poc" {
   inter_node_communication       = "Disabled"
   target_node_communication_mode = "Simplified"
   fixed_scale {
-    target_dedicated_nodes    = var.batch_node_count
-    target_low_priority_nodes = 0
+    target_dedicated_nodes    = var.batch_node_type == "dedicated" ? var.batch_node_count : 0
+    target_low_priority_nodes = var.batch_node_type == "spot" ? var.batch_node_count : 0
     resize_timeout            = "PT15M"
     node_deallocation_method  = "TaskCompletion"
   }
