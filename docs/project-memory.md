@@ -1,20 +1,31 @@
 # プロジェクトメモリ
 
+## 2026-10-18 信頼性検証（再起動復旧・timeout・DTS 履歴集計）の Azure 実機検証完了
+
+- **権限反映**: `dts-poc` および `poc` 両環境の検証 VM 用カスタムロール（`azurerm_role_definition.validation_function`）に対して `Microsoft.Web/sites/host/listkeys/action` の targeted `terraform apply`（各 1 件 update、追加・削除 0 件）を実施し、実機ロール定義への反映を確認しました。
+- **実機で判明したスクリプト修正**:
+  1. 検証 VM ゲスト側バンドル内で `Invoke-PocRecoveryValidation.ps1` を dot-source する際、ホスト専用の `Invoke-PrivateVmOperation.ps1` が存在しない環境でも読み込めるよう存在確認ガードを追加しました。
+  2. `PrivateVm.Worker.ps1` において、`Test-Deployment.ps1` の `[ValidateSet('Pool','Functions','All')][string]$Phase` が残るスコープ上で `$phase` に `'Start'` / `'Complete'` を代入していた変数名衝突を `$recoveryPhase` へ変更して解消しました。
+  3. `Get-PocWorkflowSettings`（`Invoke-PocValidation.ps1`）で使用していた `az functionapp config appsettings list` が補助的に `GET .../config/slotConfigNames`（`sites/config/read` 権限が必要）を呼び出して 403 となっていたため、既存の最小権限（`sites/config/list/action`）のみで動作する ARM `POST .../config/appsettings/list` 直接呼び出しへ修正しました。
+- **Function App 再起動復旧の実機成功（`V05`）**: `dts-poc` 環境に対して `scripts/Invoke-PocRecoveryValidation.ps1`（`-DelaySeconds 300 -TimeoutSeconds 900`）を実行し、1 Task が Batch 上で `running` かつ Durable オーケストレーションが `Running` であることを VM から確認後、操作者権限で Function App を `restart`（および `finally` で `start` 復元）しました。再 POST なしで同一 `instanceId`・同一作成時刻・同一 Batch Task（`task-00`）のまま `Completed` / `Succeeded` に至り、`aggregate.json` / `manifest.json` / `tasks/task-00/result.json` の整合性を確認しました（証跡: `artifacts/reliability/dts-recovery/`、`ExitCode=0`）。
+- **監視期限超過（`timeout`）の実機成功（`V07`）**: `dts-poc` 環境に対して `scripts/Invoke-PrivatePocValidation.ps1 -Scenarios timeout -DedicatedEnvironment -TimeoutSeconds 1200` を実行し、監視期限（15 分）超過後に `runtimeStatus=Failed`・`businessState=TimedOut` となること、Batch Job の `maxWallClockTime=900` 秒が設定値と一致し Job 状態が `completed`（Task 強制終了）へ遷移すること、および成功 `manifest.json` が公開されないことを確認しました（証跡: `artifacts/reliability/dts-timeout/`、`ExitCode=0`）。
+- **DTS 履歴集計の実機確認**: `tools/DtsProbe --history true` を実機 DTS Task Hub に対して実行し、スモーク・標準シナリオ・再起動復旧・timeout の全インスタンスでペイロードを露出させずに `historyObservation`（`scope=ReturnedInstanceHistoryOnly`, `allGenerationsObserved=false`, `executionStartedCount=1`）を取得できることを確認しました（証跡: `artifacts/dts-validation/live-instance-history.json`）。
+- **残作業**: Function ホスト停止中の Batch 側安全網（`MaxWallClockTime` 単独停止、`V08`）、0 台オートスケール（`V09`）、Spot 回収復旧、実 C++ バイナリ・入出力連携（`V10`）、認証・認可 API（`V11`）、キャンセル連鎖（`V12`）、全面閉域化（`V00`）は後続フェーズの残作業です。
+
 ## 2026-10-17 信頼性検証ランナーの追加（ローカル実装）
 
-- **範囲**: 再起動復旧 runner、DTS の現行履歴集計、timeout の Batch 制約照合を追加しました。今回 Azure の設定変更・再配置・Function 再起動・故障試験は行っていません。直下の DTS 基本動作の Azure 成功記録と区別します。変更は未コミットです。
+- **範囲**: 再起動復旧 runner、DTS の現行履歴集計、timeout の Batch 制約照合を追加しました。この時点ではローカル実装・単体試験まで（実機検証は上記 2026-10-18 節で完了）。
 - **復旧 runner**: `scripts/Invoke-PocRecoveryValidation.ps1` が非公開 Function の1 Task の Running を VM で確認し、操作者の認証で指定 Function を restart、再送なしで同じ instance / Task の完了・作成時刻・fingerprint・Blob 成果物を照合します。対象の明示、専用試験の明示、観測時刻の鮮度確認、finally での start を実装しました。Entity checkpoint の強制中断は証明しません。
-- **権限差分**: 状態確認用の system key をメモリ内で再取得するため、VM の Function スコープのロールに `Microsoft.Web/sites/host/listkeys/action` を追加しました。host key の読み取りを含むため、次の実機試験前に IaC の差分を確認して反映します。VM への restart / start 権限は追加していません。管理 URL・キーをバンドルや Blob に保存しません。
+- **権限差分**: 状態確認用の system key をメモリ内で再取得するため、VM の Function スコープのロールに `Microsoft.Web/sites/host/listkeys/action` を追加しました。VM への restart / start 権限は追加していません。管理 URL・キーをバンドルや Blob に保存しません。
 - **timeout**: 実際の Job の maxWallClockTime が設定と一致することを必須にし、欠落・不正・不一致を Fail とします。既知の停止理由と制約秒数だけを証跡へ追加しました。Function 停止中の Batch 安全網の実証は別の残作業です。
 - **DTS 履歴**: `DtsProbe --history true` で返却履歴のイベント件数を集計します。payload を表示せず、`allGenerationsObserved=false` を明示。確認した SDK / 公開契約では全 executionId の列挙・網羅を保証できないため、admission20 の厳密判定は NotRun を維持します。設計書の一意性を実証済みと読める表現も修正しました。
-- **検証**: Terraform main Mock27件・fmt・validate、.NET93件（既存91 + 履歴集計2件）が成功しました。PowerShell の timeout / VM transport / RecoveryValidation の3組も成功。新 runner は権限不足・古い観測・Task 再作成の拒否、再起動失敗時の復元、秘密非記録、実 CLI 子プロセスの引数保持を Fake で確認しました。手順は [信頼性の追加検証](reliability-validation.md) を参照してください。
-- **次**: IaC の権限差分を反映した後、他のワークフローがない PoC Function で timeout と再起動復旧を個別に実機検証します。全世代起動履歴、host 停止中の Batch 安全網、Spot 回収、実 C++、認証 API、全面閉域化は未完了です。
+- **検証**: Terraform main Mock27件・fmt・validate、.NET93件（既存91 + 履歴集計2件）が成功しました。PowerShell の timeout / VM transport / RecoveryValidation の3組も成功。手順は [信頼性の追加検証](reliability-validation.md) を参照してください。
 
 ## 2026-10-17 DTS の Azure 配置・実接続検証完了
 
 - **最新状態**: `dts-poc` を Japan East の専用 RG に配置しました。Consumption Scheduler、専用 Task Hub、保持30日、新 Function App、Storage、RHEL 検証 VM を作成しています。段階適用は4件と32件の新規作成で、変更・削除0件です。remote state は既存とは別の `dts-poc.tfstate` です。
 - **既存環境との関係**: B1 の追加枠がないため、既存 Linux App Service Plan を参照して共有しています。既存 Azure Storage Function の構成・コードと既存 Batch account / pool は変更していませんが、Plan の CPU・メモリと Batch pool の処理容量は共有します。既存 Plan の参照、新 Function の別 RG 配置、hub スコープの MI Contributor と観測者 Reader を IaC に追加しました。
-- **実 Azure 成功**: Private SCM 配置と12 Functions の登録、公開受信無効、新 RHEL VM からの受付、Windows Batch Spot で3 Task、Blob 結果・manifest の整合性（Sum=3）を確認しました。配置結果は `.deploy/<deployment-run-id>/deployment-result.json` です。
+- **実 Azure 成功**: Private SCM 配置と12 Functions の登録、公開受信無効、新 RHEL VM からの受付、Windows Batch Spot で3 Task、Blob 結果・manifest の整合性（Sum=3）を確認しました。配置結果は `.deploy/dts-poc/20261017-224759-6853/deployment-result.json` です。
 - **DTS の独立確認**: 読み取り専用 `tools/DtsProbe` から現在の Azure CLI 認証で hub を直接照会し、`<instance-id-redacted>` が `MainOrchestrator` / `Completed` であることを確認しました。証跡は `artifacts/dts-validation/live-instance.json`。summary の構成値だけによる判定ではありません。
 - **標準シナリオ**: `2026-10-17T14:06:03Z` に single / three / classification / failure / conflict の5件 Pass。admission20 は `AdmissionObservedButExecutionHistoryUnavailable` で NotRun、終了コード2です。Entity 経由の受付は動作しましたが、全世代の起動一意性は未実証です。証跡は `artifacts/dts-validation/azure-scenarios/`、VM の失敗段階・エラーコードは null です。
 - **ローカル検証**: Terraform main Mock27件・fmt・validate、PowerShell5組、.NET91件、Release publish が成功しました。DtsProbe も build 成功。証跡は Git 管理外です。DTS 実装・配置手順・実 Azure 検証結果を同じコミットにまとめます。

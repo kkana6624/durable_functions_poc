@@ -97,6 +97,7 @@ try {
     $workerSource=Get-Content -LiteralPath (Join-Path $PSScriptRoot '../PrivateVm.Worker.ps1') -Raw
     $runnerMatch=[regex]::Match($workerSource,'(?s)\$runner=@''\r?\n(?<command>.*?)\r?\n''@')
     Assert-True $runnerMatch.Success 'Guest validation command must be available for the exit-code regression'
+    Assert-True ($workerSource -notmatch '(?i)\$phase\s*=') 'PrivateVm.Worker.ps1 must not assign $phase in the scope where Test-Deployment.ps1 defines [ValidateSet] $Phase'
     $childDirectory=Join-Path $temporary 'exit-code-child'
     $null=New-Item -ItemType Directory -Path $childDirectory
     [IO.File]::WriteAllText((Join-Path $childDirectory 'request.json'),'{"timeout_seconds":60,"scenarios":["admission20"],"dedicated_environment":false}')

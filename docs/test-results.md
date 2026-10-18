@@ -1,8 +1,20 @@
 # PoC 検証結果
 
+## 2026-10-18 信頼性検証（再起動復旧・timeout・DTS 履歴集計）の Azure 実接続検証
+
+検証 VM カスタムロールへの `Microsoft.Web/sites/host/listkeys/action` 権限反映後、`dts-poc` 環境（Durable Task Scheduler バックエンド）にて Function App 再起動復旧検証（`V05`）、監視期限超過 `timeout` シナリオ（`V07`）、および `tools/DtsProbe --history true` の実機確認を実施し、すべて Pass しました。
+
+| 対象 | 実環境・ローカルの結果 |
+|---|---|
+| カスタムロール更新 | `dts-poc` / `poc` 両環境の `azurerm_role_definition.validation_function` を targeted `terraform apply` で更新（各 0 add / 1 change / 0 destroy）。実機ロール定義に `Microsoft.Web/sites/host/listkeys/action` が追加されたことを確認 |
+| スクリプト修正と回帰試験 | ①ゲストバンドル内での `Invoke-PrivateVmOperation.ps1` 条件付き読込、②`PrivateVm.Worker.ps1` における `Test-Deployment.ps1` の `[ValidateSet] $Phase` との変数名衝突解消（`$recoveryPhase`）、③`Get-PocWorkflowSettings` の ARM `POST .../config/appsettings/list` 直接呼出し化（`slotConfigNames` 読取回避）を実施し、オフライン回帰試験 Pass |
+| Function App 再起動復旧（実機 `V05`） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/dts-recovery/`）。1 Task（300 秒遅延）の Batch `running` かつ Durable `Running` を VM で確認後、操作者権限で Function App を `restart`（`finally` で `start` 復元）。再 POST なしで同一 `instanceId`・同一作成時刻・同一 Task（`task-00`）が `Completed` / `Succeeded` となり、`aggregate.json` / `manifest.json` / `tasks/task-00/result.json` の整合を確認 |
+| 監視期限超過 `timeout`（実機 `V07`） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/dts-timeout/`）。監視期限（15 分）超過後に `runtimeStatus=Failed`・`businessState=TimedOut`、Batch Job の `batchMaxWallClockSeconds=900` 一致、Batch Job `completed`（Task 強制終了）、成功 `manifest.json` 非公開を確認 |
+| `DtsProbe --history true`（実機） | **Pass**（証跡 `artifacts/dts-validation/live-instance-history.json`）。スモーク・標準シナリオ・`recovery`・`timeout` の全インスタンスでペイロードを出力せず `historyObservation`（`scope=ReturnedInstanceHistoryOnly`, `allGenerationsObserved=false`, `executionStartedCount=1`）を確認 |
+
 ## 2026-10-17 信頼性の追加実装（ローカル検証）
 
-再起動復旧ランナー、DTS の返却履歴の集計、timeout 時の実 Batch 制約照合を追加しました。今回の Azure 再配置・再起動・障害試験は未実行です。下記の DTS Azure 成功記録は従来の基本シナリオの結果です。
+再起動復旧ランナー、DTS の返却履歴の集計、timeout 時の実 Batch 制約照合を追加した時点のローカル検証記録です（実機検証は上記 2026-10-18 節で完了）。
 
 | 対象 | 結果と範囲 |
 |---|---|
@@ -29,7 +41,7 @@ DTS 用の別環境を Japan East の専用リソースグループに配置し�
 | DTS 直接照会 | 読み取り専用 SDK で当該 hub を直接照会し、MainOrchestrator / Completed を確認。入力・出力や管理 URL は取得・記録しない |
 | DTS 標準シナリオ | single / three / classification / failure / conflict の5件 Pass。admission20 は AdmissionObservedButExecutionHistoryUnavailable による NotRun、終了コード2。全世代の起動一意性は未実証 |
 
-配置結果は `<deployment-artifact-path>/deployment-result.json`、直接照会は `artifacts/dts-validation/live-instance.json`、標準シナリオは `artifacts/dts-validation/azure-scenarios/`（完了 `2026-10-17T14:06:03Z`）です。VM 証跡は exit_code=2、error_code / failure_stage=null、summary_available=true を確認しました。すべて Git 管理外です。直接照会した instance は `<instance-id-redacted>` です。host 復旧、期限停止、Spot 回収復旧、実 C++、全面閉域化、保持期限後の挙動は未実証です。DTS 用サンプル・配置手順・移行不可と保持上限は [DTS PoC](durable-task-scheduler-poc.md) を参照してください。
+配置結果は `.deploy/<deployment-run-id>/deployment-result.json`、直接照会は `artifacts/dts-validation/live-instance.json`、標準シナリオは `artifacts/dts-validation/azure-scenarios/`（完了 `2026-10-17T14:06:03Z`）です。VM 証跡は exit_code=2、error_code / failure_stage=null、summary_available=true を確認しました。すべて Git 管理外です。直接照会した instance は `<instance-id-redacted>` です。host 復旧、期限停止、Spot 回収復旧、実 C++、全面閉域化、保持期限後の挙動は未実証です。DTS 用サンプル・配置手順・移行不可と保持上限は [DTS PoC](durable-task-scheduler-poc.md) を参照してください。
 
 
 ## 2026-10-17 RHEL 9 VM・Private Function・3 Task の Azure 実証

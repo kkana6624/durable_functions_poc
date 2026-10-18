@@ -141,8 +141,8 @@ exit $LASTEXITCODE
     } elseif ($request.operation -in @('RecoveryStart','RecoveryComplete')) {
         $stage='validation_runner'
         . (Join-Path $PSScriptRoot 'Invoke-PocRecoveryValidation.ps1')
-        $phase=if ($request.operation -eq 'RecoveryStart') { 'Start' } else { 'Complete' }
-        $summary=Invoke-PocRecoveryGuest -Outputs $outputs -Phase $phase -Context (ConvertTo-DeploymentHashtable $request.recovery_context) -EvidenceDirectory $evidence -TimeoutSeconds ([int]$request.timeout_seconds)
+        $recoveryPhase=if ($request.operation -eq 'RecoveryStart') { 'Start' } else { 'Complete' }
+        $summary=Invoke-PocRecoveryGuest -Outputs $outputs -Phase $recoveryPhase -Context (ConvertTo-DeploymentHashtable $request.recovery_context) -EvidenceDirectory $evidence -TimeoutSeconds ([int]$request.timeout_seconds)
         $result.exit_code=[int]$summary.ExitCode
         if ($result.exit_code -notin @(0,1,2)) { $result.exit_code=1 }
         if ($result.exit_code -eq 1) { $result.failure_stage='validation_runner' }

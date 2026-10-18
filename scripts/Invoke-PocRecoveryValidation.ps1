@@ -12,8 +12,7 @@ $recoveryEntryArguments=@{}
 # Dependency scripts have param blocks; preserve this entry point's arguments.
 foreach ($recoveryArgumentName in @('DeploymentResultPath','ExpectedFunctionAppName','AllowFunctionRestart','DedicatedEnvironment','DelaySeconds','TimeoutSeconds','EvidenceDirectory')) { $recoveryEntryArguments[$recoveryArgumentName]=Get-Variable -Name $recoveryArgumentName -ValueOnly }
 if (-not (Get-Command Invoke-PocValidation -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Invoke-PocValidation.ps1') }
-. (Join-Path $PSScriptRoot 'Invoke-PrivateVmOperation.ps1')
-
+if (-not (Get-Command Invoke-PrivateVmOperation -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Invoke-PrivateVmOperation.ps1') -PathType Leaf)) { . (Join-Path $PSScriptRoot 'Invoke-PrivateVmOperation.ps1') }
 . (Join-Path $PSScriptRoot 'Recovery.Context.ps1')
 foreach ($recoveryArgumentName in $recoveryEntryArguments.Keys) { Set-Variable -Name $recoveryArgumentName -Value $recoveryEntryArguments[$recoveryArgumentName] }
 

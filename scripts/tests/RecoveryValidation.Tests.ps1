@@ -131,6 +131,9 @@ $childEvidence=Join-Path $child 'explicit-evidence'
 $childShell=if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh' } else { Join-Path $PSHOME 'powershell.exe' }
 $null=& $childShell -NoProfile -NonInteractive -File (Join-Path $child 'Invoke-PocRecoveryValidation.ps1') -DeploymentResultPath $deployment -EvidenceDirectory $childEvidence -ExpectedFunctionAppName app -AllowFunctionRestart -DedicatedEnvironment -DelaySeconds 450 -TimeoutSeconds 1234 2>&1
 Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $childEvidence 'recovery-result.json'))) 'Fresh CLI invocation must preserve all explicit arguments'
+Remove-Item -LiteralPath (Join-Path $child 'Invoke-PrivateVmOperation.ps1') -Force
+$null=& $childShell -NoProfile -NonInteractive -Command ". '$($child.Replace("'","''"))/Invoke-PocRecoveryValidation.ps1'; if (-not (Get-Command Invoke-PocRecoveryGuest -ErrorAction SilentlyContinue)) { exit 1 }" 2>&1
+Assert-True ($LASTEXITCODE -eq 0) 'Guest bundle without Invoke-PrivateVmOperation.ps1 must dot-source Invoke-PocRecoveryValidation.ps1 cleanly'
 $files=@(Get-ChildItem -LiteralPath $work -Filter 'summary*' -Recurse -File)
 foreach ($file in $files) { Assert-True (-not (Get-Content -LiteralPath $file.FullName -Raw).Contains($script:secret)) 'Secret leaked to evidence' }
 Write-Host 'Recovery validation Fake tests passed (not Azure execution).'

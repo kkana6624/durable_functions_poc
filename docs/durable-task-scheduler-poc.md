@@ -94,7 +94,7 @@ Consumption SKU の完了履歴保持上限は 30 日です。受付 Blob・Enti
 
 `src/Poc.Functions/local.settings.scheduler.json.example` を `local.settings.json` にコピーすると、ローカルの DTS エミュレーター（`localhost:8080` / Task Hub `default`）を使用できます（Functions ホスト用に Azurite も必要です）。`Authentication=None` はローカルエミュレーター専用であり、Azure 用設定には使用しないでください。Batch および結果 Blob の設定は実際の検証先に置き換え、開発者の認証・権限を準備してください。なお、エミュレーターはインメモリ動作のため、プロセス停止をまたぐ永続性の実証には使用できません。
 
-Azure 実環境では、DTS 配置・Managed Identity 接続・12 個の Functions 登録、および単一 / 3 Task・分類・意図的失敗・入力競合の各シナリオを確認済みです。今後は Functions ホスト再起動後の Entity / オーケストレーション復旧、期限停止、および履歴保持期限の影響を別途確認します。ローカルの Mock・ビルド・publish の成功と、Azure 実機の証跡は明確に区別して管理します。
+Azure 実環境では、DTS 配置・Managed Identity 接続・12 個の Functions 登録、単一 / 3 Task・分類・意図的失敗・入力競合・監視期限超過（`timeout`）の各シナリオ、および Batch Task 実行中の Functions ホスト再起動復旧を確認済みです。今後は ホスト停止中の Batch 側安全網（`MaxWallClockTime` 単独停止）や履歴保持期限の影響を別途確認します。ローカルの Mock・ビルド・publish の成功と、Azure 実機の証跡は明確に区別して管理します。
 
 検証結果ファイルの `settings.durableBackend` と `settings.taskHubName` はデプロイ構成設定の記録であり、DTS サーバーへの実接続を独立に証明する欄ではありません。
 

@@ -126,10 +126,17 @@ function Get-PocHistoryObservation([string]$StatusUri) {
 }
 
 function Get-PocWorkflowSettings([hashtable]$Outputs) {
-    $values = @(Invoke-AzJson -Sensitive -Arguments @('functionapp','config','appsettings','list','--name',$Outputs.function_app_name,'--resource-group',$Outputs.resource_group_name))
-    $timeout = @($values | Where-Object { $_.name -eq 'WORKFLOW_TIMEOUT_MIN' })
-    $poll = @($values | Where-Object { $_.name -eq 'BATCH_POLL_SECONDS' })
-    return @{ TimeoutMinutes=$(if ($timeout.Count) { [int]$timeout[0].value } else { 15 }); PollSeconds=$(if ($poll.Count) { [int]$poll[0].value } else { 10 }) }
+    # CLI config appsettings list also queries slotConfigNames (sites/config/read).
+    # Direct ARM POST requires only the scoped sites/config/list/action permission.
+    $subscription = [Uri]::EscapeDataString([string]$Outputs.subscription_id)
+    $resourceGroup = [Uri]::EscapeDataString([string]$Outputs.resource_group_name)
+    $site = [Uri]::EscapeDataString([string]$Outputs.function_app_name)
+    $uri = "https://management.azure.com/subscriptions/$subscription/resourceGroups/$resourceGroup/providers/Microsoft.Web/sites/$site/config/appsettings/list?api-version=2024-11-01"
+    $response = Invoke-AzJson -Sensitive -Arguments @('rest','--method','post','--url',$uri)
+    $props = if ($response -and $response.PSObject.Properties['properties']) { $response.properties } else { $null }
+    $timeout = if ($props -and $props.PSObject.Properties['WORKFLOW_TIMEOUT_MIN'] -and $props.WORKFLOW_TIMEOUT_MIN) { [int]$props.WORKFLOW_TIMEOUT_MIN } else { 15 }
+    $poll = if ($props -and $props.PSObject.Properties['BATCH_POLL_SECONDS'] -and $props.BATCH_POLL_SECONDS) { [int]$props.BATCH_POLL_SECONDS } else { 10 }
+    return @{ TimeoutMinutes=$timeout; PollSeconds=$poll }
 }
 
 function Wait-PocWorkflow {
