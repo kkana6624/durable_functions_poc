@@ -11,10 +11,10 @@ validation_vm_ssh_public_key = "ssh-ed25519 <your-public-key>"
 # validation_operator_principal_id = "00000000-0000-0000-0000-000000000000"
 
 # az batch account show -g <batch-rg> -n <account> --query id -o tsv
-batch_account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/existing-batch-rg/providers/Microsoft.Batch/batchAccounts/existing-account"
+batch_account_id = "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.Batch/batchAccounts/<batch-account>"
 # az batch account show -g <batch-rg> -n <account> --query accountEndpoint -o tsv
 # Add https:// if Azure CLI returns only the hostname.
-batch_endpoint = "https://existing-account.japaneast.batch.azure.com"
+batch_endpoint = "https://your-batch-account.your-region.batch.azure.com"
 batch_pool_id  = "existing-windows-pool"
 
 # Read existing pool deployment/configuration (or Portal > Pool > Image reference).

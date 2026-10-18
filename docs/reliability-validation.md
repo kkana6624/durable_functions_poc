@@ -18,7 +18,7 @@
 ```powershell
 ./scripts/Invoke-PocRecoveryValidation.ps1 `
   -DeploymentResultPath .deploy/dts-poc/<run>/deployment-result.json `
-  -ExpectedFunctionAppName poc-dts40481149-func `
+  -ExpectedFunctionAppName <function-app-name> `
   -AllowFunctionRestart -DedicatedEnvironment `
   -DelaySeconds 300 -TimeoutSeconds 900 `
   -EvidenceDirectory artifacts/reliability/recovery
@@ -58,8 +58,8 @@
 ```powershell
 $env:AZURE_TOKEN_CREDENTIALS = 'AzureCliCredential'
 dotnet run --project tools/DtsProbe -- `
-  --endpoint https://<scheduler>.japaneast.durabletask.io `
-  --task-hub DtsPocHub --instance-id <instance-id> --history true
+  --endpoint https://<scheduler>.<region>.durabletask.io `
+  --task-hub <task-hub-name> --instance-id <instance-id> --history true
 ```
 
 実行者には対象 Task Hub スコープの `Durable Task Data Reader` ロールが必要です。本ツールは取得した履歴から「イベント総数」および「開始・完了・停止・ContinueAsNew の各ライフサイクルイベント件数」のみを集計して出力し、イベントの入出力ペイロード本文は一切表示しません。また、出力には `scope=ReturnedInstanceHistoryOnly` および `allGenerationsObserved=false` を明示します。

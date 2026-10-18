@@ -2,9 +2,9 @@
     # Copy to poc.psd1 and replace all environment-specific values. No secrets here.
     Terraform = @{
         subscription_id = '00000000-0000-0000-0000-000000000000'
-        resource_group_name = 'poc-durable-batch-rg'
+        resource_group_name = 'your-poc-resource-group'
         create_resource_group = $true
-        location = 'japaneast'
+        location = 'your-azure-region'
         name_suffix = 'replaceunique001'
         # Existing orchestration/entity state is not migrated when changing backend.
         # Use durable-task-scheduler.example.psd1 for a separate DTS environment.
@@ -12,7 +12,7 @@
         durable_task_hub_name = 'PocBatchHub'
         # Replace with your SSH PUBLIC key. No public IP/SSH ingress is enabled; use VM Run Command.
         validation_vm_ssh_public_key = 'ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY poc-validation'
-        validation_vm_admin_username = 'pocadmin'
+        validation_vm_admin_username = 'azureuser'
         validation_vm_size = 'Standard_B2s'
         # Optional operator Object ID (may equal Backend.deployer_principal_id).
         # Grants Blob Data Contributor on poc-vm-control only; replace this placeholder.
@@ -37,9 +37,9 @@
     }
     Backend = @{
         Create = $true
-        resource_group_name = 'poc-terraform-state-rg'
-        location = 'japaneast'
-        storage_account_name = 'pocreplaceuniquestate'
+        resource_group_name = 'your-state-resource-group'
+        location = 'your-azure-region'
+        storage_account_name = 'replacewithuniquestate'
         container_name = 'tfstate'
         # Object ID (not application/client ID) of the authenticated user/service principal.
         deployer_principal_id = '00000000-0000-0000-0000-000000000000'

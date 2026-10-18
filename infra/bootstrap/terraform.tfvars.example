@@ -1,7 +1,7 @@
 subscription_id        = "00000000-0000-0000-0000-000000000000"
-resource_group_name    = "poc-terraform-state"
-location               = "japaneast"
-storage_account_name   = "pocreplaceuniquestate"
+resource_group_name    = "your-state-resource-group"
+location               = "your-azure-region"
+storage_account_name   = "replacewithuniquestate"
 container_name         = "tfstate"
 # Entra object ID of the deploying user/service principal, NOT client/application ID.
 deployer_principal_id  = "00000000-0000-0000-0000-000000000000"

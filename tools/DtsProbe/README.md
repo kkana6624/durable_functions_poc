@@ -6,7 +6,7 @@ the caller `Durable Task Data Reader` on the target task hub.
 
 ```powershell
 $env:AZURE_TOKEN_CREDENTIALS = 'AzureCliCredential'
-dotnet run --project tools/DtsProbe -- --endpoint https://YOUR-SCHEDULER.REGION.durabletask.io --task-hub DtsPocHub --instance-id YOUR-INSTANCE-ID
+dotnet run --project tools/DtsProbe -- --endpoint https://YOUR-SCHEDULER.REGION.durabletask.io --task-hub YOUR-TASK-HUB --instance-id YOUR-INSTANCE-ID
 ```
 
 The connection uses `Authentication=DefaultAzure` and a 60-second request timeout.

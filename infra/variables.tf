@@ -62,7 +62,7 @@ variable "validation_vm_ssh_public_key" {
 }
 variable "validation_vm_admin_username" {
   type    = string
-  default = "pocadmin"
+  default = "azureuser"
   validation {
     condition     = can(regex("^[a-z][a-z0-9_]{0,30}$", var.validation_vm_admin_username)) && !contains(["root", "admin", "administrator"], var.validation_vm_admin_username)
     error_message = "Use a non-reserved lowercase Linux username."

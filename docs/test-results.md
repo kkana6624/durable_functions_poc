@@ -16,7 +16,7 @@
 
 ## 2026-10-17 DTS の Azure 配置・実接続検証
 
-DTS 用の別環境 `dts-poc` を Japan East / `poc-durable-scheduler-rg` に配置し、実 Azure 上で動作を確認しました。既定は Azure Storage のままで、既存 Azure Storage Function の設定・コードは変更していません。既存 B1 Plan と Batch pool は共有するため、CPU・メモリと処理容量は共有します。emulator は未実行です。以降の RHEL VM の節は Azure Storage バックエンドでの過去の履歴です。
+DTS 用の別環境を Japan East の専用リソースグループに配置し、実 Azure 上で動作を確認しました。既定は Azure Storage のままで、既存 Azure Storage Function の設定・コードは変更していません。既存 B1 Plan と Batch pool は共有するため、CPU・メモリと処理容量は共有します。emulator は未実行です。以降の RHEL VM の節は Azure Storage バックエンドでの過去の履歴です。
 
 | 対象 | 今回の結果 |
 |---|---|
@@ -24,12 +24,12 @@ DTS 用の別環境 `dts-poc` を Japan East / `poc-durable-scheduler-rg` に配
 | PowerShell | Common / Deploy.Workflow / PocValidation / Test-Deployment / PrivateVm の5組 Pass。旧 identity 互換、backend / hub 切り替え拒否、DTS 専用RP確認、summary 構成値と不正値拒否を含む |
 | .NET | build、単体91件（失敗0・skip0）、Release publish が成功 |
 | 配置パッケージ | AzureManaged host 拡張 DLL と startup 登録あり。既定 provider=azureStorage、local.settings の出力なし、ZIP 内のパスが POSIX 形式であることを確認 |
-| Azure 配置 | Scheduler / hub 等4件と残り32件を新規作成、変更・削除0件。Consumption、hub DtsPocHub、保持30日、Function MI Contributor、観測者 Reader。Private SCM 配置・12 Functions 登録成功 |
+| Azure 配置 | Scheduler / hub 等4件と残り32件を新規作成、変更・削除0件。Consumption、専用 Task Hub、保持30日、Function MI Contributor、観測者 Reader。Private SCM 配置・12 Functions 登録成功 |
 | DTS smoke | RHEL VM から非公開 Function を呼び出し、Entity 経由の受付、Windows Batch Spot の3 Task、結果 Blob / manifest 回収成功。TaskCount=3、Sum=3 |
 | DTS 直接照会 | 読み取り専用 SDK で当該 hub を直接照会し、MainOrchestrator / Completed を確認。入力・出力や管理 URL は取得・記録しない |
 | DTS 標準シナリオ | single / three / classification / failure / conflict の5件 Pass。admission20 は AdmissionObservedButExecutionHistoryUnavailable による NotRun、終了コード2。全世代の起動一意性は未実証 |
 
-配置結果は `.deploy/dts-poc/20261017-224759-6853/deployment-result.json`、直接照会は `artifacts/dts-validation/live-instance.json`、標準シナリオは `artifacts/dts-validation/azure-scenarios/`（完了 `2026-10-17T14:06:03Z`）です。VM 証跡は exit_code=2、error_code / failure_stage=null、summary_available=true を確認しました。すべて Git 管理外です。直接照会した instance は `poc-8689eb6004faae579c3e4eae6de22e50310d4ff9` です。host 復旧、期限停止、Spot 回収復旧、実 C++、全面閉域化、保持期限後の挙動は未実証です。DTS 用サンプル・配置手順・移行不可と保持上限は [DTS PoC](durable-task-scheduler-poc.md) を参照してください。
+配置結果は `<deployment-artifact-path>/deployment-result.json`、直接照会は `artifacts/dts-validation/live-instance.json`、標準シナリオは `artifacts/dts-validation/azure-scenarios/`（完了 `2026-10-17T14:06:03Z`）です。VM 証跡は exit_code=2、error_code / failure_stage=null、summary_available=true を確認しました。すべて Git 管理外です。直接照会した instance は `<instance-id-redacted>` です。host 復旧、期限停止、Spot 回収復旧、実 C++、全面閉域化、保持期限後の挙動は未実証です。DTS 用サンプル・配置手順・移行不可と保持上限は [DTS PoC](durable-task-scheduler-poc.md) を参照してください。
 
 
 ## 2026-10-17 RHEL 9 VM・Private Function・3 Task の Azure 実証

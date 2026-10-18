@@ -12,10 +12,10 @@
 
 ## 2026-10-17 DTS の Azure 配置・実接続検証完了
 
-- **最新状態**: `dts-poc` を Japan East の別 RG `poc-durable-scheduler-rg` に配置しました。Consumption Scheduler `poc-dts40481149-dts`、hub `DtsPocHub`、保持30日、新 Function `poc-dts40481149-func`、Storage、RHEL 検証 VM を作成しています。段階適用は4件と32件の新規作成で、変更・削除0件です。remote state は既存とは別の `dts-poc.tfstate` です。
+- **最新状態**: `dts-poc` を Japan East の専用 RG に配置しました。Consumption Scheduler、専用 Task Hub、保持30日、新 Function App、Storage、RHEL 検証 VM を作成しています。段階適用は4件と32件の新規作成で、変更・削除0件です。remote state は既存とは別の `dts-poc.tfstate` です。
 - **既存環境との関係**: B1 の追加枠がないため、既存 Linux App Service Plan を参照して共有しています。既存 Azure Storage Function の構成・コードと既存 Batch account / pool は変更していませんが、Plan の CPU・メモリと Batch pool の処理容量は共有します。既存 Plan の参照、新 Function の別 RG 配置、hub スコープの MI Contributor と観測者 Reader を IaC に追加しました。
-- **実 Azure 成功**: Private SCM 配置と12 Functions の登録、公開受信無効、新 RHEL VM からの受付、Windows Batch Spot で3 Task、Blob 結果・manifest の整合性（Sum=3）を確認しました。配置結果は `.deploy/dts-poc/20261017-224759-6853/deployment-result.json` です。
-- **DTS の独立確認**: 読み取り専用 `tools/DtsProbe` から現在の Azure CLI 認証で hub を直接照会し、`poc-8689eb6004faae579c3e4eae6de22e50310d4ff9` が `MainOrchestrator` / `Completed` であることを確認しました。証跡は `artifacts/dts-validation/live-instance.json`。summary の構成値だけによる判定ではありません。
+- **実 Azure 成功**: Private SCM 配置と12 Functions の登録、公開受信無効、新 RHEL VM からの受付、Windows Batch Spot で3 Task、Blob 結果・manifest の整合性（Sum=3）を確認しました。配置結果は `.deploy/<deployment-run-id>/deployment-result.json` です。
+- **DTS の独立確認**: 読み取り専用 `tools/DtsProbe` から現在の Azure CLI 認証で hub を直接照会し、`<instance-id-redacted>` が `MainOrchestrator` / `Completed` であることを確認しました。証跡は `artifacts/dts-validation/live-instance.json`。summary の構成値だけによる判定ではありません。
 - **標準シナリオ**: `2026-10-17T14:06:03Z` に single / three / classification / failure / conflict の5件 Pass。admission20 は `AdmissionObservedButExecutionHistoryUnavailable` で NotRun、終了コード2です。Entity 経由の受付は動作しましたが、全世代の起動一意性は未実証です。証跡は `artifacts/dts-validation/azure-scenarios/`、VM の失敗段階・エラーコードは null です。
 - **ローカル検証**: Terraform main Mock27件・fmt・validate、PowerShell5組、.NET91件、Release publish が成功しました。DtsProbe も build 成功。証跡は Git 管理外です。DTS 実装・配置手順・実 Azure 検証結果を同じコミットにまとめます。
 - **残作業**: host 復旧、期限停止、Spot 回収復旧、実 C++ 連携、全世代の起動履歴観測、全面閉域化を継続します。DTS emulator と保持期限後の挙動は未検証です。以下の各節は過去のチェックポイントです。
@@ -54,7 +54,7 @@
 ## 2026-10-17 Azure 初回事前確認
 
 - **当時の停止理由（専用ノード方針時の履歴）**: 実作成した専用 Batch account の `dedicatedCoreQuota=0`、`lowPriorityCoreQuota=0`、`poolQuota=20` を確認しました。当時予定していた `Standard_D2s_v5` 専用1台には dedicated core quota が最低2必要でした。現在は上記の Spot 方針へ変更しています。Compute VM 用の空き枠とは別の制限です。
-- **作成済み**: state 専用 RG `poc-terraform-state-rg` と Storage / Container / backend 権限割当（4リソース）、PoC 専用 RG `poc-durable-batch-rg` と Batch account（2リソース）。既存 Gallery は参照のみです。実リソース名・ID・設定は Git 管理外の設定と state に保持しています。
+- **作成済み**: state 専用 RG `<state-resource-group>` と Storage / Container / backend 権限割当（4リソース）、PoC 専用 RG `<batch-resource-group>` と Batch account（2リソース）。既存 Gallery は参照のみです。実リソース名・ID・設定は Git 管理外の設定と state に保持しています。
 - **計画と再開**: main の plan は新規35リソース・削除/置換なしでした。その後、クォータ事前確認のため同じ remote state で RG / Batch account のみを target apply しました。以前の full plan は state 更新前のものなので適用せず、増枠後は `deploy.ps1` で必ず再 plan してください。bootstrap state と remote state を保持し、既存環境への再 import や新規 state は作成しません。
 - Azure CLI 2.91.0 のログインとサブスクリプション Owner 権限を確認しました。配置に必要な Resource Provider を登録し、東日本リージョンの検証 VM 用 vCPU 枠を確認しました。
 - 既存 Gallery の Windows Server 2022 / version 1.0.0 は Windows・Generalized・Gen2、Japan East replica、Succeeded を確認しました。Gallery は参照のみです。Batch 上での実起動と Batch account の core quota は別途確認が必要です。
@@ -80,7 +80,7 @@
 
 ## 目的と運用前提
 
-- **対象リポジトリ**: `D:\durable_functions_poc`（Azure Batch + Durable Functions による非同期計算ワークフローの PoC）
+- **対象リポジトリ**: `<workspace-path>`（Azure Batch + Durable Functions による非同期計算ワークフローの PoC）
 - **利用形態**: ユーザーはオンプレミス環境の Web UI からシナリオ投入およびジョブ開始を行う。
 - **アプリケーション構成**: 計算処理本体は Windows 計算ノード上で動作する C++ アプリケーション。Web バックエンドは C# が想定されるが未確定。
 - **業務領域**: 金融領域のオプションシミュレーション。シナリオ入力と計算結果は Azure Blob Storage 経由で受け渡す（PoC 段階では業務ロジックの詳細には踏み込まず、一般的な非同期計算ワークフローとして扱う）。

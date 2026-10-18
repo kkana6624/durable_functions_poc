@@ -12,7 +12,7 @@ Orchestrator、Activity、受付用 Durable Entity、および Windows Batch 側
 
 ## Azure 実証結果
 
-Japan East の別リソースグループ `poc-durable-scheduler-rg` に、Function App `poc-dts40481149-func`、Consumption Scheduler `poc-dts40481149-dts`、および Task Hub `DtsPocHub` を配置しました。サブスクリプションの B1 Plan クォータに空きがなかったため既存の Linux B1 Plan を読み取り専用で参照し、Function App・Storage・Task Hub・Terraform state は既存環境から分離しています（既存 Plan の設定自体は変更していませんが、Plan 内の CPU・メモリは共有されます）。
+検証時は Japan East の専用リソースグループに Function App、Consumption Scheduler、Task Hub を配置しました。具体的な Azure リソース名、サブスクリプション ID、エンドポイントは環境固有情報のため、この資料には記載しません。サブスクリプションの B1 Plan クォータに空きがなかったため既存の Linux B1 Plan を読み取り専用で参照し、Function App・Storage・Task Hub・Terraform state は既存環境から分離しています（既存 Plan の設定自体は変更していませんが、Plan 内の CPU・メモリは共有されます）。
 
 | 確認項目 | 結果・証跡（Git 管理外） |
 |---|---|
@@ -28,7 +28,7 @@ Japan East の別リソースグループ `poc-durable-scheduler-rg` に、Funct
 | 設定項目 | 内容 |
 |---|---|
 | `durable_backend` | `azureStorage`（既定）または `durableTaskScheduler` |
-| `durable_task_hub_name` | 既定は `PocBatchHub`（DTS 設定例では `DtsPocHub`） |
+| `durable_task_hub_name` | 既定は `PocBatchHub`（設定例では `your-task-hub`） |
 | `existing_service_plan_id` | 既定は `null`（新規 Linux B1 Plan を作成）。指定時は同一サブスクリプション・リージョン内の既存 Linux Plan を読み取り専用で参照 |
 | DTS SKU | `Consumption`（実行アクション数に応じた従量課金） |
 | 履歴保持ポリシー | Scheduler の default retention policy を 30 日に設定（完了したオーケストレーションの履歴は永続保持されません） |
@@ -75,7 +75,7 @@ az provider show --namespace Microsoft.DurableTask --query "resourceTypes[?resou
 補助ツール `tools/DtsProbe` は DTS エンドポイントおよび Task Hub に直接接続し、対象インスタンス ID の状態を読み取ります。`GetInstanceAsync(..., getInputsAndOutputs:false)` を使用し、関数名・状態・時刻のみを JSON 出力します。キー、接続文字列、入出力ペイロード、生の例外は表示しません。デプロイ結果ファイルの `outputs.durable_scheduler_endpoint` と `task_hub_name`、およびスモークテスト等の `validation.InstanceId` を指定して実行してください。
 
 ```powershell
-dotnet run --project tools/DtsProbe -- --endpoint https://YOUR-SCHEDULER.REGION.durabletask.io --task-hub DtsPocHub --instance-id YOUR-INSTANCE-ID
+dotnet run --project tools/DtsProbe -- --endpoint https://YOUR-SCHEDULER.REGION.durabletask.io --task-hub YOUR-TASK-HUB --instance-id YOUR-INSTANCE-ID
 ```
 
 取得成功時は終了コード `0` を返しますが、呼び出し側で `runtimeStatus=Completed` と期待するインスタンス ID・関数名を確認してください（未登録は `2`、照会失敗は `1`）。これは構成設定値の表示とは異なり、DTS データプレーン上の実データを直接照会する検証です。また、`--history true` オプションを付与すると保持履歴のイベント件数集計も確認できます（詳細は [ツール説明](../tools/DtsProbe/README.md) および [信頼性の追加検証](reliability-validation.md) を参照してください）。

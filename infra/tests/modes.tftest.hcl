@@ -1,9 +1,9 @@
 mock_provider "azapi" {
   mock_resource "azapi_resource" {
     defaults = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/poc-test001-dts"
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/scheduler-test"
       output = {
-        properties = { endpoint = "https://poc-test001-dts.japaneast.durabletask.io" }
+        properties = { endpoint = "https://scheduler-test.region.durabletask.io" }
       }
     }
   }
@@ -11,32 +11,32 @@ mock_provider "azapi" {
 
 mock_provider "azurerm" {
   mock_resource "azurerm_virtual_network" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/virtualNetworks/poc-test-vnet" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Network/virtualNetworks/test-vnet" }
   }
   mock_resource "azurerm_subnet" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/virtualNetworks/poc-test-vnet/subnets/vm" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Network/virtualNetworks/test-vnet/subnets/vm" }
   }
   mock_resource "azurerm_network_security_group" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/networkSecurityGroups/vm" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Network/networkSecurityGroups/vm" }
   }
   mock_resource "azurerm_nat_gateway" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/natGateways/egress" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Network/natGateways/egress" }
   }
   mock_resource "azurerm_public_ip" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/publicIPAddresses/egress" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Network/publicIPAddresses/egress" }
   }
   mock_resource "azurerm_private_dns_zone" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net" }
   }
   mock_resource "azurerm_network_interface" {
     defaults = {
-      id                 = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Network/networkInterfaces/vm"
+      id                 = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Network/networkInterfaces/vm"
       private_ip_address = "10.80.1.4"
     }
   }
   mock_resource "azurerm_linux_virtual_machine" {
     defaults = {
-      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Compute/virtualMachines/vm"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/vm"
       identity = { principal_id = "33333333-3333-3333-3333-333333333333", tenant_id = "22222222-2222-2222-2222-222222222222" }
     }
   }
@@ -45,37 +45,37 @@ mock_provider "azurerm" {
   }
   mock_resource "azurerm_storage_account" {
     defaults = {
-      id                    = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Storage/storageAccounts/poctest001"
+      id                    = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Storage/storageAccounts/poctest001"
       primary_blob_endpoint = "https://poctest001.blob.core.windows.net/"
     }
   }
   mock_resource "azurerm_service_plan" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Web/serverFarms/poc-test-plan" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Web/serverFarms/test-plan" }
   }
   mock_data "azurerm_service_plan" {
     defaults = {
       id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
       os_type  = "Linux"
-      location = "japaneast"
+      location = "test-region"
     }
   }
   mock_resource "azurerm_log_analytics_workspace" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.OperationalInsights/workspaces/poc-test-logs" }
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.OperationalInsights/workspaces/test-logs" }
   }
   mock_resource "azurerm_linux_function_app" {
     defaults = {
-      id               = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Web/sites/poc-test-func"
-      default_hostname = "poc-test-func.azurewebsites.net"
+      id               = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Web/sites/test-function"
+      default_hostname = "test-function.azurewebsites.net"
       identity         = { principal_id = "11111111-1111-1111-1111-111111111111", tenant_id = "22222222-2222-2222-2222-222222222222" }
     }
   }
   mock_data "azurerm_resource_group" {
-    defaults = { name = "shared-rg", location = "japaneast" }
+    defaults = { name = "shared-rg", location = "test-region" }
   }
   mock_resource "azurerm_batch_account" {
     defaults = {
-      id               = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/poc-test/providers/Microsoft.Batch/batchAccounts/poctestbatch"
-      account_endpoint = "poctestbatch.japaneast.batch.azure.com"
+      id               = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Batch/batchAccounts/testbatch"
+      account_endpoint = "testbatch.test-region.batch.azure.com"
     }
   }
 }
@@ -90,12 +90,12 @@ mock_provider "azurerm" {
 }
 
 variables {
-  validation_vm_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA test-fixture"
+  validation_vm_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA fixture"
   subscription_id              = "00000000-0000-0000-0000-000000000000"
   resource_group_name          = "shared-rg"
   name_suffix                  = "test001"
-  batch_account_id             = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/batch-rg/providers/Microsoft.Batch/batchAccounts/sharedbatch"
-  batch_endpoint               = "https://sharedbatch.japaneast.batch.azure.com"
+  batch_account_id             = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/batch-rg/providers/Microsoft.Batch/batchAccounts/testbatch"
+  batch_endpoint               = "https://testbatch.test-region.batch.azure.com"
   batch_pool_id                = "shared-windows"
 }
 
@@ -118,7 +118,7 @@ run "existing_preserves_shared_resources" {
     error_message = "Existing mode must never manage shared Batch or RG resources."
   }
   assert {
-    condition     = output.deployment.batch_account_name == "sharedbatch" && output.deployment.batch_resource_group_name == "batch-rg" && output.deployment.batch_node_count == null && output.deployment.batch_node_type == null && output.deployment.batch_dedicated_node_count == null && output.deployment.batch_spot_node_count == null
+    condition     = output.deployment.batch_account_name == "testbatch" && output.deployment.batch_resource_group_name == "batch-rg" && output.deployment.batch_node_count == null && output.deployment.batch_node_type == null && output.deployment.batch_dedicated_node_count == null && output.deployment.batch_spot_node_count == null
     error_message = "Existing deployment metadata must parse the account ID without lookups."
   }
   assert {
@@ -152,7 +152,7 @@ run "existing_windows_service_plan_rejected" {
     values = {
       id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-plan-rg/providers/Microsoft.Web/serverFarms/shared-linux-plan"
       os_type  = "Windows"
-      location = "japaneast"
+      location = "test-region"
     }
   }
   expect_failures = [azurerm_linux_function_app.poc]
@@ -188,12 +188,12 @@ run "durable_task_scheduler_consumption_and_identity" {
   }
   variables {
     durable_backend       = "durableTaskScheduler"
-    durable_task_hub_name = "DtsPocHub"
+    durable_task_hub_name = "testhub"
   }
   override_resource {
     target = azapi_resource.durable_task_hub[0]
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/poc-test001-dts/taskHubs/DtsPocHub"
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/scheduler-test/taskHubs/testhub"
     }
   }
   assert {
@@ -201,19 +201,19 @@ run "durable_task_scheduler_consumption_and_identity" {
     error_message = "DTS must create a Consumption scheduler using the stable API and explicit public outbound connectivity."
   }
   assert {
-    condition     = azapi_resource.durable_task_hub[0].name == "DtsPocHub" && azapi_resource.durable_task_hub[0].parent_id == azapi_resource.durable_scheduler[0].id && azapi_resource.durable_retention[0].name == "default" && azapi_resource.durable_retention[0].body.properties.retentionPolicies[0].retentionPeriodInDays == 30
+    condition     = azapi_resource.durable_task_hub[0].name == "testhub" && azapi_resource.durable_task_hub[0].parent_id == azapi_resource.durable_scheduler[0].id && azapi_resource.durable_retention[0].name == "default" && azapi_resource.durable_retention[0].body.properties.retentionPolicies[0].retentionPeriodInDays == 30
     error_message = "The selected hub and 30-day default retention must belong to the scheduler."
   }
   assert {
-    condition     = azurerm_role_assignment.durable_task_hub[0].scope == azapi_resource.durable_task_hub[0].id && endswith(azurerm_role_assignment.durable_task_hub[0].scope, "/taskHubs/DtsPocHub") && azurerm_role_assignment.durable_task_hub[0].role_definition_name == "Durable Task Data Contributor" && azurerm_role_assignment.durable_task_hub[0].principal_id == azurerm_linux_function_app.poc.identity[0].principal_id && length(azurerm_role_assignment.storage) == 3
+    condition     = azurerm_role_assignment.durable_task_hub[0].scope == azapi_resource.durable_task_hub[0].id && endswith(azurerm_role_assignment.durable_task_hub[0].scope, "/taskHubs/testhub") && azurerm_role_assignment.durable_task_hub[0].role_definition_name == "Durable Task Data Contributor" && azurerm_role_assignment.durable_task_hub[0].principal_id == azurerm_linux_function_app.poc.identity[0].principal_id && length(azurerm_role_assignment.storage) == 3
     error_message = "Function MI must receive Data Contributor only at hub scope while retaining host Storage permissions."
   }
   assert {
-    condition     = azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__storageProvider__type == "azureManaged" && azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__storageProvider__connectionStringName == "DURABLE_TASK_SCHEDULER_CONNECTION_STRING" && azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__hubName == "DtsPocHub" && azurerm_linux_function_app.poc.app_settings.DURABLE_TASK_SCHEDULER_CONNECTION_STRING == "Endpoint=https://poc-test001-dts.japaneast.durabletask.io;TaskHub=DtsPocHub;Authentication=ManagedIdentity" && azurerm_linux_function_app.poc.public_network_access_enabled == false
+    condition     = azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__storageProvider__type == "azureManaged" && azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__storageProvider__connectionStringName == "DURABLE_TASK_SCHEDULER_CONNECTION_STRING" && azurerm_linux_function_app.poc.app_settings.AzureFunctionsJobHost__extensions__durableTask__hubName == "testhub" && azurerm_linux_function_app.poc.app_settings.DURABLE_TASK_SCHEDULER_CONNECTION_STRING == "Endpoint=https://scheduler-test.region.durabletask.io;TaskHub=testhub;Authentication=ManagedIdentity" && azurerm_linux_function_app.poc.public_network_access_enabled == false
     error_message = "DTS must use the MI connection and selected hub while Function ingress remains private."
   }
   assert {
-    condition     = output.deployment.durable_backend == "durableTaskScheduler" && output.deployment.task_hub_name == "DtsPocHub" && output.deployment.durable_scheduler_endpoint == "https://poc-test001-dts.japaneast.durabletask.io" && output.deployment.durable_task_hub_id == azapi_resource.durable_task_hub[0].id
+    condition     = output.deployment.durable_backend == "durableTaskScheduler" && output.deployment.task_hub_name == "testhub" && output.deployment.durable_scheduler_endpoint == "https://scheduler-test.region.durabletask.io" && output.deployment.durable_task_hub_id == azapi_resource.durable_task_hub[0].id
     error_message = "Non-secret deployment metadata must identify the selected backend, scheduler and hub."
   }
 }
@@ -222,17 +222,17 @@ run "explicit_durable_observer_is_hub_reader_only" {
   command = apply
   variables {
     durable_backend               = "durableTaskScheduler"
-    durable_task_hub_name          = "DtsPocHub"
+    durable_task_hub_name          = "testhub"
     durable_observer_principal_id = "66666666-6666-6666-6666-666666666666"
   }
   override_resource {
     target = azapi_resource.durable_task_hub[0]
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/poc-test001-dts/taskHubs/DtsPocHub"
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/scheduler-test/taskHubs/testhub"
     }
   }
   assert {
-    condition     = length(azurerm_role_assignment.durable_observer) == 1 && azurerm_role_assignment.durable_observer[0].principal_id == var.durable_observer_principal_id && azurerm_role_assignment.durable_observer[0].role_definition_name == "Durable Task Data Reader" && azurerm_role_assignment.durable_observer[0].scope == azapi_resource.durable_task_hub[0].id && endswith(azurerm_role_assignment.durable_observer[0].scope, "/taskHubs/DtsPocHub")
+    condition     = length(azurerm_role_assignment.durable_observer) == 1 && azurerm_role_assignment.durable_observer[0].principal_id == var.durable_observer_principal_id && azurerm_role_assignment.durable_observer[0].role_definition_name == "Durable Task Data Reader" && azurerm_role_assignment.durable_observer[0].scope == azapi_resource.durable_task_hub[0].id && endswith(azurerm_role_assignment.durable_observer[0].scope, "/taskHubs/testhub")
     error_message = "Explicit observer access must be read-only and limited to the selected task hub."
   }
 }
@@ -366,7 +366,7 @@ run "new_marketplace_creates_dedicated_resources" {
     batch_pool_id             = null
     create_resource_group     = true
     resource_group_name       = "poc-test"
-    location                  = "japaneast"
+    location                  = "test-region"
     batch_image_source        = "marketplace"
     batch_node_agent_sku_id   = "batch.node.windows amd64"
     marketplace_image         = { publisher = "MicrosoftWindowsServer", offer = "WindowsServer", sku = "2022-datacenter", version = "20348.2527.240607" }
@@ -391,7 +391,7 @@ run "new_marketplace_creates_dedicated_resources" {
     error_message = "Marketplace must use the exact supplied version without gallery access."
   }
   assert {
-    condition     = output.deployment.batch_endpoint == "https://poctestbatch.japaneast.batch.azure.com" && output.deployment.batch_node_count == 2 && output.deployment.batch_node_type == "dedicated" && output.deployment.batch_dedicated_node_count == 2 && output.deployment.batch_spot_node_count == 0
+    condition     = output.deployment.batch_endpoint == "https://testbatch.test-region.batch.azure.com" && output.deployment.batch_node_count == 2 && output.deployment.batch_node_type == "dedicated" && output.deployment.batch_dedicated_node_count == 2 && output.deployment.batch_spot_node_count == 0
     error_message = "New deployment metadata must expose the actual account endpoint and target count."
   }
 }

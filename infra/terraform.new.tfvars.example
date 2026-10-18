@@ -1,7 +1,7 @@
 subscription_id       = "00000000-0000-0000-0000-000000000000"
-resource_group_name   = "poc-durable-batch"
+resource_group_name   = "your-poc-resource-group"
 create_resource_group = true
-location              = "japaneast"
+location              = "your-azure-region"
 name_suffix           = "replaceunique001"
 # Keep Azure Storage as the default. Use a separate environment/state for DTS.
 durable_backend       = "azureStorage"
