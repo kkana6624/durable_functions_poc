@@ -1,10 +1,10 @@
 # ワークフロー信頼性設計 — 受付制御・再試行・タイムアウト処理
 
-更新日: 2026-10-18
+更新日: 2026-10-19
 
 本書は、公式ドキュメントおよび利用中SDKのソースコード解析に基づき設計・実装した、ワークフローの同時受付排他制御・一時障害リトライ・監視期限超過（タイムアウト）処理およびデプロイ制御の設計仕様書です。
 
-> **検証の境界:** コード基準 `9c96054` ではRelease単体試験211件（Poc.Tests209＋DtsProbe2）とpublishが成功しています。現文書HEAD `e3d3734` は文書・スクリプト棚卸しのみの変更です。独自URL、HTTPエラー遮蔽、成果物検証、Activity例外境界、gRPC限定分類を含む最新コードのAzure配置・実機回帰は未実施です。以前の配置では、Azure Storage/DTS両バックエンドの正常系・競合409・V05/V07、およびV08/V09の実証記録があります。その証跡を最新コードのAzure成功とは扱いません。今回の受付・所有者の一体化はローカル変更で、V11の認証とAzure実証は未完です。実機の範囲は「4. 実Azureでの検証到達点と残る確認事項」と [信頼性の追加検証](reliability-validation.md) を参照してください。
+> **検証の境界:** 最新コードではRelease単体試験294件（Poc.Tests 292＋DtsProbe 2）とpublishが成功し、Terraform Mock 38件、PowerShellオフライン試験8組も成功しています。15関数パッケージのAzure実機デプロイおよび全6シナリオ回帰検証（V12利用者キャンセル実証を含む）はコミット `b7ad854` 基準で、B案 Entra ID サービス間認証プロトタイプはコミット `9ad401c` 基準で実機Passを確認済みです。その後の取消排他調停（`resolution.json`）、停止未確認時の取消再送によるBatch停止再試行、停止確認永続化（`termination.json`）のActivity再試行・状態反映、Job作成前取消のステータス正規化を含む最新修正はローカル Fake/Mock/単体テストのみの合格であり、実Azureへの再デプロイ・実機再検証は未実施です。実機の範囲は「4. 実Azureでの検証到達点と残る確認事項」と [信頼性の追加検証](reliability-validation.md) を参照してください。
 
 ---
 
@@ -67,7 +67,7 @@
 - **期限の確定と監視**: 監視期限（deadline）は、ワークロード分類処理の完了後に親オーケストレーターで確定し、子オーケストレーターへ伝播します。各子オーケストレーターでは Task 投入・状態照会 Activity と deadline Timer を競合させ、期限到達時点で親オーケストレーターへ `TimedOut` ステータスを返却します。
 - **Activity実行中の競合対策**: Durable Timer は実行中の Activity を物理的に中断・キャンセルできないため、期限超過時は Batch Job を終端化（Terminate）することで、遅れて完了した Activity からの追加 Task 投入を Batch サービス側で拒否させます。ただし、Job 作成 Activity の待機を途中で打ち切ると、停止処理の直後に新規 Job が作成されてしまう時間窓（レースコンディション）が生じるため、Job 作成 Activity だけは必ず完了を待機します（参考: [公式Timer説明](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-timers)）。
 - **Terminate要求と停止確認**: 期限超過時は対象 Job の ID・Pool・fingerprint を照合した上で Terminate を要求し、5秒間隔・最大2分間のポーリングで Job が `Completed` 状態へ遷移したことを確認します。すでに完了済みまたは停止処理中の Job に対する再要求は冪等に処理されます。万一停止確認がタイムアウト等で失敗した場合も、ワークフローの状態を成功とは見なさず、`customStatus.termination` と `terminationError` に異常を記録し、最終成果物（manifest.json）の公開を阻止します。なお、未開始の Task は Job 停止後も `Active` のまま残存するため、全 Task の `Completed` 待機を Job 停止の確認条件には使用しません（参考: [Terminate Job API](https://learn.microsoft.com/en-us/rest/api/batchservice/jobs/terminate-job?view=rest-batchservice-2025-06-01)、[Batchエラーコード](https://learn.microsoft.com/en-us/rest/api/batchservice/batch-status-and-error-codes)）。
-- **Batch側の安全網（`MaxWallClockTime`）**: Functions ホストが突然停止した場合の最終安全網として、Batch Job 自身に `MaxWallClockTime` を設定します。これは Job 作成時点からの起算であり、Functions オーケストレーション側の共有 deadline とは起点が異なります。また、Job Release タスク等の停止シーケンスにも時間を要するため、期限時刻ちょうどでの物理停止やワークフロー全体の実時間上限を厳密に保証するものではありません。なお、ユーザーによる Durable ワークフローの手動キャンセル操作を Batch 側へ連鎖させる処理は本フェーズの実装範囲外です。
+- **Batch側の安全網（`MaxWallClockTime`）**: Functions ホストが突然停止した場合の最終安全網として、Batch Job 自身に `MaxWallClockTime` を設定します。これは Job 作成時点からの起算であり、Functions オーケストレーション側の共有 deadline とは起点が異なります。また、Job Release タスク等の停止シーケンスにも時間を要するため、期限時刻ちょうどでの物理停止やワークフロー全体の実時間上限を厳密に保証するものではありません。なお、ユーザーによる Durable ワークフローの手動キャンセル操作を Batch 側へ連鎖させる処理は、V12 利用者キャンセル（`CancelWorkflow` API、Blob 先行永続化、Durable 外部イベント調停、Batch Job 有界停止、成果物公開抑止）として実装・実機検証済みです。
 
 ---
 
@@ -76,7 +76,7 @@
 - **Terraform BackendのPlanOnly制御**: `Backend.Create=true` での `PlanOnly` 実行時は、リモートステート用 Storage の存在確認が成功して作成済みと判明すれば、bootstrap は適用せず main の計画（plan）へ進みます。未作成であれば bootstrap の計画のみを実行します。存在確認時のエラーを単なる「リソース不存在」として握りつぶすことはしません（参考: [AzureRM backend](https://developer.hashicorp.com/terraform/language/backend/azurerm)、[container exists](https://learn.microsoft.com/en-us/cli/azure/storage/container?view=azure-cli-latest)）。
 - **既存Batch Poolおよび新規0台Autoscale Poolへの対応**: 既存 Pool または `batch_scale_mode='autoscale'` の新規 Pool は、稼働ノードが 0 台であってもデプロイおよび Task 投入が可能です。ノードの存在を Task 投入の前提条件とはせず、Smoke テストや `Invoke-PocAutoscaleValidation.ps1` では Task を投入した上でノードの起動および Task の完了を待機します。既存 Pool に設定された自動拡張（autoscale）ルールは変更しません（参考: [Batch自動拡張](https://learn.microsoft.com/en-us/azure/batch/batch-automatic-scaling)）。
 - **新規固定スケールBatch Poolのノード待機**: 新規 `fixed` Pool を作成する構成では、設定台数分の利用可能ノードが正常にプロビジョニングされるまで待機します。ノード一覧取得時は `odata.nextLink` を辿って全ページを集計し、別ホスト宛てや循環参照となる不正な継続 URL が返された場合は処理を拒否します（参考: [Node一覧API](https://learn.microsoft.com/en-us/rest/api/batchservice/nodes/list-nodes?view=rest-batchservice-2025-06-01)）。
-- **Functionsの検出と状態判定**: 現行Functionsの検出対象は、独自状態・結果APIを含め計14件です。内部runnerは開始応答の独自URLを検証後、別途取得したsystem keyを用いて管理URIをメモリ内で生成し、詳細診断を続けます。そのDurable管理APIの404は起動待ちとして上限付きで再試行し、401/403は即座に失敗判定とします。開始専用Function keyは別Functionへ流用しません（参考: [Durable HTTP API](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-http-api)）。
+- **Functionsの検出と状態判定**: 現行Functionsの検出対象は、独自状態・結果APIおよび利用者キャンセル（`CancelWorkflow`）を含め計15件です。内部runnerは開始応答の独自URLを検証後、別途取得したsystem keyを用いて管理URIをメモリ内で生成し、詳細診断を続けます。そのDurable管理APIの404は起動待ちとして上限付きで再試行し、401/403は即座に失敗判定とします。開始専用Function keyは別Functionへ流用しません（参考: [Durable HTTP API](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-http-api)）。
 
 ---
 
@@ -95,4 +95,4 @@
    - Function App を `Stopped` にした状態で Batch の `MaxWallClockTime` により Job が `MaxWallClockTimeExpiry` で自動終了すること（`V08`：実機 **Pass**）。
    - 0 台オートスケール Pool に対してノード 0 台状態から Task を先行投入し、自動拡張により Spot ノードが起動して Task が完走すること（`V09`：実機 **Pass**）。
 5. **リトライポリシーの峻別**:
-   - 最新のローカルFake/Mock試験は `ResilienceTests` 56件（全211件の内数）で、一時障害リトライ・恒久エラー非再試行・取消token伝播・安全例外化・gRPC16失敗コード分類を確認済み。実Azureでの通信障害注入は未実施で、全ランタイムログ・全履歴の非露出保証にも拡張しません。
+   - 最新のローカルFake/Mock試験は `ResilienceTests` 57件（全294件の内数）で、一時障害リトライ・恒久エラー非再試行・取消token伝播・安全例外化・gRPC16失敗コード分類を確認済み。実Azureでの通信障害注入は未実施で、全ランタイムログ・全履歴の非露出保証にも拡張しません。

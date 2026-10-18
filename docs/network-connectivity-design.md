@@ -1,8 +1,8 @@
 # 接続方式と共通ネットワークの設計
 
-更新日: 2026-10-18
+更新日: 2026-10-19
 
-個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、当時の 12 Functions の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）の Pass、および 0 台オートスケール Pool 先行投入（`V09`）の Pass は過去の実 Azure 実機検証（12 関数配置環境）で確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。現行コード（コミット `5a45b17`、計 14 Functions、独自 URL 契約、エラー遮蔽、Activity 安全例外化、gRPC 3 コード限定再試行）の Azure 実機回帰検証は未実施です。Storage / Batch の全面閉域化および VPN / ExpressRoute 接続は後続フェーズで実施します。
+個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、15 Functions（`CancelWorkflow` 含む）の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオおよび利用者キャンセルを含む全 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`）の Pass（コミット `b7ad854` 基準）、ならびに B案 Entra ID サービス間認証・認可の Pass（コミット `9ad401c` 基準）は実 Azure 実機検証（Azure Storage バックエンド）で確認済みです。また、過去の配置環境において Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）、および 0 台オートスケール Pool 先行投入（`V09`）の Pass も実機確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。なお、後続の取消排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を含む最新修正コードはローカルテストのみ合格しており、実 Azure への再デプロイ・実機再検証は未実施です（また、DTS バックエンド環境での 15 関数コード回帰も未実施です）。Storage / Batch の全面閉域化および VPN / ExpressRoute 接続は後続フェーズで実施します。
 
 ## 1. 今回の構成
 
