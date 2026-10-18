@@ -28,8 +28,9 @@
   - `Invoke-PrivatePocValidation.ps1` および `Deployment.Common.ps1`: Azure CLI（`az.cmd`）の標準インストールパスへのフォールバックおよび PATH 環境変数解決を整備。
   - `Deployment.Common.ps1`: `ConvertTo-DeploymentHashtable` の文字列配列型判定バグを修正（プリミティブ／文字列ガード）。
   - `Invoke-WorkflowAuthValidation.ps1`: ポーリング許容状態に `Preparing` / `Publishing` を追加。
-- **検証実績**: Release 単体テスト全 292 件（`Poc.Tests` 290 件＋`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が合格。
+- **検証実績**: Release 単体テスト全 294 件（`Poc.Tests` 292 件＋`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が合格。
 - **未実施・前提事項**:
+  - 実機検証済みのデプロイはコミット `b7ad854`（A案回帰）および `9ad401c`（B案認証）基準です。その後の取消確定と成果物公開の排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認の永続化（`termination.json`）と Activity 再試行・状態 API 反映、Job 作成前取消のステータス正規化を含む最新修正コードはローカルテストのみ合格しており、実 Azure への再デプロイ・実機再検証は未実施です。
   - 15 関数コードの Azure Storage バックエンド（`poc` 環境）での実機回帰および V12 実証は完了。DTS（Durable Task Scheduler）バックエンド環境での 15 関数実機回帰は未実施。
   - Entra 実機検証において、App Role 不足トークン（有効だが `Workflow.Execute` を持たないトークン）や未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`）は未検証。
   - 実 C++ バイナリ連携（V10）および Batch `OutputFiles` 大容量出力直送（T09）は未実証。

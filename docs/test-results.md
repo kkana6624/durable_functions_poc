@@ -6,18 +6,18 @@
 
 | 対象 | 最新の確定結果 |
 |---|---|
-| Release単体試験 | Poc.Tests 290/290件、DtsProbe 2/2件、計292件成功（失敗・スキップ0件） |
+| Release単体試験 | Poc.Tests 292/292件、DtsProbe 2/2件、計294件成功（失敗・スキップ0件） |
 | Release publish | 成功、`local.settings*` 不在 |
 | Terraform Mock | `modes.tftest.hcl` 37/37件全Pass、`backend.tftest.hcl` 1/1件全Pass |
 | PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
-| **B案: Entra ID サービス間認証・認可** | **Azure 実機検証実施（主要プローブPass）**。App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 割り当て、Function App への EasyAuth v2（`auth_settings_v2`, `active_directory_v2`）適用下で、閉域検証 VM から `Invoke-PrivateWorkflowAuthValidation.ps1` を実行し、主要プローブ遮断（401/403）および正当トークン通過（202/200）を確認（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`、終了コード0、Pass）。※App Role不足トークンや未許可ClientIdの実機拒否試験、および稼働パッケージの同定（`livePackageVerified=false`）は未検証。 |
-| V12 利用者キャンセル | **Azure 実機検証完了（Pass）**。`POST /api/workflows/{requestId}/cancel`、事前Blob永続化（`cancel.json`）、Durable外部イベント待機（`CancelRequested`）、Batchジョブ有界停止（`TerminateBatchJobActivity`）、manifest公開抑止、所有者認可（他者403拒否）、冪等200/202をAzure実環境で実証（証跡: `artifacts/private-validation/20261018-124022-0449/summary.json`） |
+| **B案: Entra ID サービス間認証・認可** | **Azure 実機検証実施（主要プローブPass）**。App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 割り当て、Function App への EasyAuth v2（`auth_settings_v2`, `active_directory_v2`）適用下で、閉域検証 VM から `Invoke-PrivateWorkflowAuthValidation.ps1` を実行し、主要プローブ遮断（401/403）および正当トークン通過（202/200）を確認（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`、終了コード0、Pass、コミット `9ad401c` 基準）。※App Role不足トークンや未許可ClientIdの実機拒否試験、および稼働パッケージの同定（`livePackageVerified=false`）は未検証。 |
+| V12 利用者キャンセル | **Azure 実機検証完了（Pass）**。`POST /api/workflows/{requestId}/cancel`、事前Blob永続化（`cancel.json`）、Durable外部イベント待機（`CancelRequested`）、Batchジョブ有界停止（`TerminateBatchJobActivity`）、manifest公開抑止、所有者認可（他者403拒否）、冪等200/202をAzure実環境で実証（証跡: `artifacts/private-validation/20261018-124022-0449/summary.json`、コミット `b7ad854` 基準） |
 | 受付・所有者一体化 | `admission.json` Version 2で同一レコード化。同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否を検証（Azure実機でもPass確認） |
-| 例外・再試行・排他調停 | 取消確定と成果物公開の単一調停点（`resolution.json`）、調停レコードの整合性検証、Restart モード復旧状態検証、キャンセル部分書き込み失敗時の余分な Batch 計算抑止を実装・検証完了 |
-| Azure実環境デプロイ・回帰（最新15関数コード） | **Pass**（`poc`環境・Azure Storageバックエンド）。デプロイ成果: `.deploy/poc/20261019-001001-3480`（15関数全件インデックス登録確認、EasyAuth v2 有効化）。 |
+| 例外・再試行・排他調停 | 取消確定と成果物公開の単一調停点（`resolution.json`）、調停レコードの整合性検証、Restart モード復旧状態検証、キャンセル部分書き込み失敗時の余分な Batch 計算抑止、停止未確認時の取消再送による停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を実装・検証完了（ローカル Fake/Mock/単体テスト合格） |
+| Azure実環境デプロイ・回帰（基準デプロイ成果） | **Pass**（`poc`環境・Azure Storageバックエンド）。基準成果: `.deploy/poc/20261018-211336-1471`（コミット `b7ad854`、全6シナリオ実機回帰Pass）、`.deploy/poc/20261019-001001-3480`（コミット `9ad401c`、EasyAuth v2 認証Pass）。※後続の取消調停点（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を含む最新修正はローカル Fake/Mock/単体テストのみの検証です。 |
 | Azure（過去の耐障害性検証） | V05（再起動復旧）/ V07（監視期限超過）/ V08（ホスト停止中Batch期限）/ V09（0台オートスケール）は過去の配置でPass実証済み |
 
-全292件のRelease単体テスト、Terraform Mock 38件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entra 認証の実機検証は正当な App Role を持つ VM Managed Identity からの正常系および未認証・所有者不整合の遮断を確認したものであり、App Role 不足トークン・未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`、デプロイ記述子のみ記録）は未検証です。
+全294件のRelease単体テスト、Terraform Mock 38件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entra 認証の実機検証は正当な App Role を持つ VM Managed Identity からの正常系および未認証・所有者不整合の遮断を確認したものであり、App Role 不足トークン・未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`、デプロイ記述子のみ記録）は未検証です。
 
 以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
 

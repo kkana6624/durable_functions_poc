@@ -159,8 +159,8 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             if (customState == "Cancelled")
             {
                 bool unconfirmed = terminationFailed || terminationCompleted == false;
-                bool confirmed = !unconfirmed;
-                var status = confirmed ? "Cancelled" : "Cancelling";
+                var status = unconfirmed ? "Cancelling" : "Cancelled";
+                bool? confirmed = unconfirmed ? false : (terminationCompleted == true ? true : null);
                 return new WorkflowStatusResponse(requestId, instanceId, jobId, status, ResultAvailable: false,
                     TerminationConfirmed: confirmed, Error: unconfirmed ? TerminationUnconfirmedMessage : WorkflowCancelledMessage);
             }
@@ -578,8 +578,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             if (plan.CancelRequested || (cancelEventTask.IsCompleted && cancelEventTask.Result is not null))
             {
                 terminalState = "Cancelled";
-                termination = new BatchJobTerminationStatus("Completed", true);
-                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled", termination });
+                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled" });
                 throw new InvalidOperationException(WorkflowCancelledMessage);
             }
 
@@ -802,15 +801,16 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     [Function(nameof(EnsureBatchJobActivity))]
     public Task EnsureBatchJobActivity([ActivityTrigger] WorkflowPlan plan, CancellationToken cancellationToken) => RetryableActivity(() => operations.EnsureJobAsync(plan, cancellationToken), cancellationToken);
     [Function(nameof(TerminateBatchJobActivity))]
-    public async Task<BatchJobTerminationStatus> TerminateBatchJobActivity([ActivityTrigger] WorkflowPlan plan, CancellationToken cancellationToken)
-    {
-        var status = await RetryableActivity(() => operations.TerminateJobAsync(plan, cancellationToken), cancellationToken);
-        if (status.Completed)
+    public Task<BatchJobTerminationStatus> TerminateBatchJobActivity([ActivityTrigger] WorkflowPlan plan, CancellationToken cancellationToken) =>
+        RetryableActivity(async () =>
         {
-            await admission.RecordTerminationAsync(plan.Request.RequestId, status, cancellationToken);
-        }
-        return status;
-    }
+            var status = await operations.TerminateJobAsync(plan, cancellationToken);
+            if (status.Completed)
+            {
+                await admission.RecordTerminationAsync(plan.Request.RequestId, status, cancellationToken);
+            }
+            return status;
+        }, cancellationToken);
     [Function(nameof(EnsureBatchTaskActivity))]
     public Task EnsureBatchTaskActivity([ActivityTrigger] TaskSpec spec, CancellationToken cancellationToken) => RetryableActivity(() => operations.EnsureTaskAsync(spec, cancellationToken), cancellationToken);
     [Function(nameof(GetBatchTaskStatusActivity))]

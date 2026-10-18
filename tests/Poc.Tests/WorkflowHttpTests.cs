@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Azure;
 using Grpc.Core;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
@@ -486,7 +487,8 @@ public class WorkflowHttpTests
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": false}}""", "TimedOut", false, false, "Workflow exceeded its monitoring deadline.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": true}, "terminationError": "SECRET_SENTINEL"}""", "TimedOut", false, false, "Batch job termination could not be confirmed.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "termination": {"completed": true}}""", "Cancelled", false, true, "Workflow was cancelled by user.")]
-    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "errorCode": "workflow_cancelled"}""", "Cancelled", false, true, "Workflow was cancelled by user.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "errorCode": "workflow_cancelled"}""", "Cancelled", false, null, "Workflow was cancelled by user.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled"}""", "Cancelled", false, null, "Workflow was cancelled by user.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "termination": {"completed": false}}""", "Cancelling", false, false, "Batch job termination could not be confirmed.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "termination": {"completed": true}, "terminationErrorCode": "batch_termination_failed"}""", "Cancelling", false, false, "Batch job termination could not be confirmed.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Failed", "error": "SECRET_SENTINEL"}""", "Failed", false, null, "Workflow execution failed.")]
@@ -1221,7 +1223,7 @@ public class WorkflowHttpTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
         Assert.Equal("Cancelled", body.GetProperty("status").GetString());
-        Assert.True(body.GetProperty("terminationConfirmed").GetBoolean());
+        Assert.True(!body.TryGetProperty("terminationConfirmed", out var prop) || prop.ValueKind == JsonValueKind.Null);
     }
 
     [Fact]
@@ -1482,6 +1484,29 @@ public class WorkflowHttpTests
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
         Assert.Equal("Published workflow results are inconsistent.", body.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task TerminateBatchJobActivity_WhenRecordTerminationFailsWith503_ThrowsTransientWorkflowException()
+    {
+        var repo = new Mock<IResultRepository>();
+        repo.Setup(r => r.PutIfAbsentAsync(It.IsAny<string>(), It.IsAny<BatchJobTerminationStatus>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RequestFailedException(503, "Service Unavailable"));
+
+        var batchMock = new Mock<IBatchGateway>();
+        batchMock.Setup(b => b.TerminateJobAsync(It.IsAny<WorkflowPlan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BatchJobTerminationStatus("completed", true));
+
+        var plan = new WorkflowPlan(new WorkflowRequest("req-term-transient"), "light", "stub", "job-1", "fp", 10, 5);
+        var operations = new WorkflowOperations(batchMock.Object, repo.Object, new StubWorkloadClassifier(), new WorkflowSettings());
+        var admission = new WorkflowAdmission(repo.Object);
+        var functions = new WorkflowFunctions(operations, admission, new PocFunctionKeyCallerResolver());
+
+        var ex = await Assert.ThrowsAsync<TransientWorkflowException>(() =>
+            functions.TerminateBatchJobActivity(plan, TestContext.Current.CancellationToken));
+
+        Assert.Equal("Workflow activity temporarily failed.", ex.Message);
+        Assert.Null(ex.InnerException);
     }
 
     private static WorkflowOperations CreateOperations(IResultRepository repo) =>

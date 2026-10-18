@@ -58,8 +58,8 @@ VM の Public IP を省略しても外部サービスへの送信は必要です
 1. VM に Public IP がなく SSH 受信拒否であること、cloud-init と CLI / PowerShell の準備完了を確認する。
 2. VM から Function と SCM の通常 FQDN が想定 Private IP に解決され、HTTPS が到達することを確認する。
 3. Function の public network access が無効であることと、VNet 外の公開経路からのアクセス拒否を確認する。
-4. VM Identity での認証・RBAC 反映、Private SCM への ZIP 配置、Functions 登録を確認する（過去の実機検証記録は 12 個、現行最新コードでは `GetWorkflowStatus` / `GetWorkflowResult` を含む計 14 個の登録確認を完了条件とする）。
-5. VM から単一 Task・3 Task・分類・exit 42・再送・409 を検証する。期限停止は専用環境で実施する。20 並列の起動履歴を完全に証明できない制限は引き続き NotRun とする。
+4. VM Identity での認証・RBAC 反映、Private SCM への ZIP 配置、Functions 登録を確認する（過去の実機検証記録は 12 個、現行最新コードでは `GetWorkflowStatus` / `GetWorkflowResult` / `CancelWorkflow` を含む計 15 個の登録確認を完了条件とする）。
+5. VM から単一 Task・3 Task・分類・exit 42・再送・409・利用者キャンセル（V12）を検証する。期限停止は専用環境で実施する。20 並列の起動履歴を完全に証明できない制限は引き続き NotRun とする。
 6. 証跡を回収し、キー・管理 URL・トークンを含まないことを確認する。転送 Blob と VM 作業領域の保持・清掃状態も記録する。
 
 ローカル Mock / Fake や Terraform Mock の成功を、これらの Azure 実機検証の成功に繰り上げません。
