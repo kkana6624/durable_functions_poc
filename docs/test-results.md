@@ -1,5 +1,22 @@
 # PoC 検証結果
 
+## 現在の到達点（2026-10-18、`9c96054`）
+
+最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、およびgRPC再試行対象3コードへの限定までです。V11のEntra認証・App Role、所有者/組織の信頼境界、所有者なし旧受付との競合対策は未完です。
+
+| 対象 | 最新の確定結果 |
+|---|---|
+| Release単体試験 | Poc.Tests 209/209件、DtsProbe 2/2件、計211件成功（失敗・スキップ0件）。ResilienceTestsは内数56件 |
+| Release publish | `artifacts/grpc-retry-release-publish` 成功、`local.settings*` 不在 |
+| 開始契約・runner | 本文とLocationは独自status URL、Retry-Afterは10秒。内部runnerは別途取得したsystem keyによるメモリ内管理URIで詳細診断を継続。現行のFunctions期待数は14件 |
+| 結果可用性 | 状態・結果APIが同じ成果物検証を使用。欠損はresultAvailable=false/結果409、不整合は固定500、一時障害は503とRetry-After |
+| 例外・再試行 | Activity wrapperから外へ渡す例外を安全化。gRPCはUnavailable/DeadlineExceeded/ResourceExhaustedに限定し、有界再試行を検証 |
+| Azure | 上記最新コードの配置・実機回帰は未実施。以下のV05/V07/V08/V09成功記録は以前の配置に対する証跡 |
+
+Terraform・PowerShell全試験を最新HEADで再実行したという意味ではありません。開始URL変更時のPowerShellオフライン4組成功と、それ以前のTerraform/PowerShell結果は各時点の記録として保持します。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。
+
+以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
+
 ## 2026-10-18 カテゴリ A（追加の耐障害性・運用系検証：`V05` / `V07` / `V08` / `V09`）の Azure 実接続検証
 
 検証 VM カスタムロールへの `Microsoft.Web/sites/host/listkeys/action` 権限反映後、`dts-poc` 環境（Durable Task Scheduler バックエンド）および `poc` 環境（Azure Storage バックエンド）にて、Function App 再起動復旧検証（`V05`）、監視期限超過 `timeout` シナリオ（`V07`）、Function ホスト停止中の Batch `MaxWallClockTime` 安全網検証（`V08`）、0 台オートスケール Pool への先行投入検証（`V09`）、および `tools/DtsProbe --history true` の実機確認を実施し、すべて Pass しました。
@@ -48,7 +65,7 @@ DTS 用の別環境を Japan East の専用リソースグループに配置し�
 
 ## 2026-10-17 RHEL 9 VM・Private Function・3 Task の Azure 実証
 
-Private SCM への配置、12 Functions の登録、VNet 内の VM からの HTTP 受付、Windows Batch Spot ノードでの3 Task、結果 Blob の回収・集約が実 Azure 上で成功しました。以下の節は過去のチェックポイントとして保持し、最新状態はこの節を優先します。
+Private SCM への配置、当時の12 Functions の登録、VNet 内の VM からの HTTP 受付、Windows Batch Spot ノードでの3 Task、結果 Blob の回収・集約が実 Azure 上で成功しました。この節は過去のチェックポイントであり、現在の到達点はページ上部を参照してください。
 
 | 対象 | 実環境の結果 |
 |---|---|
@@ -141,7 +158,7 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 上記はネットワーク実装前のローカル検証記録です。現在の個人検証方針は、VNet 内の VM から Function Private Endpoint へ接続する方式へ変更しました。[接続設計](network-connectivity-design.md) を参照してください。Azure 上でのリソース作成・到達性・認証・配置の検証は未実施です。
 
 > [!NOTE]
-> Azure 実環境への接続値・資格情報が未提供のため、現時点での検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しています。Azure 実環境での動作検証は未実施です。
+> 当時はAzure実環境への接続値・資格情報が未提供のため、この時点の検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しました。後続のAzure成功記録と最新コードの未検証範囲はページ上部を参照してください。
 
 ## .NET 単体テストの構成と検証項目（全 91 件・7 テストクラス）
 

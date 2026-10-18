@@ -4,7 +4,7 @@
 
 本書は、公式ドキュメントおよび利用中SDKのソースコード解析に基づき設計・実装した、ワークフローの同時受付排他制御・一時障害リトライ・監視期限超過（タイムアウト）処理およびデプロイ制御の設計仕様書です。
 
-> **注意:** 本書に記載された設計は、ローカル開発環境（Mock / Fake）に加え、実 Azure 環境（Azure Storage バックエンドおよび Durable Task Scheduler バックエンド）にて主要シナリオ（正常系・競合 `409`・監視期限超過 `V07`・Function App 再起動復旧 `V05`・Function ホスト停止中の Batch `MaxWallClockTime` 安全網 `V08`・0 台オートスケール Pool 先行投入 `V09`）の動作実証を完了しています。実機検証の到達点と残る確認事項は「4. 実Azureでの検証到達点と残る確認事項」および [信頼性の追加検証](reliability-validation.md) を参照してください。
+> **検証の境界:** `9c96054` ではRelease単体試験211件（Poc.Tests209＋DtsProbe2）とpublishが成功しています。独自URL、HTTPエラー遮蔽、成果物検証、Activity例外境界、gRPC限定分類を含む最新コードのAzure配置・実機回帰は未実施です。以前の配置では、Azure Storage/DTS両バックエンドの正常系・競合409・V05/V07、およびV08/V09の実証記録があります。その証跡を最新コードのAzure成功とは扱いません。V11の認証・所有者競合は未完です。実機の範囲は「4. 実Azureでの検証到達点と残る確認事項」と [信頼性の追加検証](reliability-validation.md) を参照してください。
 
 ---
 
@@ -20,7 +20,7 @@
 
 2. **Durable Entities による起動制御（`WorkflowAdmissionEntity`）**
    - リクエスト入力の同一性が確認できた場合、`requestId` と同一のキーを持つ `WorkflowAdmissionEntity` に対して `Start` 操作をシグナル送信（`SignalEntityAsync`）します。
-   - HTTP Starter が返却する `202 Accepted` は、「起動シグナルが Durable の永続キューへ正常に投入され、リクエストが受理されたこと」を示します。そのため、Main オーケストレーションのインスタンスが実際に登録・開始される前に状態照会 API（GET）を実行すると、一時的に `404 Not Found` が返却される場合があります。
+   - HTTP Starterの `202 Accepted` は起動シグナルの受理を示し、本文とLocationは独自状態APIを指します。独自状態APIは永続受付レコードがあればインスタンス登録前もAcceptedを返します。内部診断用のDurable管理APIは、実インスタンスの登録前に一時的な404を返す場合があります。
    - `WorkflowAdmissionEntity` の操作内では外部 I/O を一切行わず、未起動である場合にのみ Main オーケストレーションの起動 Action と「起動済み」内部状態を生成します。同一リクエストの再送シグナルを受信した場合は、保存済みの状態と照合して追加のアクションを起こさずに正常終了します。
    - Entity の状態更新と送信 Action は同一の Durable バッチ内で一括処理され、障害発生時のメッセージ再配信は基盤の Storage プロバイダーによって安全に制御されます（※Azure Storage の Queue と Table をまたぐ単一の物理分散トランザクションではない点に留意）。
 
@@ -72,7 +72,7 @@
 - **Terraform BackendのPlanOnly制御**: `Backend.Create=true` での `PlanOnly` 実行時は、リモートステート用 Storage の存在確認が成功して作成済みと判明すれば、bootstrap は適用せず main の計画（plan）へ進みます。未作成であれば bootstrap の計画のみを実行します。存在確認時のエラーを単なる「リソース不存在」として握りつぶすことはしません（参考: [AzureRM backend](https://developer.hashicorp.com/terraform/language/backend/azurerm)、[container exists](https://learn.microsoft.com/en-us/cli/azure/storage/container?view=azure-cli-latest)）。
 - **既存Batch Poolおよび新規0台Autoscale Poolへの対応**: 既存 Pool または `batch_scale_mode='autoscale'` の新規 Pool は、稼働ノードが 0 台であってもデプロイおよび Task 投入が可能です。ノードの存在を Task 投入の前提条件とはせず、Smoke テストや `Invoke-PocAutoscaleValidation.ps1` では Task を投入した上でノードの起動および Task の完了を待機します。既存 Pool に設定された自動拡張（autoscale）ルールは変更しません（参考: [Batch自動拡張](https://learn.microsoft.com/en-us/azure/batch/batch-automatic-scaling)）。
 - **新規固定スケールBatch Poolのノード待機**: 新規 `fixed` Pool を作成する構成では、設定台数分の利用可能ノードが正常にプロビジョニングされるまで待機します。ノード一覧取得時は `odata.nextLink` を辿って全ページを集計し、別ホスト宛てや循環参照となる不正な継続 URL が返された場合は処理を拒否します（参考: [Node一覧API](https://learn.microsoft.com/en-us/rest/api/batchservice/nodes/list-nodes?view=rest-batchservice-2025-06-01)）。
-- **Functionsの検出と状態判定**: デプロイ後に正常稼働を確認すべき Functions の検出対象は計12件です。状態照会 API（GET）における `404` は「インスタンス起動待ち」として上限付きでリトライし、`401` / `403` は「認証・権限エラー」として即座に失敗判定とします（参考: [Durable HTTP API](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-http-api)）。
+- **Functionsの検出と状態判定**: 現行Functionsの検出対象は、独自状態・結果APIを含め計14件です。内部runnerは開始応答の独自URLを検証後、別途取得したsystem keyを用いて管理URIをメモリ内で生成し、詳細診断を続けます。そのDurable管理APIの404は起動待ちとして上限付きで再試行し、401/403は即座に失敗判定とします。開始専用Function keyは別Functionへ流用しません（参考: [Durable HTTP API](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-http-api)）。
 
 ---
 
@@ -91,4 +91,4 @@
    - Function App を `Stopped` にした状態で Batch の `MaxWallClockTime` により Job が `MaxWallClockTimeExpiry` で自動終了すること（`V08`：実機 **Pass**）。
    - 0 台オートスケール Pool に対してノード 0 台状態から Task を先行投入し、自動拡張により Spot ノードが起動して Task が完走すること（`V09`：実機 **Pass**）。
 5. **リトライポリシーの峻別**:
-   - ローカルの Fake / Mock 単体テスト（`ResilienceTests` 42 件）で一時障害リトライと恒久エラー非再試行・キャンセルトークン伝播を確認済み。実 Azure 上での人為的な通信障害注入試験は後続課題。
+   - 最新のローカルFake/Mock試験は `ResilienceTests` 56件（全211件の内数）で、一時障害リトライ・恒久エラー非再試行・取消token伝播・安全例外化・gRPC16失敗コード分類を確認済み。実Azureでの通信障害注入は未実施で、全ランタイムログ・全履歴の非露出保証にも拡張しません。

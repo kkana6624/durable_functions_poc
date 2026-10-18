@@ -6,9 +6,10 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> - **Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、および専用 Pool（`batch_mode='new'`）を用いた 0 台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）の Pass まで実機で確認済みです（`admission20`［20 並列同時受付］は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
-> - **Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 別環境にて Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass（`admission20` は `NotRun`）、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網による自動終了（`V08`）の Pass、および SDK（`tools/DtsProbe`）による DTS データプレーン直接照会・履歴イベント集計（`--history true`）まで実機で確認済みです。
-> - **未実証の範囲**: 実 C++ バイナリ・入出力連携（`V10`）、大容量出力 `OutputFiles` 直送（`T09`）、オンプレ向け認証・認可 API（`V11`）、利用者キャンセル連鎖（`V12`）、Storage / Batch を含む全面閉域化（`V00`）、および Spot ノード回収からの復旧については後続フェーズの残作業です。実環境の証跡とローカル試験の結果は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、および [信頼性の追加検証](docs/reliability-validation.md) に分離して記録しています。
+> - **最新リポジトリ（HEAD `9c96054`）**: 14 個の Functions を登録する現行コードで、Release の `Poc.Tests` 209/209 件と `DtsProbe` 2/2 件が成功し、Release publish も成功しています。最新コードの Azure 配置・実機検証は未実施です。以下の Azure 実証は当時12個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
+> - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での0台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
+> - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
+> - **未実証・未完了の範囲**: Entra 認証・App Role と信頼できる owner/org の伝播、owner 情報と受付記録の原子的な統合、現行コードの Azure 検証、実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、利用者キャンセル連鎖（`V12`）、全面閉域化（`V00`）、Spot 回収復旧が残っています。V11は、owner/admission統合、Entra/App Role導入、最新コードのAzure配置・認証/認可検証の順に進めます。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
 
 ---
 
@@ -22,7 +23,7 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 | **受付排他・再試行** | ・同一 `requestId` の二重起動防止（不変な `request.json` Blob ＋ Durable Entity 直列化）<br>・同一 `requestId` で異なるパラメータが送られた際の `409 Conflict` 拒否<br>・一時的な通信障害に対する有界リトライ（最大 3 回）と監視期限超過時の Batch Job 強制停止（`V07`）および Function ホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`） | ・履歴保持期限経過後や手動パージ後の `requestId` 再利用保証<br>・外部管理 API から全世代（全 `executionId`）の起動履歴を網羅取得して厳密な 1 回起動を証明すること |
 | **計算処理・入出力** | ・Windows Batch Pool（専用ノードまたは Spot ノード、固定台数または 0 台 Autoscale）への Job / Task 投入と終了コード判定<br>・PoC 用ダミー処理（指定秒数スリープ後に `result.txt` へ整数 `1` を出力）の回収と合計値（`sum`）集計 | ・**本番 C++ バイナリ（`.exe` / `.dll`）の同梱・配布**（現在は PowerShell ダミーコマンドを実行）<br>・**大容量の入力シナリオファイル転送（`ResourceFiles`）および計算ノードから Blob への大容量結果直接保存（`OutputFiles`）**（※現行は 4 KB 以下・整数 `1` 専用の File API 回収のため、実バイナリ試験時は差し替えが必要）<br>・Spot ノードが結果回収前に Azure へ回収（Evict）された場合のノードローカル結果の保護 |
 | **スケジューラ機能** | ・Azure Batch 標準のキューイング、空きノードへの Task 割り当て、Pool 準備完了待機、0 台待機からの `$PendingTasks` 自動スケールアウト（`V09`） | ・LSF / HPC Pack が持つ高度なクラスタスケジューラ機能（Fair Share、Backfilling、実行中タスクの追い越し、商用ソルバーライセンス連動）<br>・新規の業務向け Web フロントエンド画面（UI）の提供 |
-| **ネットワーク・認証** | ・Function App の公開アクセス無効化と Private Endpoint / Private DNS 構成<br>・Public IP なし・SSH 拒否の RHEL 9 検証 VM（Run Command 経由）からの閉域デプロイおよび HTTP 検証<br>・Managed Identity による Function ↔ Storage / Batch / DTS 接続 | ・Storage / Batch エンドポイントの全面 Private Endpoint 化および Function 送信用 VNet Integration<br>・オンプレミス ExpressRoute / VPN との実回線接続<br>・エンドユーザー単位の認証・ジョブ所有者認可 API |
+| **ネットワーク・認証** | ・Function App の公開アクセス無効化と Private Endpoint / Private DNS 構成<br>・Public IP なし・SSH 拒否の RHEL 9 検証 VM（Run Command 経由）からの閉域デプロイおよび HTTP 検証<br>・Managed Identity による Function ↔ Storage / Batch / DTS 接続<br>・Function key によるAPI保護と、owner/orgヘッダー値を使った受付・照会・結果の照合 | ・Storage / Batch エンドポイントの全面 Private Endpoint 化および Function 送信用 VNet Integration<br>・オンプレミス ExpressRoute / VPN との実回線接続<br>・認証済み利用者への owner/org の安全な結び付け（任意ヘッダー値は本人性を証明しません）<br>・owner情報と受付記録の原子的統合による旧受付との競合解消 |
 
 ---
 
@@ -97,7 +98,7 @@ Spot ノードは空き容量が保証されず、実行中に Azure 側へ回�
 ```
 
 #### 実行フローとオプションの挙動
-1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → VM Run Command による Private SCM への Entra 認証 ZIP 配置 → 12 個の Functions のインデックス登録（ロード）検出（`-PlanOnly` を指定しない限り、Terraform の `apply` もスクリプト内で自動実行されます）。
+1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → VM Run Command による Private SCM への Entra 認証 ZIP 配置 → 現行14個の Functions のインデックス登録（ロード）検出（`-PlanOnly` を指定しない限り、Terraform の `apply` もスクリプト内で自動実行されます）。
 2. **`-PlanOnly` 指定時**: `apply` とコード配置は行いません。`Backend.Create=true` の場合、backend が作成済みであれば main plan の作成まで進み、未作成であれば bootstrap plan のみを保存します。なお、backend 参照時の権限不足や通信失敗は「未作成（不存在）」とは明確に区別してエラー停止します。
 3. **Pool 確認と `-Smoke` 指定時**:
    - **新規 Pool（`fixed`）**: 指定した全台数が準備完了になるまで待機します（ノード一覧取得時のページネーションに対応し、全ノードの状態と種別を確認します）。
@@ -241,7 +242,7 @@ terraform -chdir=infra/bootstrap test
 
 - **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
 - **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
-- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません（現在ワークフロー 91 件 + DtsProbe 2 件の計 93 件の単体テストがすべて合格）。現在のテスト実行結果は [検証結果](docs/test-results.md) を参照してください。
+- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。最新 HEAD `9c96054` の Release 検証では `Poc.Tests` 209/209 件、`DtsProbe` 2/2 件が成功し、Release publish も成功しました。これはローカル検証であり、最新コードのAzure実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
 
 ---
 
@@ -341,7 +342,7 @@ Azure への配置は冒頭の `deploy.ps1` を使用します。ローカル端
 
 ### 2. ワークフローの開始と状態照会
 
-以下はローカルエンドポイントへのリクエスト例です。所有者ヘッダーはローカルの所有者照合用であり、利用者認証ではありません。Azure 上では各 API に有効な Function key を `x-functions-key` に指定してください。開始専用の Function key は別 Function の状態照会には使えません。
+以下はローカルエンドポイントへのリクエスト例です。所有者ヘッダーは受付・照会時の照合に使いますが、呼出元が任意に送信できるため利用者認証にはなりません。Azure 上では各 API に有効な Function key を `x-functions-key` に指定してください。開始専用の Function key は別 Function の状態照会には使えません。
 
 ```powershell
 $body = @{

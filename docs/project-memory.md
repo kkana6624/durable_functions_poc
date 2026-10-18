@@ -1,5 +1,11 @@
 # プロジェクトメモリ
 
+## 現在の要約（2026-10-18、`9c96054`）
+
+最新HEADのローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定までです。ReleaseはPoc.Tests209件＋DtsProbe2件の計211件成功、`artifacts/grpc-retry-release-publish` 成功・`local.settings*` 不在。現行Functions期待数は14件です。今回のAzure配置・実機検証は未実施で、以前のV05/V07/V08/V09成功とは区別します。
+
+次の作業はV11の認証・App Role、信頼された所有者/組織の伝播と受付競合対策です。V12キャンセル、V10/T09ファイル入出力、V00閉域接続も残ります。全ランタイムログ・全履歴の安全性、admission20の厳密な全世代起動一意性は保証しません。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
+
 ## 2026-10-18 ActivityのgRPC再試行分類の限定（ローカル実装）
 
 - Activity側のgRPC再試行対象を `Unavailable` / `DeadlineExceeded` / `ResourceExhausted` に限定し、既存の独自HTTP API分類と揃えました。その他のコードは自動再試行せず、安全な恒久失敗型へ変換します。caller取消の優先、Aggregate内部全件の判定、安全なmessage・innerなし、最大3回・5/10秒・共有deadlineは維持します。
@@ -18,7 +24,7 @@
 - 独自HTTPのエラー応答と、旧custom statusから読み出すエラーを固定の説明へ統一しました。orchestratorが書くcustom status・監視結果・明示的な失敗ログから生の例外messageを除去しました。
 - 状態照会と結果取得は同じ公開成果物検証を使用します。manifest・aggregate・全Task結果の固定パス、識別子、fingerprint、件数・合計、分類等を照合し、欠損は取得不可、不整合は安全な500、照会の一時障害は503とRetry-Afterで返します。manifestに記載された外部URIは辿りません。
 - 検証は現行の整数1専用PoC契約内の整合性確認です。複数Blobの原子的スナップショット、状態照会後の存在、権限を持つ改竄者への耐性を保証しません。
-- SDK例外とinner exceptionをDurable境界で安全化する処理は未対応です。再試行分類・timeout判定への影響を別単位で設計し、全ログ・全履歴での秘密非露出を今回の変更だけで断言しません。認証境界・所有者競合対策とAzure検証も引き続き残作業です。
+- 当時はSDK例外とinner exceptionのDurable境界での安全化が未対応でした。後続のActivity wrapper安全化で対応した範囲は上記節を参照してください。全ログ・全履歴での秘密非露出は断言せず、認証境界・所有者競合対策とAzure検証は引き続き残作業です。
 - 確定したローカル検証: ReleaseのPoc.Tests 191/191件・DtsProbe 2/2件（計193件）が成功しました。Release publish（`artifacts/api-contract-release-publish`）が成功し、`local.settings*` が含まれないことを確認しました。`git diff --check` も成功し、生成物の混入はありません。Azure配置・実機検証は今回実施していません。
 
 ## 2026-10-18 V11開始応答の独自URL契約（ローカル実装）

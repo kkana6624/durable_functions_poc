@@ -1,13 +1,14 @@
 # 残りの検証・実装計画
 
-更新日: 2026-10-18
+更新日: 2026-10-18。確認したコード: `main` / `9c96054`。
+- **最新コードのローカル到達点**: 独自開始・状態・結果API、開始応答の管理URL除去、固定HTTPエラー、Activity例外の固定message・innerなし変換、公開成果物の完全性検証を実装済みです。HTTP/ActivityのgRPC再試行対象は3コードへ限定しました。ReleaseのPoc.Tests 209件・DtsProbe 2件（計211件、失敗・スキップ0件）とpublish（`artifacts/grpc-retry-release-publish`）が成功し、`local.settings*` の非混入を確認しました。最新変更はAzure未配置・実機未検証です。以下のAzure成功記録は過去のコード・配置に対する証跡です。
 
 - **カテゴリ A（追加の耐障害性・運用系検証：`V05` / `V07` / `V08` / `V09`）の実装・Azure 実機検証完了**: 検証 VM の Function スコープ用カスタムロールへ `Microsoft.Web/sites/host/listkeys/action` 権限を反映したうえで、`dts-poc`（Durable Task Scheduler バックエンド）および `poc`（Azure Storage バックエンド）の両環境にて Function App 再起動復旧検証（`scripts/Invoke-PocRecoveryValidation.ps1`、`V05`）および `timeout` シナリオにおける監視期限停止と Batch Job の `MaxWallClockTime` 制約照合（`V07`）を実機で完了しました。さらに、Function ホスト停止中の Batch `MaxWallClockTime` 安全網による自動停止（`Invoke-PocRecoveryValidation.ps1 -ValidationMode HostStoppedBatchWallClock`、`V08`）、0 台オートスケール Pool への先行投入・自動拡張完走・固定スケール復元（`scripts/Invoke-PocAutoscaleValidation.ps1`、`V09`）、および `tools/DtsProbe --history true` による DTS 返却履歴のイベント件数集計をすべて実機で実行し、合格（Pass）を確認しました（詳細は [信頼性の追加検証](reliability-validation.md) および [検証結果](test-results.md) を参照）。なお、DTS 履歴集計でも過去の全世代にわたる起動一意性は証明できないため、`admission20` シナリオの `NotRun` 扱いは継続します。
 - **Durable Task Scheduler（DTS）環境の実機検証完了**: 追加 PoC である [Durable Task Scheduler](durable-task-scheduler-poc.md) を別環境（`dts-poc`）へ配置し、Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準検証シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）、Function App 再起動復旧（`V05`）、およびホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`）の Pass を確認しました（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。あわせて、SDK による DTS データプレーン直接照会でも全対象インスタンスのステータスと履歴イベント件数を確認済みです。本環境は既存の Linux B1 Plan を読み取り専用で共用しつつ、Function App・Storage・Task Hub・Terraform state を既存環境から分離しています（バックエンド間での履歴・Entity 状態の移行は行いません）。
-- **Azure Storage バックエンド環境の実機検証完了**: 従来の Azure Storage バックエンド環境（`poc`）においても、Spot コア枠 2 への増枠後にインフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、12 個の Functions 登録、3 Task の投入・結果回収・`Sum=3`、標準 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、および専用 Pool（`batch_mode='new'`）を用いた 0 台オートスケール先行投入（`V09`）の Pass まで完了しています。最新のローカル検証（.NET 単体テスト 93 件、Terraform main Mock 30 件 + bootstrap 1 件、`fmt` / `validate`、PowerShell オフライン試験 7 組）と各バックエンドの実機検証結果は [検証結果](test-results.md) に分離して記録しています。
+- **Azure Storage バックエンド環境の実機検証完了**: 従来の Azure Storage バックエンド環境（`poc`）においても、Spot コア枠 2 への増枠後にインフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、12 個の Functions 登録、3 Task の投入・結果回収・`Sum=3`、標準 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、および専用 Pool（`batch_mode='new'`）を用いた 0 台オートスケール先行投入（`V09`）の Pass まで完了しています。その実機検証時点のローカル検証（.NET 単体テスト 93 件、Terraform main Mock 30 件 + bootstrap 1 件、`fmt` / `validate`、PowerShell オフライン試験 7 組）と各バックエンドの実機検証結果は [検証結果](test-results.md) に分離して記録しています。
 - **今後の実機検証と実装（カテゴリ B・C）**: 今後はカテゴリ B（実 C++ バイナリ・入出力連携 `V10`、大容量出力 `OutputFiles` 直送 `T09`、オンプレ向け認証・認可 API `V11`、利用者キャンセル連鎖 `V12`）およびカテゴリ C（Storage / Batch を含む全面閉域化・ExpressRoute/VPN 接続 `V00`）、ならびに Spot 回収復旧や一時障害注入試験へ進みます。構成を変更する際は既存の remote state を用いて再 `plan` を実行し、古い保存 `plan` は使用しません。なお、クォータ承認済みであっても Spot ノードの空き容量や継続稼働は保証されず、現行のノードローカル結果回収方式では回収前にノードが失われると結果を取得できない制限があります（Task から Blob への直接永続化は [IaC 設計](one-command-deployment-inventory.md) を参照）。
 
-> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。また、今回の実装範囲は Function の受信閉域化と検証 VM までであり、Storage / Batch の全面閉域化、利用者向け認証付き API、および実 C++ ファイル入出力は後続フェーズの対象です。
+> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。Functionの受信閉域化・検証VMは既存の実機到達点です。独自APIのローカル実装は進んでいますが、Entra/App Role認証・所有者競合対策、Storage / Batchの全面閉域化、実C++ファイル入出力は後続作業です。
 
 ---
 
@@ -34,17 +35,20 @@
 
 | 段階 | 実施内容 | 完了条件 |
 |---|---|---|
-| 1（既存） | デプロイと分離した検証runner・ローカル試験・接続設計 | `Pass / Fail / NotRun` の要約および機密情報を除外した証跡の生成。Azure未検証の項目をローカル成功をもって完了と見なさないこと |
-| 2（今回） | VNet・検証 VM・Function Private Endpoint・Private DNS を IaC 化し、VM 経由の配置・投入・検証を整備 | 公開アクセス無効の Function と Private SCM を VM から利用できることを実機で確認した後、単一Task、3Task集約、軽重分類、非ゼロ終了、20並列同時受付、完了後再送、409競合、監視期限停止の各動作を確認。※監視期限試験は専用の検証環境でのみ実施 |
-| 3 | 共通ネットワークIaCとVPNまたは既存ExpressRoute接続を整備 | Private DNS、Function受信/送信、Storage、SCMデプロイ経路、Batchノード管理通信の正常性を実証した上で、パブリックアクセスを段階的に制限 |
-| 4 | 認証付きAPIとデータ投入境界を実装 | 入力データの確定後にのみジョブ起動を許可。同一入力の再送には同一ジョブで応答。Functionキー等の管理用シークレットをブラウザへ露出させない |
-| 5 | C++入出力とオンプレ通し試験 | バージョン固定されたC++バイナリと入出力ファイルのハッシュ値を照合。ネットワーク切断、リクエスト再送、画面再読込が発生してもデータ整合性が維持されること |
-| 6 | 復旧・障害・取消・出力永続化・運用保守を仕上げ | Functionsホスト再起動からの復旧、権限変更、通信障害、0台オートスケールPool、ジョブ取消、リソース保持・清掃の手順を専用環境で実証 |
+| 既存の到達点 | 検証runner、Function受信閉域化・検証VM、主要耐障害性検証 | 過去のAzure実証はV05/V07/V08/V09等。全世代の起動履歴を網羅できないadmission20はNotRunを維持 |
+| ローカル実装済み | 独自API契約、HTTP/Activity例外の安全化、成果物整合性、gRPC分類限定 | Release計211件とpublish成功。14 Functionsの期待一覧と内部診断runner追従済み。最新コードのAzure成功とは区別 |
+| 1 | V11: 所有者と受付を単一の不変レコードへ統合 | 条件付き作成で入力・所有者を同時確定し、所有者なし旧受付との並行競合を防止。旧レコードの移行・拒否条件を明確化し任意の所有権取得を禁止 |
+| 2 | V11: Entra/App Role認証境界 | 信頼されたバックエンド主体と利用者・組織の伝播契約を検証。未認証・権限不足・他所有者・他組織を拒否 |
+| 3 | V11: 最新コードのAzure検証 | 認証に合わせたrunnerで14 Functionsと独自APIを両Durableバックエンドで検証し、再送・成果物・機密非露出・既存シナリオの回帰証跡を保存 |
+| 4 | V12: 利用者取消 | 要求永続化、投入停止、Batch停止確認、取消とmanifest公開の排他調停を実装・検証 |
+| 5 | V10/T09: C++入出力・出力直送 | 固定バイナリと入力version/ETag/size/SHA-256を契約化。ResourceFiles/OutputFilesを用い、転送と整合性確認後だけmanifest公開 |
+| 6 | V00・運用検証 | Storage/Batch全面閉域化、DNS・SCM・オンプレ接続を段階検証。その後Spot回収・一時障害注入・保持/清掃を拡充 |
 
+具体的な次の実装と完了条件は [次期実装計画](next-implementation-plan.md) を参照してください。
 ### 並列化と直列化の進め方
 
-- 検証ランナー・ローカルテストの拡充と接続方式の設計は並行して進めます。なお、今回のネットワークIaCは Function 受信と検証 VM までを対象とします。Storage / Batch の全面閉域化、API仕様の刷新、実C++計算バイナリの組み込み、および利用者によるジョブ取消機能は後続フェーズです。
-- **段階2（実機検証）** においては、基本正常系の疎通が確認された後、競合試験・分類試験・データ整合性試験をそれぞれ別個の `requestId` を用いて並列に実施可能です。
+- 検証ランナー・ローカルテストの拡充と接続方式の設計は並行して進めます。既存のネットワークIaCと実機実証はFunction受信と検証VMまでです。受付競合対策と認証契約を先に確定し、Storage / Batchの全面閉域化、実C++計算バイナリ、および利用者取消は上記の順で進めます。
+- **最新コードの実機検証** においては、基本正常系の疎通が確認された後、競合試験・分類試験・データ整合性試験をそれぞれ別個の `requestId` を用いて並列に実施可能です。
 - 一方で、Functionsホストの停止、RBAC権限の一時変更、障害注入を伴う試験は同一環境内の他ワークフローと干渉するため、必ず直列化して実施します（これらを並列で検証する場合は、Function App、Storage Account、Task Hub を環境ごとに完全に分離する必要があります）。
 
 ---
@@ -53,7 +57,7 @@
 
 ### 3.1 ExpressRouteと閉域構成
 
-接続方式、IaCの所有権境界、DNS構成、および移行・切替順序は [接続方式と共通ネットワークの設計](network-connectivity-design.md) を正とします。Function 受信用 Private Endpoint・DNS と検証 VM は今回 IaC 化します。以下のうち送信用 VNet Integration、Storage / Batch の Private Endpoint、回線接続、任意の小型 WebApp は後続フェーズです。また、既存Poolの完全な無変更維持や無停止切替を保証するものではありません。
+接続方式、IaCの所有権境界、DNS構成、および移行・切替順序は [接続方式と共通ネットワークの設計](network-connectivity-design.md) を正とします。Function受信用Private Endpoint・DNSと検証VMはIaC化・過去の実機検証済みです。以下のうち送信用 VNet Integration、Storage / Batch の Private Endpoint、回線接続、任意の小型 WebApp は後続フェーズです。また、既存Poolの完全な無変更維持や無停止切替を保証するものではありません。
 
 - **Functionsの閉域化**: 既存回線・Private Peering・接続先VNetを確認し、Function受信用Private Endpointと送信用VNet Integrationを分離してIaCへ追加します。現在のApp Serviceプラン（B1）は両機能に対応しているTierであるため、閉域化のみを理由としたプラン変更は行いません（参考: [Private Endpoint](https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint)、[VNet Integration](https://learn.microsoft.com/en-us/azure/app-service/overview-vnet-integration)）。
 - **StorageのPrivate EndpointとDNS**: 入出力Blobに加え、Durable FunctionsおよびEntityの内部状態管理に使用するBlob、Queue、TableのPrivate EndpointとPrivate DNSを設定し、オンプレミスDNSからAzure側Private DNS Resolverへの条件付き転送を整備します（参考: [オンプレ接続構成](https://learn.microsoft.com/en-us/azure/architecture/web-apps/guides/networking/access-multitenant-web-app-from-on-premises)、[Functions Storage](https://learn.microsoft.com/en-us/azure/azure-functions/storage-considerations)）。
@@ -104,7 +108,7 @@
 | ID | 試験項目 | 合格基準 |
 |---|---|---|
 | V00 | ExpressRoute・Private DNS・デプロイ経路 | オンプレミス実ホストからFunction/Blobを想定Private IPで名前解決および疎通確認。API、Storage各サービス、SCMデプロイ経路、および必要な管理プレーン認証経路を個別に実証 |
-| V01 | PlanOnly・デプロイ・マネージドID認証 | backendの既存／未作成／アクセス拒否を厳密に区別。PlanOnly実行時にapplyやZIP配置が実行されないこと。現行PoCデプロイ後に計12件のFunctions正常登録およびManaged Identity接続を確認（追加API実装後は期待一覧を更新） |
+| V01 | PlanOnly・デプロイ・マネージドID認証 | backendの既存／未作成／アクセス拒否を厳密に区別。PlanOnly実行時にapplyやZIP配置が実行されないこと。過去の実機実証は12件。最新コードのデプロイでは更新済み期待一覧の14件のFunctions正常登録およびManaged Identity接続を確認 |
 | V02 | 単一Task投入・3Task並列集約 | Windowsノード上でexitコード0およびresult=1が返却され、3Task集約でsum=3となること。リクエスト入力、Batch Job/Task ID、および最終マニフェストの内容が整合すること |
 | V03 | 非ゼロ終了・ファイル欠損・改ざん検知 | 異常発生時に明示的にワークフローが失敗（Failed）となり、成功マニフェストが公開されないこと。並列実行中の他Taskおよび部分保存された状態が記録されること |
 | V04 | 同時受付排他・冪等再送 | 同一入力の20並列同時POSTに対して同一インスタンスIDで応答し、Mainオーケストレーションの実行履歴が1件のみかつBatch Taskが重複しないこと。異なる入力の同時POSTは409 Conflictとなること。ジョブ完了後の再送でも再起動されないこと |
@@ -115,7 +119,9 @@
 | V09 | 0台オートスケールPoolへの投入 | 稼働ノード0台の状態からTaskを先行投入し、自動拡張（autoscale）によりノードが起動してTaskが正常完了すること。既存共有Poolの設定は一切変更しないこと |
 | V10 | オンプレミス連携・実C++実行・結果照合 | 小規模シナリオ入力1件をBlob Storageへ確定保存し、バージョン固定されたC++計算バイナリを実行してBlob出力すること。通信切断、ボタン二重クリック、画面再読込が発生しても同一ジョブとして処理され、ファイルハッシュ照合および業務アプリ側の期待値・許容誤差を満たすこと |
 | V11 | 利用者認可・シークレット隠蔽 | 他のユーザーによるジョブ照会・結果ダウンロード・取消要求を確実に拒否すること。ブラウザ応答やアプリケーションログにFunctionキー等の管理用シークレットが露出しないこと |
-| V12 | 利用者取消・大容量出力転送 | ジョブ開始前・Task投入中・ノード実行中の各フェーズにおける取消要求が正常に停止収束すること。出力成果物の転送失敗時に成功マニフェストが公開されないこと。結果ダウンロードの再試行によってジョブが再実行されないこと |
+| V12 | 利用者取消 | ジョブ開始前・Task投入中・ノード実行中の各フェーズにおける取消要求が正常に停止収束すること。取消とmanifest公開の競合を永続制御点で調停すること |
+
+| T09 | 大容量出力のBlob直送 | OutputFiles等の転送完了と成果物の存在・サイズ・ハッシュを確認した後だけmanifestを公開。結果取得の再試行で計算を再実行しないこと |
 
 ### 試験実施上の補足
 
