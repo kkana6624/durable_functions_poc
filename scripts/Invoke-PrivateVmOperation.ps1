@@ -24,7 +24,7 @@ function Invoke-PrivateVmOperation {
         [string]$PackagePath,
         [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$PackageSha256='',
         [ValidateRange(60,3600)][int]$TimeoutSeconds=900,
-        [ValidateSet('single','three','classification','failure','admission20','conflict','timeout')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
+        [ValidateSet('single','three','classification','failure','admission20','conflict','timeout','cancellation')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
         [switch]$Smoke,
         [switch]$DedicatedEnvironment,
         [hashtable]$RecoveryContext=@{}

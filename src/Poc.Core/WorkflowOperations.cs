@@ -4,6 +4,14 @@ namespace Poc.Core;
 
 public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository results, IWorkloadClassifier classifier, WorkflowSettings settings)
 {
+    private async Task<T?> TryReadAsync<T>(string path, CancellationToken cancellationToken) where T : class
+    {
+        try { return await results.ReadAsync<T>(path, cancellationToken); }
+        catch (FileNotFoundException) { return null; }
+        catch (KeyNotFoundException) { return null; }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 404) { return null; }
+    }
+
     public async Task<WorkflowPlan> ClassifyAsync(WorkflowRequest request, CancellationToken cancellationToken = default)
     {
         request.Validate();
@@ -11,8 +19,9 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
             throw new ArgumentException("Workflow polling/timeout settings are invalid.");
         var classification = await classifier.ClassifyAsync(request, cancellationToken);
         if (classification.Classification is not ("light" or "heavy")) throw new InvalidOperationException("Classifier must return light or heavy.");
+        var cancelRequested = await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(request.RequestId), cancellationToken) is not null;
         return new(request, classification.Classification, classification.Reason, WorkflowIdentity.JobId(request.RequestId),
-            WorkflowIdentity.Fingerprint(request, classification.Classification), settings.PollSeconds, settings.TimeoutMinutes);
+            WorkflowIdentity.Fingerprint(request, classification.Classification), settings.PollSeconds, settings.TimeoutMinutes, cancelRequested);
     }
     public Task<BatchJobTerminationStatus> TerminateJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.TerminateJobAsync(plan, cancellationToken);
     public Task EnsureJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.EnsureJobAsync(plan, cancellationToken);
@@ -58,6 +67,10 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
     }
     public async Task<ManifestReference> PublishManifestAsync(WorkflowPlan plan, CancellationToken cancellationToken = default)
     {
+        if (await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(plan.Request.RequestId), cancellationToken) is not null)
+        {
+            throw new WorkflowCancelledException("Workflow was cancelled; manifest will not be published.");
+        }
         var tasks = await ReadTasksAsync(plan, cancellationToken);
         var aggregate = await results.ReadAsync<AggregateResult>(WorkflowIdentity.AggregatePath(plan), cancellationToken);
         if (aggregate.TaskIds is null) throw new InvalidDataException("Aggregate is missing task IDs.");
@@ -71,6 +84,7 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
         return new(plan.Request.RequestId, uri, aggregateUri, tasks.Length, aggregate.Sum);
     }
     public async Task<WorkflowResultResponse?> TryGetPublishedResultAsync(string requestId, CancellationToken cancellationToken = default)
+
     {
         ManifestResult manifest;
         AggregateResult aggregate;

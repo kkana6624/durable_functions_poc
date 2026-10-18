@@ -687,6 +687,9 @@ public class ResilienceTests
     {
         var context = new Mock<TaskOrchestrationContext>();
         context.Setup(c => c.CreateReplaySafeLogger(It.IsAny<string>())).Returns(NullLogger.Instance);
+        context.Setup(c => c.WaitForExternalEvent<WorkflowCancelRecord>(WorkflowIdentity.CancelEventName, It.IsAny<CancellationToken>()))
+            .Returns(new TaskCompletionSource<WorkflowCancelRecord>().Task);
         return context;
     }
+
 }

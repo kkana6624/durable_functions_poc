@@ -134,7 +134,7 @@ function Invoke-DeploymentValidation {
     else { Write-Host 'All configured Batch nodes are ready.' }
     if ($Phase -eq 'Pool') { return [pscustomobject]@{ Ready=$true; Phase='Pool'; Smoke='Not tested'; BatchNodeType=$nodeType; BatchScaleMode=$scaleMode } }
     }
-    $expected = @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity',
+    $expected = @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','CancelWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity',
         'EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',
         'WorkflowAdmissionEntity','TerminateBatchJobActivity')
     $null = Wait-ValidationCondition -RetryErrors -Description 'Function indexing' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {

@@ -53,7 +53,7 @@ function Invoke-AzJson {
         return [pscustomobject]@{ value=$nodes }
     }
     if ($command -match '^functionapp function list ') {
-        $names=@('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity',
+        $names=@('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','CancelWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity',
             'EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',
             'WorkflowAdmissionEntity','TerminateBatchJobActivity')
         if ($script:scenario -eq 'missingfunction') { $names=$names[0..8] }

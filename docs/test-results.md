@@ -1,33 +1,36 @@
 # PoC 検証結果
 
-## 現在の到達点（2026-10-18、最新コード実機検証済み）
+## 現在の到達点（2026-10-18、V12 利用者キャンセル実装完了・Azure 実機境界）
 
-最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。さらに、現行14関数構成および新受付スキーマ（`admission.json` v2）について、Azure実環境（`poc`環境・Azure Storageバックエンド）への配置・スモークテストおよび閉域検証VM経由の主要5シナリオ回帰検証を完了し、全件Passを確認しました。
+最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、VM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）に加え、**V12 利用者キャンセル（Job Cancellation）の実装**（`CancelWorkflow` 追加、計15関数、事前Blob永続化 `runs/poc-<requestId>/cancel.json`、Durable外部イベント `CancelRequested`、Batchジョブ有界停止 `TerminateBatchJobActivity`、成果物 `manifest.json` 公開抑止、所有者認可、冪等200/202）まで完了しています。
+
+**Azure 実機境界の明確化**: 前回の 14 関数構成については、Azure 実環境（`poc` 環境・Azure Storage バックエンド）への配置・スモークテスト（3 Tasks、`Sum=3`）および閉域検証 VM 経由の主要 5 シナリオ（`single` / `three` / `classification` / `failure` / `conflict`）回帰検証で全件 Pass（証跡: `artifacts/private-validation/20261018-083838-2879/`、終了コード 0）を確認済みです。一方で、今回 `CancelWorkflow` を追加した **15 関数コードの Azure 実機デプロイ・回帰検証は未実施** であり、ローカル単体テスト・オフライン試験の完了と Azure 実機検証済み状態を厳密に区別します。
 
 | 対象 | 最新の確定結果 |
 |---|---|
-| Release単体試験 | Poc.Tests 259/259件、DtsProbe 2/2件、計261件成功（失敗・スキップ0件）。新規WorkflowAuthorizationTests 40件、拡充されたWorkflowAdmissionTests 15件（277行拡充）、ResilienceTests 56件、WorkflowHttpTests 81件を含む |
+| Release単体試験 | Poc.Tests 268/268件、DtsProbe 2/2件、計270件成功（失敗・スキップ0件）。新規CancelWorkflowを含むWorkflowHttpTests 88件（+7件）、OrchestrationTests 5件（+2件）、WorkflowAuthorizationTests 40件、WorkflowAdmissionTests 15件、ResilienceTests 56件を含む |
 | Release publish | `artifacts/auth-boundary-release-publish` 成功、`local.settings*` 不在 |
 | Terraform Mock | `modes.tftest.hcl` 37/37件全Pass、`fmt -check` / `validate` Pass |
-| PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
+| PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation［cancellationシナリオ追加］ / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
+| V12 利用者キャンセル | `POST /api/workflows/{requestId}/cancel`、事前Blob永続化（`cancel.json`）、Durable外部イベント待機（`CancelRequested`）、Batchジョブ有界停止（`TerminateBatchJobActivity`）、manifest公開抑止、所有者認可（他者403拒否）、冪等200/202を検証 |
 | 受付・所有者一体化 | `admission.json` Version 2で同一レコード化。同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否を検証（Azure実機でもPass確認） |
 | 認証境界アダプター・IaC・runner | `EntraEasyAuth`モードでのBearer/App Role/`idtyp=app`検査アダプター、opt-in EasyAuth IaC、VM Managed Identity用認証runner（`Invoke-WorkflowAuthValidation.ps1`）をローカル検証 |
-| 開始契約・成果物検証 | 本文とLocationは独自status URL、Retry-Afterは10秒。内部runnerは別途取得したsystem keyによるメモリ内管理URIで詳細診断を継続。現行のFunctions期待数は14件。状態・結果APIが同じ公開成果物検証を使用 |
+| 開始契約・成果物検証 | 本文とLocationは独自status URL、Retry-Afterは10秒。内部runnerは別途取得したsystem keyによるメモリ内管理URIで詳細診断を継続。現行のFunctions期待数は15件（CancelWorkflow追加）。状態・結果APIが同じ公開成果物検証を使用 |
 | 例外・再試行 | Activity wrapperから外へ渡す例外を安全化。gRPCはUnavailable/DeadlineExceeded/ResourceExhaustedに限定し、有界再試行を検証 |
-| Azure実環境デプロイ・回帰（現行14関数コード） | **Pass**（`poc`環境・Azure Storageバックエンド）。14関数全件インデックス確認、スモークテストPass（3 Tasks、Sum=3）、閉域回帰5シナリオ（`single` / `three` / `classification` / `failure` / `conflict`）全件Pass（証跡: `artifacts/private-validation/20261018-083838-2879/`、終了コード0） |
+| Azure実環境デプロイ・回帰（前回の14関数コード） | **Pass**（`poc`環境・Azure Storageバックエンド）。14関数全件インデックス確認、スモークテストPass（3 Tasks、Sum=3）、閉域回帰5シナリオ（`single` / `three` / `classification` / `failure` / `conflict`）全件Pass（証跡: `artifacts/private-validation/20261018-083838-2879/`、終了コード0）。※今回の15関数コード（CancelWorkflow）のAzure実機回帰検証は未実施（境界の明記） |
 | Azure（過去の耐障害性検証） | V05（再起動復旧）/ V07（監視期限超過）/ V08（ホスト停止中Batch期限）/ V09（0台オートスケール）は過去の配置（`9c96054`時点）でPass実証済み |
 
-全261件のRelease単体テスト、Terraform Mock 37件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entraの実テナント設定（App Role割当・`idtyp`設定）や実EasyAuth環境での偽造ヘッダー遮断検証は未実施です。
+全270件のRelease単体テスト、Terraform Mock 37件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entraの実テナント設定（App Role割当・`idtyp`設定）や実EasyAuth環境での偽造ヘッダー遮断検証、および15関数コードのAzure実機回帰は未実施です。
 
 以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
 
-## 2026-10-18 最新コード（14 Functions・新受付スキーマ・独自状態API）の Azure 実環境デプロイおよび回帰検証
+## 2026-10-18 前回の14関数コード（新受付スキーマ・独自状態API）の Azure 実環境デプロイおよび回帰検証
 
-現行コード（全14 Functions、`admission.json` v2受付、独自状態照会URL契約、エラー遮蔽、公開成果物検証）を実Azure環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、Azure Storageバックエンド）へ配置し、スモークテストおよび閉域検証VMからの主要回帰シナリオを実行しました。
+前回の14関数コード（全14 Functions、`admission.json` v2受付、独自状態照会URL契約、エラー遮蔽、公開成果物検証）を実Azure環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、Azure Storageバックエンド）へ配置し、スモークテストおよび閉域検証VMからの主要回帰シナリオを実行しました（※今回のV12 CancelWorkflowを含む15関数コードのAzure実機検証は未実施です）。
 
 | 検証項目 | 実行コマンド / 証跡 | 結果と確認内容 |
 |---|---|---|
-| Azureデプロイ & スモークテスト | `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke`（ログ: `.deploy/poc/20261018-171029-4809/`） | **Pass**（終了コード0）。インフラ計画差分なし（0 add / 1 change / 0 destroy）。Function AppへのZIP配置後、**全14 Functionsのインデックス登録を確認**（`AggregateActivity`, `ClassifyActivity`, `EnsureBatchJobActivity`, `EnsureBatchTaskActivity`, `FetchAndPersistActivity`, `GetBatchTaskStatusActivity`, `GetWorkflowResult`, `GetWorkflowStatus`, `MainOrchestrator`, `MonitorBatchTaskOrchestrator`, `PublishManifestActivity`, `StartWorkflow`, `TerminateBatchJobActivity`, `WorkflowAdmissionEntity`）。スモークテストにて3 Tasks投入・Batch実行・結果回収・`Sum=3`集約完了を確認（`requestId=deploy-47611f6d13994d43837aaf8b92b38e5d`） |
+| Azureデプロイ & スモークテスト | `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke`（ログ: `.deploy/poc/20261018-171029-4809/`） | **Pass**（終了コード0）。インフラ計画差分なし（0 add / 1 change / 0 destroy）。Function AppへのZIP配置後、**当時の全14 Functionsのインデックス登録を確認**（`AggregateActivity`, `ClassifyActivity`, `EnsureBatchJobActivity`, `EnsureBatchTaskActivity`, `FetchAndPersistActivity`, `GetBatchTaskStatusActivity`, `GetWorkflowResult`, `GetWorkflowStatus`, `MainOrchestrator`, `MonitorBatchTaskOrchestrator`, `PublishManifestActivity`, `StartWorkflow`, `TerminateBatchJobActivity`, `WorkflowAdmissionEntity`）。スモークテストにて3 Tasks投入・Batch実行・結果回収・`Sum=3`集約完了を確認（`requestId=deploy-47611f6d13994d43837aaf8b92b38e5d`） |
 | 検証ランナーの新受付スキーマ追従 | `scripts/Invoke-PocValidation.ps1`, `scripts/tests/PocValidation.Tests.ps1` | `runs/poc-<requestId>/admission.json`（Version 2）を優先読取し、旧 `request.json`（Version 1）へフォールバックする後方互換対応を実施。オフライン回帰試験 `PocValidation.Tests.ps1` Pass |
 | 閉域検証VM経由の主要5シナリオ回帰 | `scripts/Invoke-PrivatePocValidation.ps1 -DeploymentResultPath .deploy/poc/20261018-171029-4809/deployment-result.json -Scenarios single,three,classification,failure,conflict`（証跡: `artifacts/private-validation/20261018-083838-2879/summary.json`） | **Pass**（終了コード0）。5シナリオ全件合格：<br>① `single`: 1 Task完走、`Sum=1`、`runtimeStatus=Completed`<br>② `three`: 3 Tasks完走、`Sum=3`、`runtimeStatus=Completed`<br>③ `classification`: `light`, `heavy`, `auto`（`light`自動判定）の3種投入がすべて正常完了<br>④ `failure`: Task exitCode=42によりOrchestratorが期待通り`runtimeStatus=Failed`・`businessState=Failed`へ遷移<br>⑤ `conflict`: 同一requestId重複投入に対し`conflictHttpStatus=409`返戻を確認<br>※ すべてのシナリオで独自状態URL契約（開始202で独自URL返戻・Durable管理URL遮蔽）および機密非漏洩を確認 |
 
@@ -175,26 +178,33 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 > [!NOTE]
 > 当時はAzure実環境への接続値・資格情報が未提供のため、この時点の検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しました。後続のAzure成功記録と最新コードの未検証範囲はページ上部を参照してください。
 
-## .NET 単体テストの構成と検証項目（最新HEAD `b14b25f`：全 261 件・10 テストクラス）
+## .NET 単体テストの構成と検証項目（全 270 件・10 テストクラス）
 
-信頼性改善および HTTP レイヤー／Gateway 検証の追加、独自API契約・エラー遮蔽・公開成果物検証・Activity安全例外化・gRPC再試行限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、277行拡充）、および opt-in EasyAuth 認可アダプター（`WorkflowAuthorizationTests` 40件追加）を経て、.NET 単体テストは **全 261 件（`Poc.Tests` 259 件 + `DtsProbe` 2 件、10 テストクラス）すべて合格（261 Pass / 0 Fail / 0 Skip）** となっています。
+信頼性改善および HTTP レイヤー／Gateway 検証の追加、独自API契約・エラー遮蔽・公開成果物検証・Activity安全例外化・gRPC再試行限定、受付と所有者の単一レコード化（`admission.json` Version 2、277行拡充）、opt-in EasyAuth 認可アダプター（`WorkflowAuthorizationTests` 40件追加）に加え、V12 利用者キャンセル（Job Cancellation、`CancelWorkflow` 追加、計15関数）を経て、.NET 単体テストは **全 270 件（`Poc.Tests` 268 件 + `DtsProbe` 2 件、10 テストクラス）すべて合格（270 Pass / 0 Fail / 0 Skip）** となっています。
 
 | テストクラス | テスト数 | 主な検証内容 |
 |---|---|---|
 | `IdentityAndCommandTests` | 7 | リクエスト ID / Job ID / Task ID の決定論的導出、PowerShell コマンドラインのエスケープと生成 |
-| `OrchestrationTests` | 3 | 親子オーケストレーションの連携、Timer による待機、兄弟 Task 完了待ち、全件成功時のみ Manifest 公開 |
+| `OrchestrationTests` | 5 | 親子オーケストレーションの連携、Timer による待機、兄弟 Task 完了待ち、全件成功時のみ Manifest 公開、V12 利用者キャンセル検知時の Batch Job 有界停止・Manifest 公開抑止（+2件） |
 | `RequestTests` | 12 | 入力パラメータのバリデーション（TaskCount 1〜3、classification、パストラバーサルや不正文字列の拒否） |
 | `ResilienceTests` | 56 | 一時障害（HTTP 408/429/503・gRPC 3コード限定）の Durable 再試行、監視期限超過時の Batch Job 停止（Terminate）照合・完了確認、Manifest 未公開保証、Blob の条件付き作成（If-None-Match）、Task 競合処理、ファイル欠損検知 |
 | `WorkflowAdmissionTests` | 15 | 受付と所有者の単一レコード化（`admission.json` Version 2、277行拡充）、同一所有者・入力の再送許容、異なる入力パラメータ時の 409 Conflict 競合検出、異なる所有者・組織時の 403 拒否、旧受付レコード（Version 1）からの安全な移行と旧匿名受付への所有者追加拒否、Entity 起動直列化 |
 | `WorkflowAuthorizationTests` | 40 | `EntraEasyAuth` モードでの呼出元認可検証。x-ms-client-principal 解析、tenant ID / issuer / audience 検証、許可 backend client ID 照合、App Role 検証、`idtyp=app` 必須検証、scope 存在時の拒否、必須 owner / org ヘッダー検証、認可失敗時の 401 / 403 応答と機密非露出 |
-| `WorkflowHttpTests` | 81 | HTTP トリガー API の挙動検証（独自 status URL・Location・Retry-After 返却、不正 JSON や不正パラメータへの 400 Bad Request、RPC 一時障害時の 503 + Retry-After 応答、エラー遮蔽・内部例外秘匿、認証モードに応じた認可ディスパッチ） |
+| `WorkflowHttpTests` | 88 | HTTP トリガー API の挙動検証（独自 status URL・Location・Retry-After 返却、不正 JSON や不正パラメータへの 400 Bad Request、RPC 一時障害時の 503 + Retry-After 応答、エラー遮蔽・内部例外秘匿、認証モードに応じた認可ディスパッチ、新規 `CancelWorkflow` API の受付 202・事前 Blob 記録・完了後 200 冪等性・他者認可拒否 403 検証［+7件］） |
 | `WorkflowOperationsTests` | 8 | 3 Task 正常実行と集約（sum=3）、分類と待機時間の保持、Task 失敗時の成果物非公開、Activity リプレイ時の既存リソース再利用、集約破損時の Manifest 公開抑止 |
 | `WorkflowPublishedResultTests` | 37 | 公開成果物（`manifest.json`, `aggregate.json`, `tasks/*/result.json`）の整合性検証。fingerprint、件数、合計値、Task分類・成果物パスの一致照合、成果物欠損時の 409 / resultAvailable=false、不整合時の固定 500、一時障害時の 503 |
 | `DtsProbeTests.HistoryObservationTests`（`DtsProbe.Tests`） | 2 | DTS SDK 直接照会における返却履歴イベント件数集計、ペイロード非表示、全世代観測を主張しない制約の検証 |
-| **合計** | **261** | **261 Pass / 0 Fail / 0 Skip（`Poc.Tests` 259 件 + `DtsProbe` 2 件）** |
+| **合計** | **270** | **270 Pass / 0 Fail / 0 Skip（`Poc.Tests` 268 件 + `DtsProbe` 2 件）** |
 
 ### 単体テスト（Fake / Mock）での検証カテゴリ
 
+- **利用者キャンセル制御（Job Cancellation & Boundary Arbitration: V12）**
+  - `POST /api/workflows/{requestId}/cancel` によるキャンセル受付（実行中 202 Accepted / 完了・終了済み 200 OK 冪等応答）
+  - 受付時所有者との一致検証（他者・別組織からのキャンセル要求に対する HTTP 403 Forbidden 拒否、認証ヘッダー不正時の 400 拒否）
+  - Storage 上へのキャンセルレコード先行永続化（`runs/poc-<requestId>/cancel.json`、条件付き作成）
+  - オーケストレータの外部イベント待機（`CancelRequested`）と兄弟 Task 監視オーケストレーション待機の調停
+  - キャンセル検知時の Batch ジョブ有界停止（`TerminateBatchJobActivity`、最大2分ポーリング）の安全呼び出し
+  - キャンセル時の成果物（`manifest.json`）公開の厳格な抑止とカスタムステータス（`state = "Cancelled"`, `errorCode = "workflow_cancelled"`）の確定
 - **受付・所有者の一体化（Atomic Admission & Ownership）**
   - `admission.json` Version 2 による入力・instanceId・所有者・組織の単一レコード化
   - 同一所有者・同一入力での再送受け入れと既存インスタンス返却
@@ -237,7 +247,7 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 - backend 不存在と参照エラーの区別
 - 既存の 0 台 Pool に対するコード配置
 - 新規 Pool 作成時の全台準備完了待ちと node 一覧の pagination 処理
-- 14 個の Functions 検出確認
+- 15 個の Functions 検出確認
 - インスタンス状態 GET 時の 404 待機と 401/403 エラー時の即時失敗
 
 ### Azure 実環境で未検証の項目
@@ -262,7 +272,7 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 | .NET SDK | 10.0.402 を作業フォルダー内に導入 |
 | .NET package restore | Function project / solution restore 成功 |
 | .NET build / publish | solution build 0 警告・0 エラー、Release publish 成功。`artifacts/build.log` / `artifacts/publish.log` |
-| .NET unit test | 初版: 30 Pass / 0 Fail / 0 Skip（現行: 261 Pass / 0 Fail / 0 Skip［Poc.Tests 259 + DtsProbe 2］） |
+| .NET unit test | 初版: 30 Pass / 0 Fail / 0 Skip（現行: 270 Pass / 0 Fail / 0 Skip［Poc.Tests 268 + DtsProbe 2］） |
 | Terraform fmt / validate | Terraform 1.14.0 / AzureRM 5.10.0、2026-10-16 実測 Pass |
 | Terraform plan / apply | Not tested: Azure 接続値なし |
 | Azure 実行 instance / Job / Task ID | 未発行 |
@@ -301,7 +311,7 @@ SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` 
 |---|---|---|---|---|
 | Build | `dotnet build DurableBatchPoc.slnx --no-restore` | コンパイル成功 | 0 警告・0 エラー。`artifacts/build.log` | Pass |
 | Publish | `dotnet publish src/Poc.Functions/Poc.Functions.csproj -c Release --no-restore -o artifacts/publish` | デプロイ用成果物生成 | 成功。`artifacts/publish.log` / `artifacts/publish/` | Pass |
-| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 初版: 30 Pass、現行: 261 Pass / 0 Fail / 0 Skip［Poc.Tests 259 + DtsProbe 2］ | Pass |
+| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 初版: 30 Pass、現行: 270 Pass / 0 Fail / 0 Skip［Poc.Tests 268 + DtsProbe 2］ | Pass |
 | Windows command | ローカル Windows で `cmd` → `powershell.exe` を実行 | 正常 exit 0 / result 1、故意失敗 exit 42 | 正常 exit 0・result.txt=1、失敗 exit 42・result ファイルなし。`artifacts/test-summary.txt` | Pass（ローカルのみ） |
 | Terraform init | `terraform -chdir=infra init -backend=false` | provider の取得成功 | AzureRM v5.10.0 (signed by HashiCorp)、`.terraform.lock.hcl` 生成 | Pass |
 | Terraform fmt | `terraform -chdir=infra fmt -check` | 差分なし、exit 0 | 2026-10-16 実行、標準出力なし、exit 0 | Pass |
@@ -319,6 +329,6 @@ SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` 
 | T08 Mock | Activity の副作用後に再呼び出し | 同一 Job / Task / manifest を再利用 | `WorkflowOperationsTests.ReplayedActivitiesReuseResourcesAndManifest` 成功。1 Job / 3 Tasks / 5文書 | Pass（Mock） |
 | T08 Azure | 実 Activity 副作用後の中断・再実行 | 同一 Job / Task / manifest を再利用 | クラウド replay 未実施 | Not tested |
 | T09 | OutputFiles 直送比較 | Blob への直接永続化 | P1 / 未実装 | Not tested |
-| T10 | Durable / Batch 停止 | 両方の状態整合性 | 期限超過時のJob停止は実装・Mock成功。利用者キャンセル連鎖は未実装 | Not tested（Azure） |
+| T10 | Durable / Batch 停止 | 両方の状態整合性 | 期限超過時のJob停止および利用者キャンセル連鎖（V12）はローカル実装・Mock成功（CancelWorkflow、Blob先行永続化、外部イベント待機、Batch停止、manifest公開抑止、冪等200/202）。15関数コードの実Azure接続・回帰は未実施 | Pass（Mock） / Not tested（Azure） |
 
 Azure 実環境での試験実施時は、`artifacts/` 配下へ実行日時、設定値（認証情報やキー等のシークレットを除く）、状態照会 JSON、Batch ID / exit code / failure info、Blob URI と一覧、Application Insights ログを保存し、上表の該当行に証跡パスを追記します。なお、`MainOrchestrator` は失敗・タイムアウト時に例外を再スローするため、その場合の `runtimeStatus` は `Failed`、`customStatus.state` は `Failed` または `TimedOut` になります。`runtimeStatus` が `Completed` となるのは `output.state` が `Succeeded` の場合のみで、それ以外は失敗とみなします。最終的な合格判定では、出力された manifest の内容と入力データとの整合性まで確認します。

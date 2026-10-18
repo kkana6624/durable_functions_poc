@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$DeploymentResultPath,
-    [ValidateSet('single','three','classification','failure','admission20','conflict','timeout')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
+    [ValidateSet('single','three','classification','failure','admission20','conflict','timeout','cancellation')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
     [ValidateRange(60,3600)][int]$TimeoutSeconds=900,
     [string]$EvidenceDirectory,
     [switch]$DedicatedEnvironment

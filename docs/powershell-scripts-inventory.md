@@ -1,6 +1,6 @@
 # PowerShell スクリプト一覧と機能仕様（PowerShell Scripts Inventory）
 
-更新日: 2026-10-18（最新コード b14b25f 時点）
+更新日: 2026-10-18（最新コード V12 利用者キャンセル実装完了時点）
 
 本書は、本リポジトリ（`durable_functions_poc`）に含まれるすべての PowerShell スクリプト（`scripts/` 配下のメインスクリプト 12 本、および `scripts/tests/` 配下のオフライン単体・統合テストスクリプト 8 本）の役割、パラメータ、提供関数、実行境界、呼び出し関係、テスト検証観点、および終了コード仕様を体系的にまとめた技術仕様書です。
 
@@ -150,9 +150,9 @@ flowchart TD
 |---|---|---|---|
 | **デプロイ・IaC統合** | [deploy.ps1](../scripts/deploy.ps1) | ホスト | ビルド、テスト、Terraform インフラ構築、Private VM デプロイ、検証を一貫実行する主スクリプト |
 | **共通基盤** | [Deployment.Common.ps1](../scripts/Deployment.Common.ps1) | ホスト / ゲスト | CLI 実行制御、安全な JSON 変換、環境アイデンティティ照合、Terraform 計画ガード、ZIP 生成関数群 |
-| **デプロイ検証** | [Test-Deployment.ps1](../scripts/Test-Deployment.ps1) | ホスト / ゲスト | Batch Pool ノード準備完了判定（Phase: Pool）、全 14 Functions インデックス確認、および Smoke テスト |
+| **デプロイ検証** | [Test-Deployment.ps1](../scripts/Test-Deployment.ps1) | ホスト / ゲスト | Batch Pool ノード準備完了判定（Phase: Pool）、全 15 Functions インデックス確認（CancelWorkflow 含む）、および Smoke テスト |
 | **共通アサーション** | [Validation.Assertions.ps1](../scripts/Validation.Assertions.ps1) | ホスト / ゲスト | 公開ステータス URI 検証、メモリ内システムキー URL 生成、公開成果物（aggregate/manifest）整合性照合 |
-| **ワークフロー検証** | [Invoke-PocValidation.ps1](../scripts/Invoke-PocValidation.ps1) | ゲスト（ローカル可） | 選択されたシナリオ（single/three/classification/failure/admission20/conflict/timeout）を実行・評価する主ランナー |
+| **ワークフロー検証** | [Invoke-PocValidation.ps1](../scripts/Invoke-PocValidation.ps1) | ゲスト（ローカル可） | 選択されたシナリオ（single/three/classification/failure/admission20/conflict/timeout/cancellation）を実行・評価する主ランナー |
 | **閉域VM検証ラッパー** | [Invoke-PrivatePocValidation.ps1](../scripts/Invoke-PrivatePocValidation.ps1) | ホスト | ホスト側から閉域検証 VM を起動して `Invoke-PocValidation.ps1` を実行させる簡易ラッパースクリプト |
 | **VMトランスポート** | [Invoke-PrivateVmOperation.ps1](../scripts/Invoke-PrivateVmOperation.ps1) | ホスト | 資材バンドル作成、Blob 経由転送、Azure VM Run Command 実行、サニタイズ証跡回収を行うトランスポート層 |
 | **VMゲストワーカー** | [PrivateVm.Worker.ps1](../scripts/PrivateVm.Worker.ps1) | ゲスト | 検証 VM 内で Run Command から呼び出され、DNS 検証、Private SCM ZIP デプロイ、検証ランナー実行を担う |
@@ -228,7 +228,7 @@ flowchart TD
   - `Invoke-ValidationHttp($Uri, $Method, $Headers, $Body)`: HTTP 要求ラッパー。URL 内のキーや認証エラーのシークレット露出を防止。
   - `Wait-ValidationCondition($Check, $Description, $TimeoutSeconds, $PollSeconds, [switch]$RetryErrors)`: 条件達成までの指数バックオフ・定期ポーリングを実行。
   - `Stop-Validation($Message)`: 恒久的な検証失敗例外をスロー。
-  - `Invoke-DeploymentValidation`: Batch ノード状態確認、全 14 Functions の登録確認、およびスモークテストを実行する中核関数。
+  - `Invoke-DeploymentValidation`: Batch ノード状態確認、全 15 Functions の登録確認（CancelWorkflow 含む）、およびスモークテストを実行する中核関数。
 - **依存関係・呼び出し関係**:
   - ドットソース: `Validation.Assertions.ps1`, `Deployment.Common.ps1`
 - **対応テストスクリプト**: `scripts/tests/Test-Deployment.Tests.ps1`
@@ -261,7 +261,7 @@ flowchart TD
 | パラメータ名 | 型 | 必須/任意 | デフォルト値 | 用途・制約 |
 |---|---|---|---|---|
 | `-DeploymentResultPath` | `[string]` | 任意 | `'./deployment-result.json'` | デプロイ結果ファイルのパス |
-| `-Scenarios` | `[string[]]` | 任意 | `('single','three','classification','failure','admission20','conflict')` | 実行するシナリオ一覧（ValidateSet: `single`, `three`, `classification`, `failure`, `admission20`, `conflict`, `timeout`） |
+| `-Scenarios` | `[string[]]` | 任意 | `('single','three','classification','failure','admission20','conflict')` | 実行するシナリオ一覧（ValidateSet: `single`, `three`, `classification`, `failure`, `admission20`, `conflict`, `timeout`, `cancellation`） |
 | `-TimeoutSeconds` | `[int]` | 任意 | `900` | シナリオごとの最大待機秒数（範囲: 1〜86400） |
 | `-PollSeconds` | `[int]` | 任意 | `10` | 状態照会ポーリング間隔秒数（範囲: 1〜60） |
 | `-EvidenceDirectory` | `[string]` | 任意 | タイムスタンプ付きディレクトリ | 証跡ファイル（`summary.json` 等）の保存先パス |
@@ -272,7 +272,7 @@ flowchart TD
   - `Get-PocValidationKey`: Function App から `StartWorkflow` の呼び出しキーを取得。
   - `Get-PocBatchObservation`: Azure Batch REST API から Job および全 Task の状態をページネーションを辿って取得。
   - `Get-PocIdentity` / `Get-PocFingerprint`: リクエストから決定論的インスタンス ID（`poc-<sha256[:40]>`）および入力フィンガープリントを計算。
-  - `Invoke-PocScenario`: 個別シナリオの送信、ポーリング、Batch/Blob 照合を実施。
+  - `Invoke-PocScenario`: 個別シナリオの送信、ポーリング、Batch/Blob 照合を実施。`cancellation` シナリオではワークフロー開始直後に取消 API（`/api/workflows/{id}/cancel`）を呼び出し、HTTP 202 受理、状態照会での `Cancelled` 遷移、Blob 上の `cancel.json` 存在検証、`manifest.json` 非存在検証、Batch Job の `completed` 確認、および完了後の冪等取消再送時の HTTP 200 確認を網羅。
   - `Invoke-PocValidation`: シナリオ群を順次ディスパッチし、サマリと終了コード（0 / 1 / 2）を判定。
 - **依存関係・呼び出し関係**:
   - ドットソース: `Deployment.Common.ps1`, `Validation.Assertions.ps1`
@@ -290,7 +290,7 @@ flowchart TD
 | パラメータ名 | 型 | 必須/任意 | デフォルト値 | 用途・制約 |
 |---|---|---|---|---|
 | `-DeploymentResultPath` | `[string]` | 必須 | なし | デプロイ結果ファイルのパス |
-| `-Scenarios` | `[string[]]` | 任意 | `('single','three','classification','failure','admission20','conflict')` | 実行対象シナリオ一覧 |
+| `-Scenarios` | `[string[]]` | 任意 | `('single','three','classification','failure','admission20','conflict')` | 実行対象シナリオ一覧（ValidateSet: `single`, `three`, `classification`, `failure`, `admission20`, `conflict`, `timeout`, `cancellation`） |
 | `-TimeoutSeconds` | `[int]` | 任意 | `900` | タイムアウト秒数（範囲: 60〜3600） |
 | `-EvidenceDirectory` | `[string]` | 任意 | タイムスタンプ付きパス | 証跡出力先ディレクトリ |
 | `-DedicatedEnvironment` | `[switch]` | 任意 | `$false` | 専用環境指定フラグ |
@@ -316,7 +316,7 @@ flowchart TD
 | `-PackagePath` | `[string]` | 任意 | なし | 配置する Function App ZIP パッケージへのパス（Deploy 操作時に必須） |
 | `-PackageSha256` | `[string]` | 任意 | `''` | ZIP パッケージの期待ハッシュ値 |
 | `-TimeoutSeconds` | `[int]` | 任意 | `900` | 操作タイムアウト秒数（範囲: 60〜3600） |
-| `-Scenarios` | `[string[]]` | 任意 | 既定シナリオ 6 件 | Validate 操作時の実行シナリオ |
+| `-Scenarios` | `[string[]]` | 任意 | 既定シナリオ 6 件 | Validate 操作時の実行シナリオ（ValidateSet: `single`, `three`, `classification`, `failure`, `admission20`, `conflict`, `timeout`, `cancellation`） |
 | `-Smoke` | `[switch]` | 任意 | `$false` | Deploy 操作時にスモークテストを実施するフラグ |
 | `-DedicatedEnvironment` | `[switch]` | 任意 | `$false` | 専用環境フラグ |
 | `-RecoveryContext` | `[hashtable]` | 任意 | `@{}` | 復旧検証操作時のフェーズ間引き継ぎコンテキスト |
@@ -476,8 +476,8 @@ flowchart TD
 |---|---|---|
 | [Deployment.Common.Tests.ps1](../scripts/tests/Deployment.Common.Tests.ps1) | `Deployment.Common.ps1` | ・Terraform 実行計画（Plan）のガード（既存 Batch/Gallery の変更禁止、リソース削除・置換 `delete` の拒否）<br/>・オブジェクトの Hashtable 再帰変換と配列・入れ子構造の維持<br/>・Durable 設定（Azure Storage / DTS）のバリデーションと環境アイデンティティ変更の拒否<br/>・ポータブル ZIP 生成機能（`.azurefunctions` やネストされた DLL の POSIX パス検証、Windows バックスラッシュ `\` の混入防止） |
 | [Deploy.Workflow.Tests.ps1](../scripts/tests/Deploy.Workflow.Tests.ps1) | `deploy.ps1`, `Test-Deployment.ps1`, `Invoke-PrivateVmOperation.ps1` | ・`deploy.ps1` の一連のワークフロー全体のオフライン完走テスト<br/>・Fake `dotnet` / Fake `terraform` / Fake `az` によるツール呼び出し順序および引数の照合<br/>・`-PlanOnly` 指定時の動作（ブートストラップ作成と主インフラ計画の分離、コードデプロイ抑止）<br/>・Remote Backend の RBAC 伝播待ちリトライ挙動<br/>・VM トランスポートの呼び出しパラメータ照合 |
-| [Test-Deployment.Tests.ps1](../scripts/tests/Test-Deployment.Tests.ps1) | `Test-Deployment.ps1`, `Validation.Assertions.ps1` | ・Batch Pool 準備完了判定（Dedicated / Spot の種別判定、preempted/unusable ノードの除外、ページネーション継続 URL の検証、リサイズ失敗検知）<br/>・全 14 Functions インデックス登録の網羅確認（不足時の検出）<br/>・Smoke テストの HTTP 202 受理、独自 URL 検証、メモリ内システムキーによるステータス照会<br/>・Blob 上の `aggregate.json` / `manifest.json` 改竄検知アサーション |
-| [PocValidation.Tests.ps1](../scripts/tests/PocValidation.Tests.ps1) | `Invoke-PocValidation.ps1`, `Validation.Assertions.ps1` | ・決定論的フィンガープリント計算の一致確認（C# `Poc.Core` とのクロスバリデーション）<br/>・標準シナリオ群（`single`, `three`, `classification`, `failure`, `conflict`, `timeout`, `admission20`）の Fake 応答検証<br/>・`System.Net.Http.HttpClient` による実ループバック 20 並行送信の検証<br/>・タイムアウト設定不足やランナー待機時間不足のバリデーション<br/>・終了コード仕様（Pass=0, Fail=1, NotRun含む=2）の網羅検証<br/>・シークレット文字列が証跡やログへ混入しないことの秘匿性検証 |
+| [Test-Deployment.Tests.ps1](../scripts/tests/Test-Deployment.Tests.ps1) | `Test-Deployment.ps1`, `Validation.Assertions.ps1` | ・Batch Pool 準備完了判定（Dedicated / Spot の種別判定、preempted/unusable ノードの除外、ページネーション継続 URL の検証、リサイズ失敗検知）<br/>・全 15 Functions（CancelWorkflow 含む）インデックス登録の網羅確認（不足時の検出）<br/>・Smoke テストの HTTP 202 受理、独自 URL 検証、メモリ内システムキーによるステータス照会<br/>・Blob 上の `aggregate.json` / `manifest.json` 改竄検知アサーション |
+| [PocValidation.Tests.ps1](../scripts/tests/PocValidation.Tests.ps1) | `Invoke-PocValidation.ps1`, `Validation.Assertions.ps1` | ・決定論的フィンガープリント計算の一致確認（C# `Poc.Core` とのクロスバリデーション）<br/>・標準シナリオ群（`single`, `three`, `classification`, `failure`, `conflict`, `timeout`, `admission20`, `cancellation`）の Fake 応答検証<br/>・`cancellation` シナリオの正常系（HTTP 202 受付→200 冪等完了確認、`cancel.json` 確認、`manifest.json` 非存在確認）および異常系（`cancelFailed` による 500、`missingCancelRecord` による Blob レコード欠損検知）の網羅検証<br/>・`System.Net.Http.HttpClient` による実ループバック 20 並行送信の検証<br/>・タイムアウト設定不足やランナー待機時間不足のバリデーション<br/>・終了コード仕様（Pass=0, Fail=1, NotRun含む=2）の網羅検証<br/>・シークレット文字列が証跡やログへ混入しないことの秘匿性検証 |
 | [PrivateVm.Tests.ps1](../scripts/tests/PrivateVm.Tests.ps1) | `Invoke-PrivateVmOperation.ps1`, `PrivateVm.Worker.ps1` | ・ホスト・ゲスト間のトランスポート層（バンドル生成、SHA-256 検証、Entra 認証アップロード）の検証<br/>・Run Command の stdout/stderr 集約形式（`[stdout]` / `[stderr]`）からの正常判定抽出<br/>・Private SCM ホスト名解決時の権限最小化（`az functionapp show` ではなく ARM `sites/read` GET の利用）の検証<br/>・Private Endpoint DNS 解決検証<br/>・非同期 ZIP デプロイ（`/api/zipdeploy`）のポーリングと失敗ステージ追跡 |
 | [RecoveryValidation.Tests.ps1](../scripts/tests/RecoveryValidation.Tests.ps1) | `Invoke-PocRecoveryValidation.ps1`, `Recovery.Context.ps1` | ・Function App 再起動復旧（Restart モード）のフェーズ分離実行（Start: Running 確認、Complete: 同一 ID・同一 Task 完了確認）<br/>・ホスト停止中 Batch 安全網（HostStoppedBatchWallClock モード）の検証（停止状態確認、MaxWallClockTimeExpiry 終了理由確認、Manifest 非公開確認）<br/>・`finally` ブロックでの Function App 再起動/復元コマンド発行の保証<br/>・コンテキストデータの日時改変や不正フィールドの拒否 |
 | [AutoscaleValidation.Tests.ps1](../scripts/tests/AutoscaleValidation.Tests.ps1) | `Invoke-PocAutoscaleValidation.ps1` | ・0 台オートスケール検証（V09）のオフラインシーケンス確認<br/>・Batch REST API 呼び出し（`@file` による一時 JSON 経由）のパラメータ照合<br/>・Pool の 0 台縮小、Autoscale 式有効化、0 台確認、ワークフロー投入、スケールアウト検知の推移検証<br/>・`finally` ブロックにおける固定台数構成（Fixed Scale）への確実な復元と準備完了判定の検証 |

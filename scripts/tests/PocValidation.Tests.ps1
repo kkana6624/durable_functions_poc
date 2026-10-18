@@ -44,6 +44,7 @@ $script:requests = @{}
 $script:statusReads = 0
 $script:posts = 0
 $script:parallelCount = 0
+$script:cancelCalls = 0
 $script:batchReads = 0
 $script:historyReads = 0
 $script:current = $null
@@ -94,6 +95,14 @@ function Invoke-PocValidationHttp {
     if ($Method -eq 'Post') {
         Assert-True ($Headers['x-functions-key'] -eq $script:secret) 'Starter must receive its key through the header'
         if ($script:mode -eq 'starterError') { throw "Secret provider failure: $script:secret $Uri" }
+        if ($Uri -match '/cancel$') {
+            if ($script:mode -eq 'cancelFailed') { return @{ StatusCode=500; Data=[pscustomobject]@{ error=$script:secret } } }
+            if ($script:cancelCalls -gt 0 -or $script:mode -eq 'cancelIdempotent') {
+                return @{ StatusCode=200; Data=[pscustomobject]@{ status='Cancelled'; requestId=$script:current.requestId; terminationConfirmed=$true; unexpected=$script:secret } }
+            }
+            $script:cancelCalls++
+            return @{ StatusCode=202; Data=[pscustomobject]@{ status='Cancelling'; requestId=$script:current.requestId; unexpected=$script:secret } }
+        }
         return New-FakeAdmission -Body $Body
     }
     $script:statusReads++
@@ -108,6 +117,7 @@ function Invoke-PocValidationHttp {
     $state = 'Succeeded'; $runtime='Completed'
     if ($null -ne $request.failTaskIndex -or $script:mode -eq 'unexpectedFailure') { $state='Failed'; $runtime='Failed' }
     if ($script:mode -in @('timeout','terminationFailed','timeoutNoConstraint','timeoutWrongConstraint','timeoutBadConstraint')) { $state='TimedOut'; $runtime='Failed' }
+    if ($script:mode -in @('cancellation','cancelFailed','missingCancelRecord')) { $state='Cancelled'; $runtime='Failed' }
     return @{ StatusCode=200; Data=[pscustomobject]@{
         runtimeStatus=$runtime; createdTime='2026-10-17T00:00:00Z'; output=[pscustomobject]@{ state=$state; requestId=$request.requestId; jobId=(Get-PocJobId $request.requestId) }
         customStatus=[pscustomobject]@{ state=$state; jobId=(Get-PocJobId $request.requestId); error=$script:secret
@@ -133,6 +143,8 @@ function Get-PocHistoryObservation {
 
 function Test-PocBlobExists {
     param($Outputs,[string]$Path)
+    if ($Path -match 'manifest\.json$') { return $script:mode -eq 'leakedManifest' }
+    if ($Path -match 'cancel\.json$') { return $script:mode -ne 'missingCancelRecord' }
     return $script:mode -eq 'leakedManifest'
 }
 
@@ -168,7 +180,7 @@ function Get-PocBatchObservation {
     param($Outputs,[string]$JobId)
     $script:batchReads++
     $request=$script:current; $fingerprint=Get-FakeFingerprint $request
-    $job=[pscustomobject]@{ id=$JobId; state=$(if ($script:mode -like 'timeout*') { 'completed' } else { 'active' })
+    $job=[pscustomobject]@{ id=$JobId; state=$(if ($script:mode -like 'timeout*' -or $script:mode -in @('cancellation','cancelFailed','missingCancelRecord')) { 'completed' } else { 'active' })
         poolInfo=[pscustomobject]@{ poolId=$Outputs.batch_pool_id }; metadata=@([pscustomobject]@{ name='poc-fingerprint'; value=$fingerprint })
         constraints=[pscustomobject]@{ maxWallClockTime='PT1M' }; unexpected=$script:secret }
     if ($script:mode -eq 'timeoutNoConstraint') { $job.constraints=$null }
@@ -205,7 +217,7 @@ try {
     function Invoke-TestCase {
         param([string]$Mode,[string[]]$Scenarios,[int]$ExpectedCode,[string]$ExpectedStatus,[switch]$DedicatedEnvironment,[int]$Wait=2)
         $script:mode=$Mode; $script:requests=@{}; $script:statusReads=0; $script:posts=0
-        $script:parallelCount=0; $script:batchReads=0; $script:historyReads=0; $script:current=$null; $script:caseNumber++
+        $script:parallelCount=0; $script:cancelCalls=0; $script:batchReads=0; $script:historyReads=0; $script:current=$null; $script:caseNumber++
         $directory=Join-Path $temporary ([string]$script:caseNumber)
         $summary=Invoke-PocValidation -DeploymentResultPath $deployment -Scenarios $Scenarios -EvidenceDirectory $directory -TimeoutSeconds $Wait -PollSeconds 1 -DedicatedEnvironment:$DedicatedEnvironment
         Assert-True ($summary.ExitCode -eq $ExpectedCode) "$Mode expected exit $ExpectedCode; got $($summary.ExitCode): $($summary.Scenarios | ConvertTo-Json -Depth 10 -Compress)"
@@ -295,6 +307,11 @@ try {
         Assert-True ($constraintResult.Scenarios[0].Reason -in @('BatchWallClockConstraintMismatch','InvalidBatchWallClockConstraint')) 'Missing, different or malformed Batch safety-net constraints must fail'
     }
     $null=Invoke-TestCase terminationFailed @('timeout') 1 Fail -DedicatedEnvironment -Wait 240
+    $cancelResult=Invoke-TestCase cancellation @('cancellation') 0 Pass
+    Assert-True ($cancelResult.Scenarios[0].Evidence.runs[0].cancelHttpStatus -eq 202 -and $cancelResult.Scenarios[0].Evidence.runs[0].idempotentCancelHttpStatus -eq 200 -and $cancelResult.Scenarios[0].Evidence.runs[0].businessState -eq 'Cancelled') 'Cancellation must return 202 accepted and then 200 idempotent confirmed'
+    foreach ($cancelMode in @('cancelFailed','missingCancelRecord')) {
+        $null=Invoke-TestCase $cancelMode @('cancellation') 1 Fail
+    }
     $mixed=Invoke-TestCase unexpectedFailure @('single','timeout') 1 Fail
     Assert-True ($mixed.Scenarios.Count -eq 2 -and $mixed.Scenarios[1].Status -eq 'NotRun') 'Fail must outrank NotRun and later scenarios must still be recorded'
 

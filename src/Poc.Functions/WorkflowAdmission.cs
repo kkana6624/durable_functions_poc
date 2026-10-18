@@ -69,6 +69,28 @@ public sealed class WorkflowAdmission(IResultRepository results)
         return instance is not null;
     }
 
+    public async Task<WorkflowCancelRecord> CancelAsync(string requestId, WorkflowOwner? caller, string? reason = null, CancellationToken cancellationToken = default)
+    {
+        caller?.Validate();
+        await AuthorizeAccessAsync(requestId, caller, cancellationToken);
+        var record = new WorkflowCancelRecord(1, requestId, reason, DateTimeOffset.UtcNow, caller);
+        try
+        {
+            await results.PutIfAbsentAsync(WorkflowIdentity.CancelPath(requestId), record, cancellationToken);
+        }
+        catch (WorkflowConflictException)
+        {
+            // Already recorded, idempotent
+        }
+        return record;
+    }
+
+    public async Task<WorkflowCancelRecord?> TryGetCancelRecordAsync(string requestId, CancellationToken cancellationToken = default)
+    {
+        return await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(requestId), cancellationToken);
+    }
+
+
     private async Task<WorkflowAdmissionRecord?> ReadRecordAsync(string requestId, CancellationToken cancellationToken)
     {
         var current = await TryReadAsync<WorkflowAdmissionRecord>(WorkflowIdentity.AdmissionPath(requestId), cancellationToken);

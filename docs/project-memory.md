@@ -1,8 +1,26 @@
 # プロジェクトメモリ
 
-## 2026-10-18 最新コード実機検証（14関数・新受付・独自状態API）（今回の作業）
+## 2026-10-18 V12 利用者キャンセル（Job Cancellation）の実装完了（今回の作業）
 
-最新コード（14関数、`admission.json` v2受付、独自状態API契約、エラー遮蔽）をAzure実環境（`poc`環境・Azure Storageバックエンド）へデプロイし、スモークテスト（3 Tasks、Sum=3）および閉域検証VM経由の主要5シナリオ（`single`, `three`, `classification`, `failure`, `conflict`）を実行しました。
+V12 利用者キャンセル（Job Cancellation）のローカル実装およびテストを完了しました。
+- **Functions総数**: `CancelWorkflow` を追加し、全15関数（HTTP 4件、Orchestrator 2件、Activity 8件、Entity 1件）へ更新。
+- **仕様詳細**:
+  - `POST /api/workflows/{requestId}/cancel` エンドポイントの実装。
+  - Storage 上の `runs/poc-<requestId>/cancel.json` へのキャンセル要求レコード（`WorkflowCancelRecord`）先行永続化（条件付き作成）。
+  - `MainOrchestrator` による Durable 外部イベント `CancelRequested` の待機と、子オーケストレーション並列監視（`Task.WhenAll`）との競合調停（`Task.WhenAny`）。
+  - キャンセル検知時の Batch ジョブ有界停止（`TerminateBatchJobActivity`、最大2分ポーリング）の安全呼び出し。
+  - キャンセル成立時の `manifest.json` 公開抑止、カスタムステータス確定（`state = "Cancelled"`, `errorCode = "workflow_cancelled"`）、例外終了（`WorkflowCancelledException`）。
+  - 所有者認可（他者・別組織のキャンセル要求に対する HTTP 403 拒否、認証ヘッダー不正時の 400 拒否）。
+  - 冪等応答（実行中 202 Accepted、完了・失敗・キャンセル済み終端状態への再要求 200 OK、未存在 404 Not Found）。
+- **確定したローカル検証**:
+  - Release 単体テスト: 全270件（`Poc.Tests` 268/268件 + `DtsProbe` 2/2件、失敗・スキップ0件）合格。内、新規 `CancelWorkflow` 試験を含む `WorkflowHttpTests` 88件（+7件）、`OrchestrationTests` 5件（+2件）。
+  - PowerShell オフライン試験: 8組全件Pass（`PocValidation.Tests.ps1` に `cancellation` シナリオ［202/200冪等性、事前Blob確認、失敗系］を追加、`Test-Deployment.Tests.ps1` / `Deploy.Workflow.Tests.ps1` の期待関数数を15件に更新）。
+  - Terraform Mock: 37/37件全Pass、`fmt -check` / `validate` Pass。
+- **Azure 実機境界の明確化**: 前回の 14 関数コードについては Azure 実環境（`poc` 環境・Azure Storage バックエンド）への配置・スモークテストおよび閉域 5 シナリオ回帰で全件 Pass（`20261018-083838-2879`）を確認していますが、今回の `CancelWorkflow` を含む **15 関数コードの Azure 実機デプロイ・回帰検証は未実施** です。
+
+## 2026-10-18 前回の14関数コード実機検証（新受付・独自状態API）
+
+前回の14関数コード（14関数、`admission.json` v2受付、独自状態API契約、エラー遮蔽）をAzure実環境（`poc`環境・Azure Storageバックエンド）へデプロイし、スモークテスト（3 Tasks、Sum=3）および閉域検証VM経由の主要5シナリオ（`single`, `three`, `classification`, `failure`, `conflict`）を実行しました（※今回の15関数コードのAzure実機検証は未実施です）。
 
 デプロイは `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke`（ログ: `.deploy/poc/20261018-171029-4809/`）により実施され、インフラ差分なし（0 add / 1 change / 0 destroy）、Function AppへのZIP配置、14関数全件のインデックス登録、スモークテスト合格（`requestId=deploy-47611f6d13994d43837aaf8b92b38e5d`）を確認しました。
 検証ランナー（`scripts/Invoke-PocValidation.ps1`）を改修し、`runs/poc-<requestId>/admission.json`（Version 2）を優先参照しつつ旧 `request.json` へフォールバックする後方互換を実装しました（オフライン試験 `PocValidation.Tests.ps1` Pass）。
@@ -42,20 +60,22 @@ Entra認証・App Role・信頼された利用者情報の伝播は今回対象�
 
 今回の最終検証はsolution Releaseの全221件（Poc.Tests219件・DtsProbe2件）が成功し、失敗・スキップは0件です。Release publish（`artifacts/admission-owner-release-publish`）も成功し、`local.settings*` の非混入を確認しました。`git diff --check` は成功し、変更は意図した8ファイルのみで生成物の混入はありません。Azureへの配置・実機検証は今回実施していません。
 
-## 現在の要約（2026-10-18、最新コード実機検証済み）
+## 現在の要約（2026-10-18、V12 利用者キャンセル実装完了・Azure 実機境界）
 
-最新コード（コミット `e1d04d6`、`27b24b4`、`b14b25f`）における実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。
+最新コードにおける実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、VM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）に加え、**V12 利用者キャンセル（Job Cancellation）の実装**（`CancelWorkflow` 追加、計15関数、事前Blob永続化 `runs/poc-<requestId>/cancel.json`、Durable外部イベント `CancelRequested`、Batchジョブ有界停止 `TerminateBatchJobActivity`、成果物 `manifest.json` 公開抑止、所有者認可、冪等200/202）までローカル実装・テスト完了しています。
 
-さらに、Azure実環境（`poc`環境・Azure Storageバックエンド）へ現行14関数コードをデプロイし、スモークテストPass（3 Tasks、Sum=3）、閉域検証VM経由の主要5シナリオ（`single` / `three` / `classification` / `failure` / `conflict`）全件Pass（証跡: `artifacts/private-validation/20261018-083838-2879/summary.json`）を確認しました。
+**Azure 実機境界**:
+前回の 14 関数コードについては Azure 実環境（`poc` 環境・Azure Storage バックエンド）へデプロイし、スモークテストPass（3 Tasks、Sum=3）、閉域検証VM経由の主要5シナリオ（`single` / `three` / `classification` / `failure` / `conflict`）全件Pass（証跡: `artifacts/private-validation/20261018-083838-2879/summary.json`）を確認済みです。一方で、今回の `CancelWorkflow` を含む **15 関数コードの Azure 実機デプロイ・回帰検証は未実施** です。
 
 確定した検証実績:
-- Release単体テスト: 全261件（`Poc.Tests` 259件＋`DtsProbe` 2件、失敗・スキップ0件）全件Pass。
+- Release単体テスト: 全270件（`Poc.Tests` 268件＋`DtsProbe` 2件、失敗・スキップ0件）全件Pass（WorkflowHttpTests 88件、OrchestrationTests 5件）。
 - Terraform Mock: `modes.tftest.hcl` 37/37件全Pass、`fmt -check` / `validate` Pass。
-- PowerShellオフライン試験: 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation）。
-- Azure実環境回帰: 14関数全件インデックス、新受付スキーマ（`admission.json` v2）、独自状態URL契約（開始202で独自URL返戻・Durable管理URL遮蔽）、エラー遮蔽、公開成果物検証、409競合調停の動作を確認。
-- 境界と前提: 既定の `PocFunctionKey` 互換を維持し、現行Functions期待数は14件です。EntraのApp Role割当や`idtyp` optional claim等の実テナント設定は自動変更しておらず、実EasyAuth環境での偽造ヘッダー遮断や実機トークン検証は未実証です。全ランタイムログ・全履歴の機密非露出、admission20の厳密な全世代起動一意性も未保証です。
+- PowerShellオフライン試験: 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation［cancellation追加］ / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation）。
+- Functions総数: 15関数（`CancelWorkflow` 追加）。
+- 前回のAzure実環境回帰: 14関数全件インデックス、新受付スキーマ（`admission.json` v2）、独自状態URL契約（開始202で独自URL返戻・Durable管理URL遮蔽）、エラー遮蔽、公開成果物検証、409競合調停の動作を確認。
+- 境界と前提: 既定の `PocFunctionKey` 互換を維持し、現行Functions期待数は15件です。15関数コードのAzure実機配置・回帰検証は未実施です。EntraのApp Role割当や`idtyp` optional claim等の実テナント設定は自動変更しておらず、実EasyAuth環境での偽造ヘッダー遮断や実機トークン検証は未実証です。全ランタイムログ・全履歴の機密非露出、admission20の厳密な全世代起動一意性も未保証です。
 
-次の作業はV11のEntra実設定の準備（専用PoC API登録・App Role・`idtyp`設定、厳格モード専用環境での配置・実機検証、既存runnerのBearer追従検討）、またはV12利用者キャンセル連鎖の実装です。後続にV10/T09ファイル入出力、V00閉域接続も残ります。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
+次の作業は、15関数コードのAzure実機配置・回帰検証（cancellationシナリオ含む）、またはV11のEntra実設定の準備（専用PoC API登録・App Role・`idtyp`設定、厳格モード専用環境での配置・実機検証、既存runnerのBearer追従検討）です。後続にV10/T09ファイル入出力、V00閉域接続も残ります。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
 
 ## 2026-10-18 ActivityのgRPC再試行分類の限定（ローカル実装）
 

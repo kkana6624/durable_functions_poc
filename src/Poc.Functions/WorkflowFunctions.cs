@@ -16,6 +16,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     private const string InvalidRequestMessage = "Workflow request is invalid.";
     private const string WorkflowFailedMessage = "Workflow execution failed.";
     private const string WorkflowTimedOutMessage = "Workflow exceeded its monitoring deadline.";
+    private const string WorkflowCancelledMessage = "Workflow was cancelled by user.";
     private const string TerminationUnconfirmedMessage = "Batch job termination could not be confirmed.";
     private const string IntegrityFailureMessage = "Published workflow results are inconsistent.";
     private const string StatusUnavailableMessage = "Workflow status could not be verified. Retry later.";
@@ -141,6 +142,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             return new WorkflowStatusResponse(requestId, instanceId, jobId, mappedStatus, ResultAvailable: false, TerminationConfirmed: terminationConfirmed);
         }
 
+
         if (instance.RuntimeStatus == OrchestrationRuntimeStatus.Completed)
         {
             return new WorkflowStatusResponse(requestId, instanceId, jobId, "Succeeded", ResultAvailable: false);
@@ -153,6 +155,12 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 bool confirmed = (terminationCompleted == true) && !terminationFailed;
                 return new WorkflowStatusResponse(requestId, instanceId, jobId, "TimedOut", ResultAvailable: false,
                     TerminationConfirmed: confirmed, Error: terminationFailed ? TerminationUnconfirmedMessage : WorkflowTimedOutMessage);
+            }
+            if (customState == "Cancelled")
+            {
+                bool confirmed = (terminationCompleted == true) && !terminationFailed;
+                return new WorkflowStatusResponse(requestId, instanceId, jobId, "Cancelled", ResultAvailable: false,
+                    TerminationConfirmed: confirmed, Error: terminationFailed ? TerminationUnconfirmedMessage : WorkflowCancelledMessage);
             }
             return new WorkflowStatusResponse(requestId, instanceId, jobId, "Failed", ResultAvailable: false, Error: WorkflowFailedMessage);
         }
@@ -205,11 +213,20 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             var normalized = NormalizeStatus(requestId, instance);
             var publishedResult = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
             normalized = normalized with { ResultAvailable = publishedResult is not null };
+            if (normalized.Status is "Accepted" or "Preparing" or "Running")
+            {
+                var cancelRecord = await admission.TryGetCancelRecordAsync(requestId, cancellationToken);
+                if (cancelRecord is not null)
+                {
+                    normalized = normalized with { Status = "Cancelling" };
+                }
+            }
 
             var response = request.CreateResponse(HttpStatusCode.OK);
             await response.WriteAsJsonAsync(normalized);
             return response;
         }
+
         catch (WorkflowForbiddenException)
         {
             var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
@@ -329,20 +346,150 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         return response;
     }
 
-    private static async Task<HttpResponseData> AcceptedAsync(HttpRequestData request, string instanceId, string requestId)
+    private static string BuildStatusUrl(Uri requestUrl, string requestId)
     {
-        var requestUrl = request.Url;
-        var statusUrl = new UriBuilder(requestUrl)
+        var path = requestUrl.AbsolutePath;
+        var workflowsIdx = path.IndexOf("/workflows", StringComparison.OrdinalIgnoreCase);
+        var basePath = workflowsIdx >= 0 ? path[..workflowsIdx] : string.Empty;
+        return new UriBuilder(requestUrl)
         {
-            Path = $"{requestUrl.AbsolutePath.TrimEnd('/')}/{Uri.EscapeDataString(requestId)}",
+            Path = $"{basePath}/workflows/{Uri.EscapeDataString(requestId)}",
             Query = string.Empty,
             Fragment = string.Empty
         }.Uri.AbsoluteUri;
+    }
+
+    private static async Task<HttpResponseData> AcceptedAsync(HttpRequestData request, string instanceId, string requestId)
+    {
+        var statusUrl = BuildStatusUrl(request.Url, requestId);
         var response = request.CreateResponse(HttpStatusCode.Accepted);
         response.Headers.Add("Location", statusUrl);
         response.Headers.Add("Retry-After", "10");
         await response.WriteAsJsonAsync(new { id = instanceId, instanceId, statusQueryGetUri = statusUrl });
         return response;
+    }
+
+    [Function(nameof(CancelWorkflow))]
+    public async Task<HttpResponseData> CancelWorkflow(
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "workflows/{requestId}/cancel")] HttpRequestData request,
+        string requestId,
+        [DurableClient] DurableTaskClient client,
+        CancellationToken cancellationToken)
+    {
+        WorkflowOwner? caller;
+        try
+        {
+            new WorkflowRequest(requestId).Validate();
+            caller = callerResolver.Resolve(request);
+        }
+        catch (WorkflowCallerAuthenticationException ex)
+        {
+            return await CreateErrorResponseAsync(request, ex.StatusCode, "Caller is not authorized to access this workflow.");
+        }
+        catch (ArgumentException)
+        {
+            var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
+            await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
+            return badRequest;
+        }
+
+        try
+        {
+            if (!await admission.ExistsAsync(requestId, client, cancellationToken))
+            {
+                var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+                await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
+                return notFound;
+            }
+
+            await admission.AuthorizeAccessAsync(requestId, caller, cancellationToken);
+
+            var publishedResult = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
+            if (publishedResult is not null)
+            {
+                var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                await conflict.WriteAsJsonAsync(new { error = "Workflow is already completed and cannot be cancelled.", requestId, status = "Succeeded" });
+                return conflict;
+            }
+
+            var instanceId = WorkflowIdentity.InstanceId(requestId);
+            var instance = await client.GetInstanceAsync(instanceId, getInputsAndOutputs: true, cancellationToken);
+            if (instance is not null)
+            {
+                var normalized = NormalizeStatus(requestId, instance);
+                if (normalized.Status == "Succeeded")
+                {
+                    var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                    await conflict.WriteAsJsonAsync(new { error = "Workflow is already completed and cannot be cancelled.", requestId, status = "Succeeded" });
+                    return conflict;
+                }
+                if (normalized.Status == "Cancelled")
+                {
+                    var ok = request.CreateResponse(HttpStatusCode.OK);
+                    await ok.WriteAsJsonAsync(normalized);
+                    return ok;
+                }
+            }
+
+            string? reason = null;
+            if (request.Body.Length > 0)
+            {
+                try
+                {
+                    using var doc = await JsonDocument.ParseAsync(request.Body, cancellationToken: cancellationToken);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                        doc.RootElement.TryGetProperty("reason", out var reasonProp) &&
+                        reasonProp.ValueKind == JsonValueKind.String)
+                    {
+                        reason = reasonProp.GetString();
+                    }
+                }
+                catch (JsonException) { }
+            }
+
+            var cancelRecord = await admission.CancelAsync(requestId, caller, reason, cancellationToken);
+
+            try
+            {
+                await client.RaiseEventAsync(instanceId, WorkflowIdentity.CancelEventName, cancelRecord, cancellation: cancellationToken);
+            }
+            catch (Exception)
+            {
+                // Best-effort notification; cancel.json is already persisted
+            }
+
+            var statusUrl = BuildStatusUrl(request.Url, requestId);
+            var response = request.CreateResponse(HttpStatusCode.Accepted);
+            response.Headers.Add("Location", statusUrl);
+            response.Headers.Add("Retry-After", "10");
+            await response.WriteAsJsonAsync(new
+            {
+                id = instanceId,
+                instanceId,
+                requestId,
+                status = "Cancelling",
+                statusQueryGetUri = statusUrl
+            });
+            return response;
+        }
+        catch (WorkflowForbiddenException)
+        {
+            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
+            return forbidden;
+        }
+        catch (InvalidDataException)
+        {
+            return await CreateErrorResponseAsync(request, HttpStatusCode.InternalServerError, IntegrityFailureMessage);
+        }
+        catch (Exception ex) when (IsTransientRequestFailure(ex, cancellationToken))
+        {
+            return await CreateUnavailableResponseAsync(request, "Workflow cancellation could not be confirmed. Retry later.");
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await CreateErrorResponseAsync(request, HttpStatusCode.InternalServerError, "Workflow cancellation could not be confirmed.");
+        }
     }
 
     [Function(nameof(MainOrchestrator))]
@@ -353,12 +500,21 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         var terminalState = "Failed";
         BatchJobTerminationStatus? termination = null;
         string? terminationErrorCode = null;
+        var cancelEventTask = context.WaitForExternalEvent<WorkflowCancelRecord>(WorkflowIdentity.CancelEventName);
         try
         {
             var plan = await context.CallActivityAsync<WorkflowPlan>(nameof(ClassifyActivity), input, RetryOptions());
             var deadline = context.CurrentUtcDateTime.AddMinutes(plan.TimeoutMinutes);
             logger.LogInformation("Request {RequestId}, job {JobId}, classification {Classification}: {Reason}",
                 input.RequestId, plan.JobId, plan.Classification, plan.Reason);
+
+            if (plan.CancelRequested || (cancelEventTask.IsCompleted && cancelEventTask.Result is not null))
+            {
+                terminalState = "Cancelled";
+                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled" });
+                throw new InvalidOperationException(WorkflowCancelledMessage);
+            }
+
             context.SetCustomStatus(new { state = "Submitting", plan.JobId, plan.Classification });
             // Do not abandon job creation: it could create a new job after cleanup saw no job.
             try { await context.CallActivityAsync(nameof(EnsureBatchJobActivity), plan, RetryOptions(deadline)); }
@@ -367,10 +523,30 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 // An ambiguous network failure may have created the job. Expired children trigger
                 // identity-checked cleanup rather than submitting work after the deadline.
             }
+
+            if (cancelEventTask.IsCompleted && cancelEventTask.Result is not null)
+            {
+                terminalState = "Cancelled";
+                (termination, terminationErrorCode) = await PerformBatchTerminationAsync(context, plan, "Cancelling");
+                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled", terminationErrorCode, termination });
+                throw new InvalidOperationException(WorkflowCancelledMessage);
+            }
+
             var monitors = Enumerable.Range(0, input.TaskCount).Select(index =>
                 context.CallSubOrchestratorAsync<TaskMonitorResult>(nameof(MonitorBatchTaskOrchestrator), new TaskSpec(plan, index, deadline))).ToArray();
+            var allMonitors = Task.WhenAll(monitors);
+            var completedTask = await Task.WhenAny(allMonitors, cancelEventTask);
+
+            if (completedTask == cancelEventTask && cancelEventTask.Result is not null)
+            {
+                terminalState = "Cancelled";
+                (termination, terminationErrorCode) = await PerformBatchTerminationAsync(context, plan, "Cancelling");
+                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled", terminationErrorCode, termination });
+                throw new InvalidOperationException(WorkflowCancelledMessage);
+            }
+
             // Terminal outcomes allow all siblings to finish before propagating a task failure.
-            var results = await Task.WhenAll(monitors);
+            var results = await allMonitors;
             var failures = results.Where(result => result.State != "Succeeded").ToArray();
             if (failures.Length > 0)
             {
@@ -378,21 +554,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 terminalState = state;
                 if (state == "TimedOut")
                 {
-                    var stopDeadline = context.CurrentUtcDateTime.AddMinutes(2);
-                    try
-                    {
-                        do
-                        {
-                            termination = await BeforeDeadline(context,
-                                context.CallActivityAsync<BatchJobTerminationStatus>(nameof(TerminateBatchJobActivity), plan, RetryOptions(stopDeadline)), stopDeadline);
-                            context.SetCustomStatus(new { state = "Stopping", plan.JobId, termination });
-                            if (termination.Completed) break;
-                            var next = context.CurrentUtcDateTime.AddSeconds(5);
-                            await context.CreateTimer(next < stopDeadline ? next : stopDeadline, CancellationToken.None);
-                        } while (context.CurrentUtcDateTime < stopDeadline);
-                        if (termination?.Completed != true) terminationErrorCode = "batch_termination_unconfirmed";
-                    }
-                    catch (Exception) { terminationErrorCode = "batch_termination_failed"; }
+                    (termination, terminationErrorCode) = await PerformBatchTerminationAsync(context, plan, "Stopping");
                 }
                 var failureCode = state == "TimedOut" ? "workflow_timed_out" : "workflow_failed";
                 var taskSummary = results.Select(result => new
@@ -404,6 +566,15 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 context.SetCustomStatus(new { state, plan.JobId, errorCode = failureCode, terminationErrorCode, tasks = taskSummary });
                 throw new InvalidOperationException(state == "TimedOut" ? WorkflowTimedOutMessage : WorkflowFailedMessage);
             }
+
+            if (cancelEventTask.IsCompleted && cancelEventTask.Result is not null)
+            {
+                terminalState = "Cancelled";
+                (termination, terminationErrorCode) = await PerformBatchTerminationAsync(context, plan, "Cancelling");
+                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled", terminationErrorCode, termination });
+                throw new InvalidOperationException(WorkflowCancelledMessage);
+            }
+
             context.SetCustomStatus(new { state = "Persisting", plan.JobId });
             await context.CallActivityAsync<ResultReference[]>(nameof(FetchAndPersistActivity), plan, RetryOptions());
             await context.CallActivityAsync<AggregateReference>(nameof(AggregateActivity), plan, RetryOptions());
@@ -411,14 +582,51 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             context.SetCustomStatus(new { state = "Succeeded", plan.JobId, manifest.Uri });
             return new WorkflowOutput("Succeeded", input.RequestId, plan.JobId, manifest.Uri);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            var errorCode = terminalState == "TimedOut" ? "workflow_timed_out" : "workflow_failed";
+            if (ex is TaskFailedException tfe && tfe.FailureDetails?.IsCausedBy<WorkflowCancelledException>() == true)
+            {
+                terminalState = "Cancelled";
+            }
+            var errorCode = terminalState switch
+            {
+                "TimedOut" => "workflow_timed_out",
+                "Cancelled" => "workflow_cancelled",
+                _ => "workflow_failed"
+            };
             context.SetCustomStatus(new { state = terminalState, jobId = WorkflowIdentity.JobId(input.RequestId), errorCode, termination, terminationErrorCode });
-            logger.LogError("Request {RequestId} failed with {ErrorCode}", input.RequestId, errorCode);
+            logger.LogError("Request {RequestId} ended in state {State} with {ErrorCode}", input.RequestId, terminalState, errorCode);
             throw;
         }
     }
+
+    private static async Task<(BatchJobTerminationStatus? termination, string? terminationErrorCode)> PerformBatchTerminationAsync(
+        TaskOrchestrationContext context, WorkflowPlan plan, string state = "Stopping")
+    {
+        var stopDeadline = context.CurrentUtcDateTime.AddMinutes(2);
+        BatchJobTerminationStatus? termination = null;
+        string? terminationErrorCode = null;
+        try
+        {
+            do
+            {
+                termination = await BeforeDeadline(context,
+                    context.CallActivityAsync<BatchJobTerminationStatus>(nameof(TerminateBatchJobActivity), plan, RetryOptions(stopDeadline)), stopDeadline);
+                context.SetCustomStatus(new { state, plan.JobId, termination });
+                if (termination.Completed) break;
+                var next = context.CurrentUtcDateTime.AddSeconds(5);
+                await context.CreateTimer(next < stopDeadline ? next : stopDeadline, CancellationToken.None);
+            } while (context.CurrentUtcDateTime < stopDeadline);
+            if (termination?.Completed != true) terminationErrorCode = "batch_termination_unconfirmed";
+        }
+        catch (Exception)
+        {
+            terminationErrorCode = "batch_termination_failed";
+        }
+        return (termination, terminationErrorCode);
+    }
+
+
 
     [Function(nameof(MonitorBatchTaskOrchestrator))]
     public static async Task<TaskMonitorResult> MonitorBatchTaskOrchestrator([OrchestrationTrigger] TaskOrchestrationContext context)

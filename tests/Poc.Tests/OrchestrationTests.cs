@@ -49,7 +49,57 @@ public class OrchestrationTests
     }
 
     [Fact]
+    public async Task MainOrchestrator_WhenCancelRequestedBeforeStart_TerminatesWithoutBatchJob()
+    {
+        var request = new WorkflowRequest("orchestrator-cancel-pre");
+        var plan = Plan(request) with { CancelRequested = true };
+        var context = Context();
+        context.Setup(c => c.GetInput<WorkflowRequest>()).Returns(request);
+        context.Setup(c => c.CallActivityAsync<WorkflowPlan>(nameof(WorkflowFunctions.ClassifyActivity), request, It.IsAny<TaskOptions>()))
+            .ReturnsAsync(plan);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => WorkflowFunctions.MainOrchestrator(context.Object));
+        Assert.Equal("Workflow was cancelled by user.", ex.Message);
+
+        context.Verify(c => c.CallActivityAsync<object>(nameof(WorkflowFunctions.EnsureBatchJobActivity), It.IsAny<object>(), It.IsAny<TaskOptions>()), Times.Never);
+        context.Verify(c => c.CallSubOrchestratorAsync<TaskMonitorResult>(nameof(WorkflowFunctions.MonitorBatchTaskOrchestrator), It.IsAny<object>(), null), Times.Never);
+    }
+
+    [Fact]
+    public async Task MainOrchestrator_WhenCancelRequestedMidExecution_TerminatesBatchJobAndCancels()
+    {
+        var request = new WorkflowRequest("orchestrator-cancel-mid");
+        var plan = Plan(request);
+        var context = Context();
+        var cancelTcs = new TaskCompletionSource<WorkflowCancelRecord>();
+        context.Setup(c => c.WaitForExternalEvent<WorkflowCancelRecord>(WorkflowIdentity.CancelEventName, It.IsAny<CancellationToken>()))
+            .Returns(cancelTcs.Task);
+        context.Setup(c => c.GetInput<WorkflowRequest>()).Returns(request);
+        context.Setup(c => c.CallActivityAsync<WorkflowPlan>(nameof(WorkflowFunctions.ClassifyActivity), request, It.IsAny<TaskOptions>()))
+            .ReturnsAsync(plan);
+        context.Setup(c => c.CallActivityAsync<object>(nameof(WorkflowFunctions.EnsureBatchJobActivity), plan, It.IsAny<TaskOptions>()))
+            .ReturnsAsync((object)null!);
+        var children = Enumerable.Range(0, 3).Select(_ => new TaskCompletionSource<TaskMonitorResult>()).ToArray();
+        context.Setup(c => c.CallSubOrchestratorAsync<TaskMonitorResult>(nameof(WorkflowFunctions.MonitorBatchTaskOrchestrator), It.IsAny<object>(), null))
+            .Returns((TaskName _, object input, TaskOptions? _) => children[((TaskSpec)input).Index].Task);
+        context.Setup(c => c.CallActivityAsync<BatchJobTerminationStatus>(nameof(WorkflowFunctions.TerminateBatchJobActivity), plan, It.IsAny<TaskOptions>()))
+            .ReturnsAsync(new BatchJobTerminationStatus("Completed", true));
+
+        var run = WorkflowFunctions.MainOrchestrator(context.Object);
+        Assert.False(run.IsCompleted);
+
+        cancelTcs.SetResult(new WorkflowCancelRecord(1, request.RequestId, "user cancelled", DateTimeOffset.UtcNow, null));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => run);
+        Assert.Equal("Workflow was cancelled by user.", ex.Message);
+
+        context.Verify(c => c.CallActivityAsync<BatchJobTerminationStatus>(nameof(WorkflowFunctions.TerminateBatchJobActivity), plan, It.IsAny<TaskOptions>()), Times.Once);
+        context.Verify(c => c.CallActivityAsync<ManifestReference>(nameof(WorkflowFunctions.PublishManifestActivity), plan, It.IsAny<TaskOptions>()), Times.Never);
+    }
+
+    [Fact]
     public async Task MonitorUsesDurableTimerAndStopsAtDeadline()
+
     {
         var plan = Plan(new WorkflowRequest("timeout-001")) with { PollSeconds = 40, TimeoutMinutes = 1 };
         var spec = new TaskSpec(plan, 0);
@@ -74,8 +124,11 @@ public class OrchestrationTests
     {
         var context = new Mock<TaskOrchestrationContext>();
         context.Setup(c => c.CreateReplaySafeLogger(It.IsAny<string>())).Returns(NullLogger.Instance);
+        context.Setup(c => c.WaitForExternalEvent<WorkflowCancelRecord>(WorkflowIdentity.CancelEventName, It.IsAny<CancellationToken>()))
+            .Returns(new TaskCompletionSource<WorkflowCancelRecord>().Task);
         return context;
     }
+
 
     private static WorkflowPlan Plan(WorkflowRequest request) => new(request, "light", "Test", WorkflowIdentity.JobId(request.RequestId),
         WorkflowIdentity.Fingerprint(request, "light"), 10, 15);

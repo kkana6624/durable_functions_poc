@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$DeploymentResultPath,
-    [ValidateSet('single','three','classification','failure','admission20','conflict','timeout')][string[]]$Scenarios = @('single','three','classification','failure','admission20','conflict'),
+    [ValidateSet('single','three','classification','failure','admission20','conflict','timeout','cancellation')][string[]]$Scenarios = @('single','three','classification','failure','admission20','conflict'),
     [ValidateRange(1,86400)][int]$TimeoutSeconds = 900,
     [ValidateRange(1,60)][int]$PollSeconds = 10,
     [string]$EvidenceDirectory,
@@ -215,6 +215,7 @@ function Invoke-PocScenario {
         $count = if ($Name -in @('three','admission20')) { 3 } else { 1 }
         $request = @{ requestId=$requestId; classification=$classification; taskCount=$count; failTaskIndex=$null; lightDelaySeconds=1; heavyDelaySeconds=3 }
         if ($Name -eq 'failure') { $request.failTaskIndex=0 }
+        if ($Name -eq 'cancellation') { $request.lightDelaySeconds=30; $request.heavyDelaySeconds=30 }
         if ($Name -eq 'timeout') {
             $settings = Get-PocWorkflowSettings $Outputs
             $Evidence.settings = $settings
@@ -233,6 +234,12 @@ function Invoke-PocScenario {
         $statusUri = $null
         foreach ($response in $responses) { $statusUri = Assert-PocAccepted -Response $response -Outputs $Outputs -InstanceId $jobId -RequestId $requestId }
         $run.admissionHttpStatuses = @($responses | ForEach-Object { 202 })
+        $cancelUri = $Outputs.function_app_url.TrimEnd('/') + "/api/workflows/$requestId/cancel"
+        if ($Name -eq 'cancellation') {
+            $cancel = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $headers -Body (@{ reason='PoC cancellation validation' } | ConvertTo-Json -Compress)
+            if ($cancel.StatusCode -notin @(200,202)) { Stop-PocValidation 'ExpectedCancel202Or200' }
+            $run.cancelHttpStatus = [int]$cancel.StatusCode
+        }
         if ($Name -eq 'conflict') {
             $different = $request.Clone(); $different.heavyDelaySeconds=4
             $conflict = Invoke-PocValidationHttp -Uri $uri -Method Post -Headers $headers -Body ($different | ConvertTo-Json -Compress)
@@ -299,14 +306,21 @@ function Invoke-PocScenario {
         if ($storedVersion -notin @(1,2) -or $storedInstance -ne $jobId) { Stop-PocValidation 'InputIdentityMismatch' }
         foreach ($field in $request.Keys) { if ($storedRequest.$field -ne $request[$field]) { Stop-PocValidation 'InputContentMismatch' } }
         $root = "runs/poc-$requestId"
-        if ($Name -in @('failure','timeout')) {
-            $expectedState = if ($Name -eq 'timeout') { 'TimedOut' } else { 'Failed' }
+        if ($Name -in @('failure','timeout','cancellation')) {
+            $expectedState = if ($Name -eq 'timeout') { 'TimedOut' } elseif ($Name -eq 'cancellation') { 'Cancelled' } else { 'Failed' }
             if ($status.runtimeStatus -ne 'Failed' -or $status.customStatus.state -ne $expectedState) { Stop-PocValidation 'ExpectedBusinessFailureMissing' }
             $run.businessState=$expectedState
             if (Test-PocBlobExists -Outputs $Outputs -Path "$root/final/manifest.json") { Stop-PocValidation 'UnexpectedSuccessManifest' }
             if ($Name -eq 'failure') {
                 if ($batch.Tasks.Count -ne 1 -or $batch.Tasks[0].state -ne 'completed' -or $batch.Tasks[0].executionInfo.exitCode -ne 42) { Stop-PocValidation 'ExpectedExit42Missing' }
                 $run.exitCodes=@(42)
+            }
+            elseif ($Name -eq 'cancellation') {
+                if ($batch.Job.state -ne 'completed' -or -not $status.customStatus.termination.completed -or $status.customStatus.terminationError) { Stop-PocValidation 'JobTerminationUnconfirmed' }
+                if (-not (Test-PocBlobExists -Outputs $Outputs -Path "$root/cancel.json")) { Stop-PocValidation 'CancelRecordMissing' }
+                $cancelAgain = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $headers -Body (@{ reason='Idempotent cancel check' } | ConvertTo-Json -Compress)
+                if ($cancelAgain.StatusCode -ne 200) { Stop-PocValidation 'ExpectedIdempotentCancel200' }
+                $run.idempotentCancelHttpStatus = 200
             }
             elseif ($batch.Job.state -ne 'completed' -or -not $status.customStatus.termination.completed -or $status.customStatus.terminationError) { Stop-PocValidation 'JobTerminationUnconfirmed' }
             continue
@@ -342,7 +356,7 @@ function Invoke-PocScenario {
 function Invoke-PocValidation {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DeploymentResultPath,
-        [ValidateSet('single','three','classification','failure','admission20','conflict','timeout')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
+        [ValidateSet('single','three','classification','failure','admission20','conflict','timeout','cancellation')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
         [ValidateRange(1,86400)][int]$TimeoutSeconds=900,[ValidateRange(1,60)][int]$PollSeconds=10,
         [Parameter(Mandatory)][string]$EvidenceDirectory,[switch]$DedicatedEnvironment)
     $ErrorActionPreference='Stop'

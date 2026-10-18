@@ -78,7 +78,7 @@ elseif ($command -match '^storage container exists') { '{"exists":true}' }
 elseif ($command -match '^rest .*?/nodes\?') { '{"value":[{"state":"idle","schedulingState":"enabled"}]}' }
 elseif ($command -match '^rest ') { '{"allocationState":"steady"}' }
 elseif ($command -match '^functionapp function list') {
-    @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity','WorkflowAdmissionEntity','TerminateBatchJobActivity') | ForEach-Object { @{name="poc-app/$_"} } | ConvertTo-Json
+    @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','CancelWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity','WorkflowAdmissionEntity','TerminateBatchJobActivity') | ForEach-Object { @{name="poc-app/$_"} } | ConvertTo-Json
 }
 elseif ($command -match '^functionapp function keys list') { '{"default":"PRIVATE-FUNCTION-KEY"}' }
 elseif ($command -match '^functionapp keys list') { '{"systemKeys":{"durabletask_extension":"PRIVATE-SYSTEM-KEY"}}' }

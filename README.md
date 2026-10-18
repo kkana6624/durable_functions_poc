@@ -6,11 +6,11 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> - **最新コード（HEAD `b14b25f`、実機検証済みコード `9c96054`）**: 14 個の Functions を登録するコードで、Release 単体テスト全 261 件（`Poc.Tests` 259/259 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）、Terraform Mock 37 件（`modes.tftest.hcl`）、PowerShell オフライン試験 8 組全件が成功し、Release publish も成功しています。受付・所有者の単一レコード化（`admission.json` Version 2）、opt-in の `EntraEasyAuth` 認可アダプター、EasyAuth IaC（`workflow_auth_mode`）、および VM Managed Identity / IMDS 用認証 runner（`Invoke-WorkflowAuthValidation.ps1`）をローカル実装済みです。最新コードの Azure 配置・実機回帰検証は未実施です。以下の Azure 実証は当時 12 個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
-> - **今回の認証境界・受付一体化実装**: 既定の `PocFunctionKey` 互換を保ち、`admission.json`（Version 2）での受付・所有者の一体化、および `EntraEasyAuth` モードで認証済みバックエンド・App Role・app-only token（`idtyp=app`）・必須 owner/org を検査するアダプター、opt-in EasyAuth IaC、独自 API 認証 runner を追加しました。Function key も引き続き必要です。Entra テナントでの実設定（App Role 割当・`idtyp` optional claim 設定）、Azure 実機への配置、実 EasyAuth 環境での偽造ヘッダー遮断試験は未実施であり、実機回帰や Entra 運用の完成を意味しません。設定と信頼前提は [認証境界](docs/workflow-authentication-design.md) を参照してください。
-> - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での0台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
-> - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
-> - **未実証・未完了の範囲**: Entra登録・EasyAuth配置と信頼できるowner/org伝播の実証、現行コードのAzure検証、実C++バイナリと入出力連携（`V10`）、大容量出力（`T09`）、利用者キャンセル連鎖（`V12`）、全面閉域化（`V00`）、Spot回収復旧が残っています。受付と所有者の単一レコード化はローカル実装済みですが、旧Starter停止後のAzure切替・実機検証は未実施です。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
+> - **最新コード（15 Functions・V12 利用者キャンセル実装）**: `CancelWorkflow` を追加した計 15 個の Functions を登録するコードで、Release 単体テスト全 270 件（`Poc.Tests` 268/268 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）、Terraform Mock 37 件（`modes.tftest.hcl`）、PowerShell オフライン試験 8 組全件（cancellation シナリオ追加）が成功し、Release publish も成功しています。V12 利用者キャンセル（`POST /api/workflows/{requestId}/cancel`、Blob 先行永続化 `runs/poc-<requestId>/cancel.json`、Durable 外部イベント `CancelRequested`、Batch ジョブ有界停止 `TerminateBatchJobActivity`、成果物 `manifest.json` 公開抑止、所有者認可、冪等 200/202）、受付・所有者の単一レコード化（`admission.json` Version 2）、opt-in の `EntraEasyAuth` 認可アダプター、EasyAuth IaC（`workflow_auth_mode`）、および VM 認証 runner をローカル実装・テスト完了しています。
+> - **Azure 実機検証境界（前回の 14 関数実機成功と今回の 15 関数未配置の区別）**: 前回の 14 関数コードについては、実 Azure 環境（`poc` 環境・Azure Storage バックエンド）への配置・スモークテスト（3 Tasks、`Sum=3`）および閉域検証 VM 経由での主要 5 シナリオ回帰検証（`single` / `three` / `classification` / `failure` / `conflict`、証跡: `artifacts/private-validation/20261018-083838-2879/`、終了コード 0）を完了しています。一方で、今回の `CancelWorkflow` を含む **15 関数コードの Azure 実機デプロイ・回帰検証は未実施** です。
+> - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、14 関数の登録・5 シナリオ回帰、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での 0 台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
+> - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の 12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
+> - **未実証・未完了の範囲**: 15 関数コード（`CancelWorkflow`）の Azure 実機回帰検証、Entra 登録・EasyAuth 配置と信頼できる owner/org 伝播の実証、実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、全面閉域化（`V00`）、Spot 回収復旧が残っています。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
 
 ---
 
@@ -20,7 +20,7 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 | 分類 | 本資材で「できること」（実装・検証済み） | 本資材単体では「できないこと」（スコープ外・後続課題） |
 |---|---|---|
-| **ワークフロー制御** | ・HTTP API（`POST /api/workflows`）によるジョブ受付<br>・子オーケストレーションによる複数 Task の並列投入と完了待ち合わせ（Fan-out / Fan-in）<br>・Durable Timer によるサーバーレスな状態ポーリング<br>・Batch Task 実行中の Function App 再起動からの無停止自動復旧（`V05`）<br>・1 Task でも失敗した場合の後続集約および `manifest.json` 公開の自動抑止 | ・ミリ秒単位のリアルタイム応答<br>・利用者からの手動キャンセル要求を実行中 Batch Job の停止へ連動させる処理（現在はタイムアウト時のみ自動停止） |
+| **ワークフロー制御** | ・HTTP API（`POST /api/workflows`）によるジョブ受付<br>・子オーケストレーションによる複数 Task の並列投入と完了待ち合わせ（Fan-out / Fan-in）<br>・Durable Timer によるサーバーレスな状態ポーリング<br>・Batch Task 実行中の Function App 再起動からの無停止自動復旧（`V05`）<br>・1 Task でも失敗した場合の後続集約および `manifest.json` 公開の自動抑止<br>・**利用者キャンセル API（`POST /api/workflows/{requestId}/cancel`）による実行中ワークフローの有界停止（`V12`）**: 事前 Blob 永続化（`cancel.json`）、Durable 外部イベント（`CancelRequested`）待機、Batch ジョブ有界停止（`TerminateBatchJobActivity`）、成果物 `manifest.json` 公開の厳格な排他調停、所有者認可（他者 403 拒否）、冪等応答（実行中 202 / 完了・停止済み 200） | ・ミリ秒単位のリアルタイム応答<br>・15 関数コード（`CancelWorkflow` 追加）の Azure 実機回帰検証（前回 14 関数実機検証との境界） |
 | **受付排他・再試行** | ・同一 `requestId` の二重起動防止（不変な `admission.json` Blob ＋ Durable Entity 直列化）<br>・同一 `requestId` で異なるパラメータが送られた際の `409 Conflict` 拒否<br>・一時的な通信障害に対する有界リトライ（最大 3 回）と監視期限超過時の Batch Job 強制停止（`V07`）および Function ホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`） | ・履歴保持期限経過後や手動パージ後の `requestId` 再利用保証<br>・外部管理 API から全世代（全 `executionId`）の起動履歴を網羅取得して厳密な 1 回起動を証明すること |
 | **計算処理・入出力** | ・Windows Batch Pool（専用ノードまたは Spot ノード、固定台数または 0 台 Autoscale）への Job / Task 投入と終了コード判定<br>・PoC 用ダミー処理（指定秒数スリープ後に `result.txt` へ整数 `1` を出力）の回収と合計値（`sum`）集計 | ・**本番 C++ バイナリ（`.exe` / `.dll`）の同梱・配布**（現在は PowerShell ダミーコマンドを実行）<br>・**大容量の入力シナリオファイル転送（`ResourceFiles`）および計算ノードから Blob への大容量結果直接保存（`OutputFiles`）**（※現行は 4 KB 以下・整数 `1` 専用の File API 回収のため、実バイナリ試験時は差し替えが必要）<br>・Spot ノードが結果回収前に Azure へ回収（Evict）された場合のノードローカル結果の保護 |
 | **スケジューラ機能** | ・Azure Batch 標準のキューイング、空きノードへの Task 割り当て、Pool 準備完了待機、0 台待機からの `$PendingTasks` 自動スケールアウト（`V09`） | ・LSF / HPC Pack が持つ高度なクラスタスケジューラ機能（Fair Share、Backfilling、実行中タスクの追い越し、商用ソルバーライセンス連動）<br>・新規の業務向け Web フロントエンド画面（UI）の提供 |
@@ -43,7 +43,7 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 - 新規 PoC 用 Batch Account / Windows Pool の作成、または既存 Batch 環境の読み取り専用参照
 - Terraform state backend の準備（新規作成または既存参照）
 - Function App のビルド・単体テスト・パッケージングと、検証 VM から Private SCM への Entra 認証 ZIP デプロイ
-- デプロイ後の準備完了確認（Pool ノード状態および 14 個の Functions 登録検出）
+- デプロイ後の準備完了確認（Pool ノード状態および 15 個の Functions 登録検出）
 
 ### 1. 事前準備
 
@@ -99,7 +99,7 @@ Spot ノードは空き容量が保証されず、実行中に Azure 側へ回�
 ```
 
 #### 実行フローとオプションの挙動
-1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → VM Run Command による Private SCM への Entra 認証 ZIP 配置 → 現行14個の Functions のインデックス登録（ロード）検出（`-PlanOnly` を指定しない限り、Terraform の `apply` もスクリプト内で自動実行されます）。
+1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → VM Run Command による Private SCM への Entra 認証 ZIP 配置 → 現行15個の Functions のインデックス登録（ロード）検出（`-PlanOnly` を指定しない限り、Terraform の `apply` もスクリプト内で自動実行されます）。
 2. **`-PlanOnly` 指定時**: `apply` とコード配置は行いません。`Backend.Create=true` の場合、backend が作成済みであれば main plan の作成まで進み、未作成であれば bootstrap plan のみを保存します。なお、backend 参照時の権限不足や通信失敗は「未作成（不存在）」とは明確に区別してエラー停止します。
 3. **Pool 確認と `-Smoke` 指定時**:
    - **新規 Pool（`fixed`）**: 指定した全台数が準備完了になるまで待機します（ノード一覧取得時のページネーションに対応し、全ノードの状態と種別を確認します）。
@@ -137,7 +137,7 @@ Function App の Managed Identity に対する権限付与は Terraform 内で�
 | **State 管理**<br>(`infra/bootstrap/`) | Resource Group / Storage Account / Blob Container (`tfstate`) / 実行者 RBAC | `Backend.Create=true` 時に新規作成（既存時は参照） | Terraform の remote state 保存専用。誤削除防止のため `prevent_destroy` を設定 |
 | **基盤グループ**<br>(`infra/main.tf`) | Resource Group (`azurerm_resource_group`) | `create_resource_group=true` で新規作成、`false` で既存 RG を参照 | PoC リソース一式の格納先 |
 | **ストレージ**<br>(`infra/main.tf`, `validation-vm.tf`) | Storage Account (`poc<suffix>`) + Container `poc-results` / `poc-vm-control` | 新規作成（共有キー無効・OAuth/MI 強制・TLS 1.2） | ・`poc-results`: ワークフロー入力 `request.json`、各 Task 結果、`aggregate.json`、`manifest.json` の保存先<br>・`poc-vm-control`: 検証 VM とのバンドル・証跡受け渡し専用<br>・Functions ホスト領域（および `azureStorage` モード時の Durable History/Queue）としても使用 |
-| **ワークフロー実行**<br>(`infra/main.tf`) | App Service Plan (`B1` Linux) + Linux Function App (`.NET 10 isolated`) | Function App は新規作成。Plan は既定で新規作成、`existing_service_plan_id` 指定時は既存 Linux Plan を読み取り専用参照 | Durable Functions（HTTP 受付・状態・結果照会、Orchestrator・Activity・Entity 計 14 関数）をホスト。Always On 有効、公開アクセス無効（`public_network_access_enabled=false`） |
+| **ワークフロー実行**<br>(`infra/main.tf`) | App Service Plan (`B1` Linux) + Linux Function App (`.NET 10 isolated`) | Function App は新規作成。Plan は既定で新規作成、`existing_service_plan_id` 指定時は既存 Linux Plan を読み取り専用参照 | Durable Functions（HTTP 受付・状態・結果照会・キャンセル、Orchestrator・Activity・Entity 計 15 関数）をホスト。Always On 有効、公開アクセス無効（`public_network_access_enabled=false`） |
 | **Durable バックエンド（選択時）**<br>(`infra/durable-task-scheduler.tf`) | Durable Task Scheduler (`Microsoft.DurableTask/schedulers`) + Task Hub + 30日保持ポリシー | `durable_backend='durableTaskScheduler'` の場合のみ AzAPI で新規作成 | Durable Functions の状態・メッセージを高速 gRPC で管理するマネージドバックエンド（Consumption SKU）。既定の `azureStorage` 選択時は作成しない |
 | **計算基盤（Batch）**<br>(`infra/batch.tf`) | Batch Account (`BatchService`) + Windows Server 2022 Pool (`Standard_D2s_v5` 等) | `batch_mode='new'` で新規作成、`existing` で既存環境を読み取り専用参照 | 計算 Task のキューイングと Windows 計算ノード（`spot` または `dedicated`、1〜3 台、`fixed` または 0 台 `autoscale`）の割り当て。Gallery イメージまたは Marketplace イメージを参照 |
 | **閉域ネットワーク・検証 VM**<br>(`infra/validation-vm.tf`) | VNet + Subnets (`validation-vm`, `private-endpoints`) + NSG (`DenyAllInbound`) + Public IP + NAT Gateway + Private Endpoint (`sites`) + Private DNS Zone (`privatelink.azurewebsites.net`) + RHEL 9 VM (`Standard_F1as_v7`) | 新規作成 | 公開アクセスを遮断した Function App / Private SCM に対し、VNet 内部からデプロイと HTTP 検証を行うための RHEL 9 検証 VM（Public IP なし・SSH 受信拒否・Run Command 操作・cloud-init で CLI / PowerShell 自動導入） |
@@ -155,10 +155,10 @@ Function App の Managed Identity に対する権限付与は Terraform 内で�
 
 | スクリプト / ツール | 主な用途・実行タイミング | 具体的な処理内容 |
 |---|---|---|
-| [`scripts/deploy.ps1`](file:///D:/durable_functions_poc/scripts/deploy.ps1) | **ワンコマンド構築・デプロイ**<br>（初回構築・構成変更時） | 事前チェック、.NET ビルド・単体テスト・publish（POSIX 形式 ZIP 作成）、Terraform bootstrap / main の `plan`・安全性検査・`apply`、Pool ノード準備待機、および検証 VM 経由での Private SCM ZIP デプロイ・14 関数の登録確認までを一括実行します（`-PlanOnly` で計画確認のみ、`-Smoke` で 3 Task 疎通確認まで実行）。 |
-| [`scripts/Test-Deployment.ps1`](file:///D:/durable_functions_poc/scripts/Test-Deployment.ps1) | **デプロイ後の準備確認・Smoke 試験**<br>（`deploy.ps1` 内部または単体呼び出し） | Function App の稼働・14 関数のロード状態、および Batch Pool の目標ノード準備完了（または 0 台 Autoscale 設定正常性）を確認します。`-Smoke` 指定時は 3 Task のワークフローを投入し、`manifest.json` の生成と `Sum=3` を検証します。 |
+| [`scripts/deploy.ps1`](file:///D:/durable_functions_poc/scripts/deploy.ps1) | **ワンコマンド構築・デプロイ**<br>（初回構築・構成変更時） | 事前チェック、.NET ビルド・単体テスト・publish（POSIX 形式 ZIP 作成）、Terraform bootstrap / main の `plan`・安全性検査・`apply`、Pool ノード準備待機、および検証 VM 経由での Private SCM ZIP デプロイ・15 関数の登録確認までを一括実行します（`-PlanOnly` で計画確認のみ、`-Smoke` で 3 Task 疎通確認まで実行）。 |
+| [`scripts/Test-Deployment.ps1`](file:///D:/durable_functions_poc/scripts/Test-Deployment.ps1) | **デプロイ後の準備確認・Smoke 試験**<br>（`deploy.ps1` 内部または単体呼び出し） | Function App の稼働・15 関数のロード状態、および Batch Pool の目標ノード準備完了（または 0 台 Autoscale 設定正常性）を確認します。`-Smoke` 指定時は 3 Task のワークフローを投入し、`manifest.json` の生成と `Sum=3` を検証します。 |
 | [`scripts/Invoke-PrivatePocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PrivatePocValidation.ps1) | **閉域環境向け 独立シナリオ検証（入口）**<br>（デプロイ完了後のシナリオ試験時） | ローカル端末から呼び出す検証のメイン入口です。検証資材をバンドル化して検証 VM の Run Command を起動し、VM 内で `Invoke-PocValidation.ps1` を実行させた後、機密情報を除いた検証結果（`summary.json` / `summary.txt`）をローカルへ回収します。 |
-| [`scripts/Invoke-PocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocValidation.ps1) | **シナリオ検証ランナー本体**<br>（検証 VM 内または直接到達可能な環境で実行） | インフラの再配置を行わず、HTTP API 経由で各検証シナリオ（`single`, `three`, `classification`, `failure`［exit 42］, `admission20`［20並列受付］, `conflict`［409競合］, `timeout`［監視期限停止・`MaxWallClockTime` 照合］）を実行し、Durable・Batch・Blob の三者を突合して合否（終了コード `0`/`1`/`2`）を判定します。 |
+| [`scripts/Invoke-PocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocValidation.ps1) | **シナリオ検証ランナー本体**<br>（検証 VM 内または直接到達可能な環境で実行） | インフラの再配置を行わず、HTTP API 経由で各検証シナリオ（`single`, `three`, `classification`, `failure`［exit 42］, `admission20`［20並列受付］, `conflict`［409競合］, `timeout`［監視期限停止・`MaxWallClockTime` 照合］, `cancellation`［利用者キャンセル・有界停止］）を実行し、Durable・Batch・Blob の三者を突合して合否（終了コード `0`/`1`/`2`）を判定します。 |
 | [`scripts/Invoke-PocRecoveryValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocRecoveryValidation.ps1) | **Function App 再起動復旧 / ホスト停止安全網の検証**<br>（耐障害性試験 `V05` / `V08` 時） | 既定（`-ValidationMode Restart`）では長時間待機 Task の `Running` 確認後に Function App を `restart` し、再送なしで同一インスタンス・Task が完走し成果物が整合することを検証します。`-ValidationMode HostStoppedBatchWallClock` 指定時は Function App を `stop` した状態で Batch 側の `MaxWallClockTime` により Job が自動終了することを検証します（いずれも `finally` で `start` 復元を実行）。 |
 | [`scripts/Invoke-PocAutoscaleValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocAutoscaleValidation.ps1) | **0 台オートスケール Pool 先行投入の検証**<br>（自動拡張試験 `V09` 時） | 専用 Pool（`batch_mode='new'`）を 0 台 `steady` へ縮小して `$PendingTasks` ベースの Autoscale 式（`PT5M`）を有効化し、ノード 0 台状態から `single` シナリオを投入して 1 台への自動スケールアウトと Task 完走を確認後、`finally` で元の固定スケール構成へ復元します（`existing` 共有 Pool は拒否）。 |
 | [`scripts/Invoke-WorkflowAuthValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-WorkflowAuthValidation.ps1) | **独自 API ワークフロー認証・認可の検証**<br>（認証境界試験時） | 検証 VM 内または直接到達可能な環境で、VM Managed Identity / IMDS から取得した Bearer トークンおよび Function key を用いて、`EntraEasyAuth` モードの独自開始・状態・結果 API への認可、401/403 拒否、所有者照合、および機密非露出を検証するランナーです（内部診断用の EasyAuth 除外パスは設けず、直接独自 API を検証）。 |
@@ -245,7 +245,7 @@ terraform -chdir=infra/bootstrap test
 
 - **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
 - **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
-- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。最新コード（HEAD `b14b25f`）の Release 検証では全 261 件（`Poc.Tests` 259/259 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）が合格し、Release publish も成功しました。実機検証済みコード `9c96054` から受付・所有者の一体化、EasyAuth 認可アダプター、EasyAuth IaC、認証 runner が追加されています。これはローカル検証であり、最新コードの Azure 実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
+- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。最新コードの Release 検証では全 270 件（`Poc.Tests` 268/268 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）が合格し、Release publish も成功しました。前回の 14 関数実機検証済みコードから、V12 利用者キャンセル（`CancelWorkflow`）が追加され計 15 関数となっています。前回の 14 関数コードでの Azure 実機成功（スモークおよび閉域 5 シナリオ）に対し、15 関数コードの Azure 実機回帰は未実施である境界に注意してください。詳細は [検証結果](docs/test-results.md) を参照してください。
 
 ---
 
@@ -382,6 +382,18 @@ Invoke-RestMethod -Uri $started.statusQueryGetUri -Headers $headers
   - `HTTP 202 (Accepted)` は Durable Entity への通知受理を表します。所有者付きで受け付けたジョブの独自状態照会には、受付時と同じ所有者情報が必要です。内部診断のDurable管理APIは、Main実インスタンスの登録前に一時的な `404` を返す場合があります。
   - 受付確認中の一時的な障害時は `HTTP 503` と `Retry-After` ヘッダーを返します。その場合は同じ `requestId` と入力内容で再送できます。
 
+#### 利用者キャンセル仕様（V12）
+- **エンドポイント**: `POST /api/workflows/{requestId}/cancel`
+- **所有者認可**: 受付時に記録された所有者（`owner` / `organization`）とキャンセル要求元の呼出元情報（`X-Poc-Owner-Id` / `X-Poc-Org-Id` または Entra 認証トークン）を照合します。他者または別組織からの要求は `HTTP 403 Forbidden` で拒否され、認可情報不正時は `HTTP 400 Bad Request` を返します。
+- **先行永続化**: Durable オーケストレーションへのイベント通知前に、Blob Storage 上の `runs/poc-<requestId>/cancel.json` へキャンセル要求レコード（`WorkflowCancelRecord`）を条件付き作成（先行永続化）します。これにより、Orchestrator が起動前・初期化中であってもキャンセル要求が確実に記録・補足されます。
+- **Durable 外部イベント待機**: `MainOrchestrator` は実行中、外部イベント `CancelRequested`（イベント名: `CancelRequested`）を待機します。子オーケストレーション（`MonitorBatchTaskOrchestrator`）の並列監視完了待ち（`Task.WhenAll`）と `Task.WhenAny` により競合を調停します。
+- **Batch ジョブの有界停止**: キャンセル検知時、直ちに `TerminateBatchJobActivity` を呼び出し、実行中の Batch ジョブを有界（最大 2 分、5 秒間隔ポーリング）に安全停止します。
+- **成果物公開の排他調停**: キャンセルが成立した場合は後続の集約処理および `manifest.json` の公開を厳格に抑止します。カスタムステータスを `state = "Cancelled"`, `errorCode = "workflow_cancelled"` に確定し、ワークフローを例外（`WorkflowCancelledException`）により安全に終了します。
+- **ステータスコードと冪等性**:
+  - 実行中のワークフローに対するキャンセル要求には `HTTP 202 Accepted` を返却します。
+  - すでに完了・失敗・キャンセル済みの終端状態にあるワークフローに対する再度のキャンセル要求には、冪等に `HTTP 200 OK`（`status: "Cancelled"` 等）を返却します。
+  - 存在しない `requestId` の場合は `HTTP 404 Not Found` を返却します。
+
 ### 3. 実行結果 Blob の確認
 
 ワークフローが正常完了すると、PoC コンテナ（`poc-results`）内の `runs/poc-<requestId>/` 配下に各 Task の結果、`final/aggregate.json`、および `final/manifest.json` が作成されます。
@@ -467,7 +479,7 @@ terraform -chdir=infra apply poc-destroy.tfplan
 ### 2. タイムアウト制御とキャンセルの制限
 - **監視期限の共有と競合制御**: ワークフローの監視期限は、分類（classification）完了後から親オーケストレーションと子オーケストレーションの間で共有されます。Durable Timer は実行中の Activity を物理的に中断できないため、期限到達時の Task 作成と Job 停止の競合は、Batch 側の Job 終端状態（Terminating / Completed）によって制御します。ただし、**Job 作成 Activity だけは、停止処理の後に遅れて Job が作成され停止を逃れる事態を防ぐため、完了を待ってから停止処理へ進みます**。
 - **`MaxWallClockTime` の位置づけ**: Functions host が停止している間の安全網として Batch Job にも `MaxWallClockTime` を設定していますが、こちらは「Job 作成時点」からの起算であり、オーケストレーションの監視期限や通信・Activity 実行時間を含めた厳密な実時間上限とは異なります。
-- **キャンセル連鎖の未実装**: 通常の Task 失敗時は他の兄弟 Task の終了を待機します。また、利用者からのキャンセル要求を Batch Job / Task の停止へ連鎖させる機能は現在未実装です。
+- **利用者キャンセル連鎖（V12）の実装**: 利用者キャンセル要求（`POST /api/workflows/{requestId}/cancel`）により、先行 Blob 永続化（`cancel.json`）と Durable 外部イベント（`CancelRequested`）を通じて実行中ワークフローを検知し、Batch Job の有界停止（`TerminateBatchJobActivity`）と `manifest.json` 公開抑止を連動させます。所有者認可（他者 403 拒否）および完了後の 200 冪等応答をローカル実装・テスト完了済みです（単体テスト全 270 件・PS オフライン全 8 組 Pass。15 関数コードの Azure 実機回帰は未実施）。通常の Task 失敗時は他の兄弟 Task の自然終了を待機します。
 
 ### 3. 受付の重複抑止の前提条件
 - **状態保持の前提**: 同一 `requestId` に対する受付の重複抑止は、受付 Blob（`admission.json`、旧受付の `request.json`）、Durable Entity の状態、および Main オーケストレーションのインスタンス履歴が保持された状態で本 API を経由することを前提としています。これらを個別に削除（purge）して同じ ID を再利用する運用や、Durable の管理 API から同じインスタンス ID を直接起動する操作は保証対象外です。

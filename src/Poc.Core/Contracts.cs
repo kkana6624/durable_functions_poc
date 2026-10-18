@@ -21,7 +21,7 @@ public sealed record WorkflowRequest(string RequestId, string Classification = "
 public sealed record WorkflowSettings(int PollSeconds = 10, int TimeoutMinutes = 15);
 public sealed record WorkloadClassification(string Classification, string Reason);
 public sealed record WorkflowPlan(WorkflowRequest Request, string Classification, string Reason, string JobId,
-    string Fingerprint, int PollSeconds, int TimeoutMinutes);
+    string Fingerprint, int PollSeconds, int TimeoutMinutes, bool CancelRequested = false);
 public sealed record TaskSpec(WorkflowPlan Plan, int Index, DateTime? DeadlineUtc = null)
 {
     public string TaskId => $"task-{Index:00}";
@@ -35,6 +35,7 @@ public sealed class TransientWorkflowException : Exception
     public TransientWorkflowException(string message, Exception innerException) : base(message, innerException) { }
 }
 public sealed class PermanentWorkflowException() : Exception("Workflow activity failed.");
+public sealed class WorkflowCancelledException(string message = "Workflow was cancelled by user.") : Exception(message);
 public sealed record BatchTaskStatus(string TaskId, string State, bool Completed, bool Succeeded, int? ExitCode, string? Failure);
 public sealed record ResultReference(string RequestId, string TaskId, string Uri);
 public sealed record AggregateReference(string RequestId, string Uri, int Sum, int TaskCount);
@@ -44,6 +45,7 @@ public sealed record AggregateResult(string RequestId, string JobId, string Fing
 public sealed record ManifestResult(string RequestId, string JobId, string Fingerprint, string Status, int TaskCount, int Sum, string AggregateUri, string[] TaskUris);
 public sealed class WorkflowConflictException(string message) : Exception(message);
 public sealed class WorkflowForbiddenException(string message) : Exception(message);
+
 
 public sealed record WorkflowOwner(string OwnerId, string? OrgId = null)
 {
@@ -61,6 +63,8 @@ public sealed record WorkflowOwner(string OwnerId, string? OrgId = null)
 public sealed record WorkflowOwnerRecord(int Version, string RequestId, string InstanceId, string OwnerId, string? OrgId = null);
 public sealed record WorkflowAdmissionRecord(int SchemaVersion, string InstanceId, WorkflowRequest Request,
     [property: System.Text.Json.Serialization.JsonRequired] WorkflowOwner? Owner);
+public sealed record WorkflowCancelRecord(int SchemaVersion, string RequestId, string? Reason, DateTimeOffset RequestedAtUtc,
+    [property: System.Text.Json.Serialization.JsonRequired] WorkflowOwner? Caller);
 public sealed record WorkflowStatusResponse(string RequestId, string InstanceId, string JobId, string Status, bool ResultAvailable, bool? TerminationConfirmed = null, string? Error = null);
 public sealed record WorkflowResultResponse(string RequestId, string JobId, string Fingerprint, string Status, int TaskCount, int Sum, string[] TaskIds);
 
@@ -90,6 +94,9 @@ public sealed class StubWorkloadClassifier : IWorkloadClassifier
 }
 public static class WorkflowIdentity
 {
+    public const string CancelEventName = "CancelRequested";
+    public const string WorkflowCancelledMessage = "Workflow was cancelled by user.";
+
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     public static string JobId(string requestId) => "poc-" + Hash(requestId)[..40];
     public static string InstanceId(string requestId) => JobId(requestId);
@@ -99,11 +106,13 @@ public static class WorkflowIdentity
     public static string RequestPath(string requestId) => $"runs/poc-{requestId}/request.json";
     public static string AdmissionPath(string requestId) => $"runs/poc-{requestId}/admission.json";
     public static string OwnerPath(string requestId) => $"runs/poc-{requestId}/owner.json";
+    public static string CancelPath(string requestId) => $"runs/poc-{requestId}/cancel.json";
     public static string AggregatePath(string requestId) => $"runs/poc-{requestId}/final/aggregate.json";
     public static string ManifestPath(string requestId) => $"runs/poc-{requestId}/final/manifest.json";
     public static string AggregatePath(WorkflowPlan plan) => AggregatePath(plan.Request.RequestId);
     public static string ManifestPath(WorkflowPlan plan) => ManifestPath(plan.Request.RequestId);
 }
+
 public static class WindowsTaskCommand
 {
     public static string Build(int delaySeconds, bool fail)
