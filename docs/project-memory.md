@@ -1,5 +1,17 @@
 # プロジェクトメモリ
 
+## 2026-10-18 受付と所有者の単一レコード化（今回の作業）
+
+新受付は `runs/poc-<requestId>/admission.json` の Version 2 に入力・instanceId・nullableな所有者/組織をまとめ、条件付き作成で確定します。所有者なし/ありも同じ競合点で調停し、所有者/組織不一致は403、所有者一致・入力不一致は409です。同一所有者・入力の再送を許し、状態・結果照会も新レコードを参照します。
+
+旧入力・所有者が整合する場合は再送時に正規化し、所有者なし旧受付への所有者取得を拒否します。旧所有者だけ残る片割れ、新旧レコードやinstanceとの矛盾は拒否します。旧Blob読取と新Blob作成は非原子的で、切替前の旧Starter停止が前提です。受付BlobとDurable通知も非原子的であり、通知不確実時は受付を保持し再送で回復します。
+
+Entra認証・App Role・信頼された利用者情報の伝播は今回対象外で、所有者ヘッダーは本人性を証明しません。PoC/runnerの所有者なし互換を維持します。今回のAzure配置・実機試験は未実施です。以下の既存コード基準・試験件数・HEADは過去のチェックポイントで、今回の差分の検証結果とは区別します。
+
+今回の関連ローカル試験はReleaseの `WorkflowAdmissionTests` + `WorkflowHttpTests` 96/96件成功です。初回読取りを同期した並行競合、旧受付の移行・拒否、通知失敗後の再送、所有者フィールド欠落時の安全な500を含みます。これはFake/Mockによる試験であり、Azure BlobやDurable両バックエンドの実機保証ではありません。
+
+今回の最終検証はsolution Releaseの全221件（Poc.Tests219件・DtsProbe2件）が成功し、失敗・スキップは0件です。Release publish（`artifacts/admission-owner-release-publish`）も成功し、`local.settings*` の非混入を確認しました。`git diff --check` は成功し、変更は意図した8ファイルのみで生成物の混入はありません。Azureへの配置・実機検証は今回実施していません。
+
 ## 現在の要約（2026-10-18、検証済みコード `9c96054`、現文書HEAD `e3d3734`）
 
 検証済みコード `9c96054` のローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定までです。現HEAD `e3d3734` は文書とPowerShellスクリプト棚卸しのみの変更です。ReleaseはPoc.Tests209件＋DtsProbe2件の計211件成功、`artifacts/grpc-retry-release-publish` 成功・`local.settings*` 不在。現行Functions期待数は14件です。今回のAzure配置・実機検証は未実施で、以前のV05/V07/V08/V09成功とは区別します。

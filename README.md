@@ -20,10 +20,10 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 | 分類 | 本資材で「できること」（実装・検証済み） | 本資材単体では「できないこと」（スコープ外・後続課題） |
 |---|---|---|
 | **ワークフロー制御** | ・HTTP API（`POST /api/workflows`）によるジョブ受付<br>・子オーケストレーションによる複数 Task の並列投入と完了待ち合わせ（Fan-out / Fan-in）<br>・Durable Timer によるサーバーレスな状態ポーリング<br>・Batch Task 実行中の Function App 再起動からの無停止自動復旧（`V05`）<br>・1 Task でも失敗した場合の後続集約および `manifest.json` 公開の自動抑止 | ・ミリ秒単位のリアルタイム応答<br>・利用者からの手動キャンセル要求を実行中 Batch Job の停止へ連動させる処理（現在はタイムアウト時のみ自動停止） |
-| **受付排他・再試行** | ・同一 `requestId` の二重起動防止（不変な `request.json` Blob ＋ Durable Entity 直列化）<br>・同一 `requestId` で異なるパラメータが送られた際の `409 Conflict` 拒否<br>・一時的な通信障害に対する有界リトライ（最大 3 回）と監視期限超過時の Batch Job 強制停止（`V07`）および Function ホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`） | ・履歴保持期限経過後や手動パージ後の `requestId` 再利用保証<br>・外部管理 API から全世代（全 `executionId`）の起動履歴を網羅取得して厳密な 1 回起動を証明すること |
+| **受付排他・再試行** | ・同一 `requestId` の二重起動防止（不変な `admission.json` Blob ＋ Durable Entity 直列化）<br>・同一 `requestId` で異なるパラメータが送られた際の `409 Conflict` 拒否<br>・一時的な通信障害に対する有界リトライ（最大 3 回）と監視期限超過時の Batch Job 強制停止（`V07`）および Function ホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`） | ・履歴保持期限経過後や手動パージ後の `requestId` 再利用保証<br>・外部管理 API から全世代（全 `executionId`）の起動履歴を網羅取得して厳密な 1 回起動を証明すること |
 | **計算処理・入出力** | ・Windows Batch Pool（専用ノードまたは Spot ノード、固定台数または 0 台 Autoscale）への Job / Task 投入と終了コード判定<br>・PoC 用ダミー処理（指定秒数スリープ後に `result.txt` へ整数 `1` を出力）の回収と合計値（`sum`）集計 | ・**本番 C++ バイナリ（`.exe` / `.dll`）の同梱・配布**（現在は PowerShell ダミーコマンドを実行）<br>・**大容量の入力シナリオファイル転送（`ResourceFiles`）および計算ノードから Blob への大容量結果直接保存（`OutputFiles`）**（※現行は 4 KB 以下・整数 `1` 専用の File API 回収のため、実バイナリ試験時は差し替えが必要）<br>・Spot ノードが結果回収前に Azure へ回収（Evict）された場合のノードローカル結果の保護 |
 | **スケジューラ機能** | ・Azure Batch 標準のキューイング、空きノードへの Task 割り当て、Pool 準備完了待機、0 台待機からの `$PendingTasks` 自動スケールアウト（`V09`） | ・LSF / HPC Pack が持つ高度なクラスタスケジューラ機能（Fair Share、Backfilling、実行中タスクの追い越し、商用ソルバーライセンス連動）<br>・新規の業務向け Web フロントエンド画面（UI）の提供 |
-| **ネットワーク・認証** | ・Function App の公開アクセス無効化と Private Endpoint / Private DNS 構成<br>・Public IP なし・SSH 拒否の RHEL 9 検証 VM（Run Command 経由）からの閉域デプロイおよび HTTP 検証<br>・Managed Identity による Function ↔ Storage / Batch / DTS 接続<br>・Function key によるAPI保護と、owner/orgヘッダー値を使った受付・照会・結果の照合 | ・Storage / Batch エンドポイントの全面 Private Endpoint 化および Function 送信用 VNet Integration<br>・オンプレミス ExpressRoute / VPN との実回線接続<br>・認証済み利用者への owner/org の安全な結び付け（任意ヘッダー値は本人性を証明しません）<br>・owner情報と受付記録の原子的統合による旧受付との競合解消 |
+| **ネットワーク・認証** | ・Function App の公開アクセス無効化と Private Endpoint / Private DNS 構成<br>・Public IP なし・SSH 拒否の RHEL 9 検証 VM（Run Command 経由）からの閉域デプロイおよび HTTP 検証<br>・Managed Identity による Function ↔ Storage / Batch / DTS 接続<br>・Function key によるAPI保護と、owner/orgヘッダー値を使った受付・照会・結果の照合 | ・Storage / Batch エンドポイントの全面 Private Endpoint 化および Function 送信用 VNet Integration<br>・オンプレミス ExpressRoute / VPN との実回線接続<br>・認証済み利用者への owner/org の安全な結び付け（任意ヘッダー値は本人性を証明しません）<br>・旧Starter混在中や管理API直接操作との競合保証 |
 
 ---
 
@@ -368,8 +368,9 @@ Invoke-RestMethod -Uri $started.statusQueryGetUri -Headers $headers
 
 #### パラメータと受付制御（冪等性・重複抑止）の仕様
 - **入力パラメータ**: `taskCount` は `1`〜`3`、`classification` は `light` / `heavy` / `auto` を指定できます。
-- **入力の確定と競合検出**: リクエスト受付時に `runs/poc-<requestId>/request.json` を条件付き作成して入力内容を確定します。同一 `requestId` で異なる入力パラメータが送信された場合は `HTTP 409 (Conflict)` を返します。
-- **同時受付・再送時の動作**: 同一 `requestId` かつ同一入力の同時リクエストや再送は、同じ Durable Entity へ通知されます。Entity が「起動済み状態」と「Main オーケストレーションの起動指示」を永続化することで重複起動を防ぎます。
+- **受付の確定と競合検出**: `runs/poc-<requestId>/admission.json` の単一不変レコード（Version 2）へ入力・instanceId・所有者/組織を条件付き作成します。所有者なしも固定し、同一所有者・入力だけ再送できます。所有者・組織・所有者の有無が異なる場合は `HTTP 403`、所有者一致で入力が異なる場合は `HTTP 409` を返します。任意のowner/orgヘッダーは本人性を証明しません。
+- **同時受付・再送時の動作**: 同一 `requestId` かつ同一所有者・入力の同時リクエストや再送は、同じ Durable Entity へ通知されます。Entity が「起動済み状態」と「Main オーケストレーションの起動指示」を永続化して重複を抑止します。受付Blobの作成とDurable通知は非原子的で、通知失敗時も受付を保持し同一内容の再送で回復します。
+- **旧受付の互換**: 旧 `request.json` / `owner.json` を書き換えず、整合する旧受付は再送時に新レコードへ正規化します。所有者なし旧受付への所有者追加、所有者のみ残る旧受付、新旧の矛盾は拒否します。切替時は旧Starterを停止してください。詳細は [信頼性設計](docs/workflow-reliability.md) を参照してください。今回の変更はローカル実装で、Azure配置・実機検証は未実施です。
 - **ステータスコードと再試行**:
   - `HTTP 202 (Accepted)` は Durable Entity への通知受理を表します。所有者付きで受け付けたジョブの独自状態照会には、受付時と同じ所有者情報が必要です。内部診断のDurable管理APIは、Main実インスタンスの登録前に一時的な `404` を返す場合があります。
   - 受付確認中の一時的な障害時は `HTTP 503` と `Retry-After` ヘッダーを返します。その場合は同じ `requestId` と入力内容で再送できます。
@@ -462,7 +463,7 @@ terraform -chdir=infra apply poc-destroy.tfplan
 - **キャンセル連鎖の未実装**: 通常の Task 失敗時は他の兄弟 Task の終了を待機します。また、利用者からのキャンセル要求を Batch Job / Task の停止へ連鎖させる機能は現在未実装です。
 
 ### 3. 受付の重複抑止の前提条件
-- **状態保持の前提**: 同一 `requestId` に対する受付の重複抑止は、入力 Blob（`request.json`）、Durable Entity の状態、および Main オーケストレーションのインスタンス履歴が保持された状態で本 API を経由することを前提としています。これらを個別に削除（purge）して同じ ID を再利用する運用や、Durable の管理 API から同じインスタンス ID を直接起動する操作は保証対象外です。
+- **状態保持の前提**: 同一 `requestId` に対する受付の重複抑止は、受付 Blob（`admission.json`、旧受付の `request.json`）、Durable Entity の状態、および Main オーケストレーションのインスタンス履歴が保持された状態で本 API を経由することを前提としています。これらを個別に削除（purge）して同じ ID を再利用する運用や、Durable の管理 API から同じインスタンス ID を直接起動する操作は保証対象外です。
 - **デプロイ時の注意**: 既存のインスタンスが存在する場合は入力内容を照合して再利用しますが、旧バージョンの starter との同時稼働は避け、実行中の処理がすべて終了してから本バージョンをデプロイしてください。
 
 ### 4. ファイル転送サイズと本 PoC の評価スコープ外項目

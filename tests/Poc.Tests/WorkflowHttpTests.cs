@@ -68,12 +68,12 @@ public class WorkflowHttpTests
     public async Task StartWorkflow_AdmissionConflict_ReturnsConflictWithInstanceId()
     {
         var (client, _) = CreateDurableClient();
-        var repoMock = new Mock<IResultRepository>();
-        repoMock.Setup(r => r.PutIfAbsentAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new WorkflowConflictException("Existing document differs."));
-
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repoMock.Object));
+        var repo = new InMemoryResultRepository();
         var workflowReq = new WorkflowRequest("req-conflict-123");
+        await repo.PutIfAbsentAsync(WorkflowIdentity.AdmissionPath(workflowReq.RequestId),
+            new WorkflowAdmissionRecord(2, WorkflowIdentity.InstanceId(workflowReq.RequestId), workflowReq with { TaskCount = 1 }, null),
+            TestContext.Current.CancellationToken);
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
         var request = CreateRequest(JsonSerializer.Serialize(workflowReq));
 
         var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
@@ -261,10 +261,10 @@ public class WorkflowHttpTests
         var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        var ownerRecord = await repo.ReadAsync<WorkflowOwnerRecord>(WorkflowIdentity.OwnerPath("req-owner-001"), TestContext.Current.CancellationToken);
-        Assert.Equal("alice", ownerRecord.OwnerId);
-        Assert.Equal("finance-dept", ownerRecord.OrgId);
-        Assert.Equal("req-owner-001", ownerRecord.RequestId);
+        var admissionRecord = await repo.ReadAsync<WorkflowAdmissionRecord>(WorkflowIdentity.AdmissionPath("req-owner-001"), TestContext.Current.CancellationToken);
+        Assert.Equal(new WorkflowOwner("alice", "finance-dept"), admissionRecord.Owner);
+        Assert.Equal(req, admissionRecord.Request);
+        Assert.False(repo.Documents.ContainsKey(WorkflowIdentity.OwnerPath("req-owner-001")));
     }
 
     [Fact]
@@ -440,7 +440,7 @@ public class WorkflowHttpTests
     }
 
     [Fact]
-    public async Task StartWorkflow_InputConflict_DoesNotPoisonOwnerRecord()
+    public async Task StartWorkflow_OwnerlessHistoricalInstanceCannotBeClaimedByOwner()
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
@@ -465,9 +465,10 @@ public class WorkflowHttpTests
             ["X-Poc-Owner-Id"] = "mallory"
         }), client.Object, TestContext.Current.CancellationToken);
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        // Verify owner record was NOT written to repo
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        // The historical instance cannot acquire a new owner or a new admission claim.
         Assert.False(repo.Documents.ContainsKey(WorkflowIdentity.OwnerPath(requestId)));
+        Assert.False(repo.Documents.ContainsKey(WorkflowIdentity.AdmissionPath(requestId)));
     }
 
     [Theory]
@@ -674,8 +675,10 @@ public class WorkflowHttpTests
         var requestId = "req-status-repository-error";
         var instanceId = WorkflowIdentity.InstanceId(requestId);
         var repo = new Mock<IResultRepository>();
+        repo.Setup(r => r.ReadAsync<WorkflowAdmissionRecord>(WorkflowIdentity.AdmissionPath(requestId), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WorkflowAdmissionRecord(2, instanceId, new WorkflowRequest(requestId), null));
         repo.Setup(r => r.ReadAsync<WorkflowAdmission.AdmissionRecord>(WorkflowIdentity.RequestPath(requestId), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new WorkflowAdmission.AdmissionRecord(1, instanceId, new WorkflowRequest(requestId)));
+            .ThrowsAsync(new FileNotFoundException());
         repo.Setup(r => r.ReadAsync<WorkflowOwnerRecord>(WorkflowIdentity.OwnerPath(requestId), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new FileNotFoundException());
         repo.Setup(r => r.ReadAsync<ManifestResult>(WorkflowIdentity.ManifestPath(requestId), It.IsAny<CancellationToken>()))
@@ -711,6 +714,30 @@ public class WorkflowHttpTests
             : "Workflow result could not be verified.";
         Assert.Equal(expectedResultError, resultBody.GetProperty("error").GetString());
         Assert.DoesNotContain("SECRET_SENTINEL", resultBody.GetRawText());
+    }
+
+    [Fact]
+    public async Task StartWorkflow_MissingOwnerFieldInAdmissionRecordFailsClosed()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var request = new WorkflowRequest("req-missing-owner-field");
+        repo.Documents[WorkflowIdentity.AdmissionPath(request.RequestId)] = JsonSerializer.Serialize(new
+        {
+            SchemaVersion = 2,
+            InstanceId = WorkflowIdentity.InstanceId(request.RequestId),
+            Request = request
+        });
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
+
+        var response = await functions.StartWorkflow(CreateRequest(JsonSerializer.Serialize(request)), client.Object,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow admission could not be confirmed.", body.GetProperty("error").GetString());
+        Assert.DoesNotContain("InstanceId", body.GetRawText());
+        Assert.DoesNotContain("req-missing-owner-field", body.GetRawText());
     }
 
     [Fact]

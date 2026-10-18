@@ -59,6 +59,8 @@ public sealed record WorkflowOwner(string OwnerId, string? OrgId = null)
 }
 
 public sealed record WorkflowOwnerRecord(int Version, string RequestId, string InstanceId, string OwnerId, string? OrgId = null);
+public sealed record WorkflowAdmissionRecord(int SchemaVersion, string InstanceId, WorkflowRequest Request,
+    [property: System.Text.Json.Serialization.JsonRequired] WorkflowOwner? Owner);
 public sealed record WorkflowStatusResponse(string RequestId, string InstanceId, string JobId, string Status, bool ResultAvailable, bool? TerminationConfirmed = null, string? Error = null);
 public sealed record WorkflowResultResponse(string RequestId, string JobId, string Fingerprint, string Status, int TaskCount, int Sum, string[] TaskIds);
 
@@ -95,6 +97,7 @@ public static class WorkflowIdentity
     public static string Root(WorkflowPlan plan) => $"runs/poc-{plan.Request.RequestId}";
     public static string TaskPath(TaskSpec spec) => $"{Root(spec.Plan)}/tasks/{spec.TaskId}/result.json";
     public static string RequestPath(string requestId) => $"runs/poc-{requestId}/request.json";
+    public static string AdmissionPath(string requestId) => $"runs/poc-{requestId}/admission.json";
     public static string OwnerPath(string requestId) => $"runs/poc-{requestId}/owner.json";
     public static string AggregatePath(string requestId) => $"runs/poc-{requestId}/final/aggregate.json";
     public static string ManifestPath(string requestId) => $"runs/poc-{requestId}/final/manifest.json";
