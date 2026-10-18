@@ -19,7 +19,13 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
             throw new ArgumentException("Workflow polling/timeout settings are invalid.");
         var classification = await classifier.ClassifyAsync(request, cancellationToken);
         if (classification.Classification is not ("light" or "heavy")) throw new InvalidOperationException("Classifier must return light or heavy.");
-        var cancelRequested = await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(request.RequestId), cancellationToken) is not null;
+        var cancelRecord = await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(request.RequestId), cancellationToken);
+        var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(request.RequestId), cancellationToken);
+        if (resolution is not null)
+        {
+            resolution.Validate(request.RequestId);
+        }
+        var cancelRequested = cancelRecord is not null || resolution?.Status == "Cancelled";
         return new(request, classification.Classification, classification.Reason, WorkflowIdentity.JobId(request.RequestId),
             WorkflowIdentity.Fingerprint(request, classification.Classification), settings.PollSeconds, settings.TimeoutMinutes, cancelRequested);
     }
@@ -67,6 +73,15 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
     }
     public async Task<ManifestReference> PublishManifestAsync(WorkflowPlan plan, CancellationToken cancellationToken = default)
     {
+        var earlyResolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(plan.Request.RequestId), cancellationToken);
+        if (earlyResolution is not null)
+        {
+            earlyResolution.Validate(plan.Request.RequestId);
+            if (earlyResolution.Status == "Cancelled")
+            {
+                throw new WorkflowCancelledException("Workflow was cancelled; manifest will not be published.");
+            }
+        }
         if (await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(plan.Request.RequestId), cancellationToken) is not null)
         {
             throw new WorkflowCancelledException("Workflow was cancelled; manifest will not be published.");
@@ -89,8 +104,10 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
         }
         catch (WorkflowConflictException)
         {
-            var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(plan.Request.RequestId), cancellationToken);
-            if (resolution?.Status == "Cancelled" || await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(plan.Request.RequestId), cancellationToken) is not null)
+            var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(plan.Request.RequestId), cancellationToken)
+                ?? throw new InvalidDataException("Resolution record winner is missing.");
+            resolution.Validate(plan.Request.RequestId);
+            if (resolution.Status == "Cancelled" || await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(plan.Request.RequestId), cancellationToken) is not null)
             {
                 throw new WorkflowCancelledException("Workflow was cancelled; manifest will not be published.");
             }

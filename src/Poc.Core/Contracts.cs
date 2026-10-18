@@ -65,7 +65,16 @@ public sealed record WorkflowAdmissionRecord(int SchemaVersion, string InstanceI
     [property: System.Text.Json.Serialization.JsonRequired] WorkflowOwner? Owner);
 public sealed record WorkflowCancelRecord(int SchemaVersion, string RequestId, string? Reason, DateTimeOffset RequestedAtUtc,
     [property: System.Text.Json.Serialization.JsonRequired] WorkflowOwner? Caller);
-public sealed record WorkflowResolutionRecord(int Version, string RequestId, string Status);
+public sealed record WorkflowResolutionRecord(int Version, string RequestId, string Status)
+{
+    public void Validate(string expectedRequestId)
+    {
+        if (Version != 1 || RequestId != expectedRequestId || Status is not ("Succeeded" or "Cancelled"))
+        {
+            throw new InvalidDataException("Resolution record is invalid.");
+        }
+    }
+}
 public sealed record WorkflowStatusResponse(string RequestId, string InstanceId, string JobId, string Status, bool ResultAvailable, bool? TerminationConfirmed = null, string? Error = null);
 public sealed record WorkflowResultResponse(string RequestId, string JobId, string Fingerprint, string Status, int TaskCount, int Sum, string[] TaskIds);
 

@@ -121,6 +121,12 @@ $script:mode='restartFailed';$script:commands=@()
 Assert-Fails { Invoke-PocRecoveryValidation @invokeArgs } $script:secret
 Assert-True ('functionapp start' -in $script:commands) 'Failed restart must still restore selected Function to running'
 $script:mode='success';$script:commands=@()
+$restartResult=Invoke-PocRecoveryValidation @invokeArgs
+$restartOp=Get-Content -LiteralPath (Join-Path $work 'wrapper/recovery-result.json') -Raw | ConvertFrom-Json
+Assert-True ($restartResult.exit_code -eq 0 -and $restartOp.restoredRunningStateVerified) 'Restart mode must verify Running state in finally'
+$script:startFailsRunning=$true;$script:commands=@()
+Assert-Fails { Invoke-PocRecoveryValidation @invokeArgs } 'did not return to Running state after restart test'
+$script:startFailsRunning=$false;$script:appState='Running';$script:commands=@()
 $old=$context.Clone();$old.taskStartedUtc=[DateTime]::UtcNow.AddHours(-1).ToString('o');$script:startContext=$old
 Assert-Fails { Invoke-PocRecoveryValidation @invokeArgs } 'too old'
 Assert-True ('functionapp restart' -notin $script:commands) 'Stale running observation must prevent restart'

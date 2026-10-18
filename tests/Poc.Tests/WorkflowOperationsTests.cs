@@ -124,6 +124,40 @@ public class WorkflowOperationsTests
         Assert.False(repository.Documents.ContainsKey(WorkflowIdentity.ManifestPath(plan)));
     }
 
+    [Fact]
+    public async Task ClassifyAsync_RecognizesCancellation_WhenResolutionIsCancelledEvenIfCancelRecordMissing()
+    {
+        var operations = Operations;
+        var requestId = "partial-cancel-write-001";
+        // Simulate partial cancel write: resolution.json created with Cancelled, cancel.json failed/missing
+        await repository.PutIfAbsentAsync(
+            WorkflowIdentity.ResolutionPath(requestId),
+            new WorkflowResolutionRecord(1, requestId, "Cancelled"),
+            TestContext.Current.CancellationToken);
+
+        var plan = await operations.ClassifyAsync(new WorkflowRequest(requestId), TestContext.Current.CancellationToken);
+        Assert.True(plan.CancelRequested, "ClassifyAsync must recognize CancelRequested from resolution.json even if cancel.json is missing.");
+    }
+
+    [Theory]
+    [InlineData(2, "corrupt-res-001", "Cancelled")] // Bad version
+    [InlineData(1, "wrong-request-id", "Cancelled")] // Mismatched requestId
+    [InlineData(1, "corrupt-res-001", "UnknownStatus")] // Invalid status
+    public async Task PublishManifest_ThrowsInvalidDataException_WhenResolutionRecordIsCorrupt(int version, string recordRequestId, string status)
+    {
+        var operations = Operations;
+        var plan = await operations.ClassifyAsync(new WorkflowRequest("corrupt-res-001"), TestContext.Current.CancellationToken);
+        await EnsureTasksAsync(operations, plan);
+        await operations.FetchAndPersistAsync(plan, TestContext.Current.CancellationToken);
+        await operations.AggregateAsync(plan, TestContext.Current.CancellationToken);
+
+        // Put corrupted resolution in repository
+        var corruptResolution = new WorkflowResolutionRecord(version, recordRequestId, status);
+        repository.Documents[WorkflowIdentity.ResolutionPath(plan.Request.RequestId)] = System.Text.Json.JsonSerializer.Serialize(corruptResolution);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => operations.PublishManifestAsync(plan, TestContext.Current.CancellationToken));
+    }
+
     private static async Task EnsureTasksAsync(WorkflowOperations operations, WorkflowPlan plan)
     {
         await operations.EnsureJobAsync(plan, TestContext.Current.CancellationToken);

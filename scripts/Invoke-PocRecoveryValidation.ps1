@@ -219,7 +219,7 @@ function Invoke-PocRecoveryValidation {
     }
     if ($elapsed -lt 0 -or $elapsed -ge ($context.request.lightDelaySeconds-60)) { throw 'Running Task observation is too old to restart safely within its delay window.' }
     $restartAttempted=$false
-    $operation=@{ schemaVersion=1; functionAppName=$outputs.function_app_name; instanceId=$context.instanceId; restartStartedUtc=$null; restartCompletedUtc=$null; restartSucceeded=$false; restoredStartCommandSucceeded=$false; validationExitCode=$null; completedUtc=$null; entityCheckpointInterruptionObserved=$false; limitation='ARM restart while Batch Task observed running; no crash or Entity checkpoint boundary guarantee.' }
+    $operation=@{ schemaVersion=1; functionAppName=$outputs.function_app_name; instanceId=$context.instanceId; restartStartedUtc=$null; restartCompletedUtc=$null; restartSucceeded=$false; restoredStartCommandSucceeded=$false; restoredRunningStateVerified=$false; validationExitCode=$null; completedUtc=$null; entityCheckpointInterruptionObserved=$false; limitation='ARM restart while Batch Task observed running; no crash or Entity checkpoint boundary guarantee.' }
     try {
         $restartAttempted=$true
         $operation.restartStartedUtc=[DateTime]::UtcNow.ToString('o')
@@ -233,7 +233,13 @@ function Invoke-PocRecoveryValidation {
         # A failed management request can have reached the service. Restore the
         # explicitly selected app to running even if restart/validation failed.
         try {
-            if ($restartAttempted) { $null=Invoke-AzJson -Sensitive -Arguments @('functionapp','start','--name',$outputs.function_app_name,'--resource-group',$outputs.resource_group_name); $operation.restoredStartCommandSucceeded=$true }
+            if ($restartAttempted) {
+                $null=Invoke-AzJson -Sensitive -Arguments @('functionapp','start','--name',$outputs.function_app_name,'--resource-group',$outputs.resource_group_name)
+                $operation.restoredStartCommandSucceeded=$true
+                $restoredApp=Invoke-AzJson -Sensitive -Arguments @('rest','--method','get','--url',('https://management.azure.com'+$siteId+'?api-version=2024-11-01'))
+                $operation.restoredRunningStateVerified=($restoredApp.id -ieq $siteId -and $restoredApp.properties.state -eq 'Running')
+                if (-not $operation.restoredRunningStateVerified) { throw 'Function App did not return to Running state after restart test.' }
+            }
         } finally {
             $operation.completedUtc=[DateTime]::UtcNow.ToString('o')
             Write-DeploymentJson (Join-Path $EvidenceDirectory 'recovery-result.json') $operation

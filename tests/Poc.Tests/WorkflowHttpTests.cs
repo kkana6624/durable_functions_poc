@@ -1309,6 +1309,62 @@ public class WorkflowHttpTests
         Assert.Equal("Workflow cancellation could not be confirmed.", body.GetProperty("error").GetString());
     }
 
+    [Fact]
+    public async Task GetWorkflowStatus_ReturnsCancelling_WhenResolutionIsCancelledEvenIfCancelRecordMissing()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-partial-status-cancelling";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        await repo.PutIfAbsentAsync(WorkflowIdentity.ResolutionPath(requestId),
+            new WorkflowResolutionRecord(1, requestId, "Cancelled"), TestContext.Current.CancellationToken);
+
+        var mockInstance = new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+        {
+            RuntimeStatus = OrchestrationRuntimeStatus.Running,
+            SerializedCustomStatus = "{\"state\":\"Submitting\"}"
+        };
+        client.Setup(c => c.GetInstanceAsync(instanceId, true, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(mockInstance);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
+
+        var response = await functions.GetWorkflowStatus(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Cancelling", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_Returns500Integrity_WhenResolutionRecordCorrupt()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-cancel-corrupt-resolution";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        var corruptResolution = new WorkflowResolutionRecord(99, requestId, "InvalidStatus");
+        repo.Documents[WorkflowIdentity.ResolutionPath(requestId)] = System.Text.Json.JsonSerializer.Serialize(corruptResolution);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Published workflow results are inconsistent.", body.GetProperty("error").GetString());
+    }
+
     private static WorkflowOperations CreateOperations(IResultRepository repo) =>
 
         new(new FakeBatchGateway(), repo, new StubWorkloadClassifier(), new WorkflowSettings());

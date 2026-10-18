@@ -273,14 +273,14 @@ Entra認証・App Role・信頼された利用者情報の伝播は今回対象�
 
 ## コミットと検証済み範囲
 
-- **今回の作業開始時 HEAD（履歴チェックポイント）**: `a8a8434` — `Refine documentation across repository for natural technical Japanese and consistency`。直前の `a518050` は HTTP / Gateway 単体テスト拡充。最新状態は常に git log / git status で確認します。
+- **今回の作業開始時 HEAD（履歴チェックポイント）**: `e24f967` — `fix(cancellation): arbitrate resolution atomicity, enforce strict cancel authorization, and harden validation scripts`（直前の `7821d82` は実機検証完了、`c43889d` は V12 キャンセル実装）。最新状態は常に git log / git status で確認します。
 - **今回の変更前のローカル検証結果（履歴）**:
-  - .NET 単体テスト: 91 件 Pass（全 7 テストクラス合格、0 Fail / 0 Skip）
+  - .NET 単体テスト: 285 件 Pass（Poc.Tests 283 件 + DtsProbe 2 件合格、0 Fail / 0 Skip）
   - Release publish: 成功
-  - PowerShell オフライン試験: 4 組成功（Deployment.Common / Test-Deployment / Deploy.Workflow / PocValidation）
-  - Terraform Mock 試験: main 7 件 + bootstrap 1 件成功
-  - 証跡ログ: `artifacts/runner-validation/`、`artifacts/reliability-validation/dotnet-test.log`、`publish.log`（`artifacts/` は Git 管理外）
-- **未検証範囲**: Azure 実環境へのデプロイ、Entra 認証・RBAC、Durable Entity の実環境復旧、実 Batch 上での Job 停止は未実施。
+  - PowerShell オフライン試験: 8 組成功（Autoscale / Deploy.Workflow / Deployment.Common / PocValidation / PrivateVm / RecoveryValidation / Test-Deployment / WorkflowAuthValidation）
+  - Terraform Mock 試験: main 37 件 + bootstrap 1 件成功
+  - 証跡ログ: `artifacts/runner-validation/`、`artifacts/reliability-validation/`、`publish.log`（`artifacts/` は Git 管理外）
+- **未検証範囲**: Azure 実環境へのデプロイ（今回追加分の実機検証）、Entra 認証・RBAC、Durable Entity の実環境復旧、実 Batch 上での Job 停止は未実施。
 
 ## 実装済みの改善内容
 
@@ -292,6 +292,14 @@ Entra認証・App Role・信頼された利用者情報の伝播は今回対象�
 - **親子共有の監視期限（Deadline）と Batch Job 停止**: 親・子 Orchestrator 間で共有する監視期限を導入。期限超過時は Job / Pool / fingerprint / ETag を照合したうえで Batch Job に停止要求を送り、最大 2 分間停止完了を確認する。停止完了を確認できなかった場合は `customStatus` に記録し、Manifest の公開を抑止する。
 - **Batch Job の `MaxWallClockTime`**: Durable Functions host が停止している間のセーフティネットとして設定。ただし起算点が「Job 作成時刻」となるため、ワークフロー全体の監視期限や厳密な実時間上限とは役割が異なる。
 - **独立検証ランナーの導入**: `scripts/Invoke-PocValidation.ps1` により、インフラ再デプロイを行わずに各種シナリオ（正常系、分類、Task 失敗、20 並列受付、409 競合、タイムアウト停止）を HTTP 経由で独立検証可能化。
+- **V12 キャンセル調停・厳格認可・検証スクリプト堅牢化**:
+  - **取消確定と結果公開の排他調停**: `resolution.json`（PutIfAbsentAsync による条件付き書き込み）を単一の勝者決定点とし、成功マニフェスト公開とキャンセル確定の競合を厳密に調停。
+  - **厳格な取消認可**: 所有者情報のない旧リクエストに対する別名義での取消要求を拒絶（403 Forbidden）。
+  - **取消専用例外の保持とイベント再送**: `WorkflowCancelledException` が汎用例外に潰されるのを防止し、キャンセル通知イベントの送信失敗を検知して適切にハンドリング。
+  - **終端状態へのキャンセル要求ハンドリング**: 既に Failed / TimedOut となったジョブに対するキャンセル要求の再送時に無効な 202 を返さないよう保護。
+  - **Restart モード復旧検証の厳格化**: `Invoke-PocRecoveryValidation.ps1` の Restart モードにおいて、再起動コマンドの呼び出しだけでなく Azure REST API での `Running` 状態到達を必須確認。
+  - **キャンセル部分書き込み障害時の余分な Batch 計算抑止**: `cancel.json` の書き込みが失敗して `resolution.json`（Cancelled）のみが残った場合でも、`ClassifyAsync` および `GetWorkflowStatus` が `resolution.json` のキャンセル状態を認識し、余分な Batch Job 作成・Task 監視を即時抑止。
+  - **調停レコードの整合性検証**: `WorkflowResolutionRecord.Validate` により、破損・改ざんされた `resolution.json`（不正な Version、RequestId 不一致、不正 Status）を検出し、500 エラー（IntegrityFailure）または致命的例外として即時昇格。
 
 ## 調査で判明した技術的制約
 

@@ -90,8 +90,10 @@ public sealed class WorkflowAdmission(IResultRepository results)
         }
         catch (WorkflowConflictException)
         {
-            var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(requestId), cancellationToken);
-            if (resolution?.Status == "Succeeded")
+            var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(requestId), cancellationToken)
+                ?? throw new InvalidDataException("Resolution record winner is missing.");
+            resolution.Validate(requestId);
+            if (resolution.Status == "Succeeded")
             {
                 throw new WorkflowConflictException("Workflow is already completed and cannot be cancelled.");
             }
@@ -107,6 +109,18 @@ public sealed class WorkflowAdmission(IResultRepository results)
             // Already recorded, idempotent
         }
         return record;
+    }
+
+    public async Task<bool> IsCancellationRequestedAsync(string requestId, CancellationToken cancellationToken = default)
+    {
+        if (await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(requestId), cancellationToken) is not null) return true;
+        var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(requestId), cancellationToken);
+        if (resolution is not null)
+        {
+            resolution.Validate(requestId);
+            return resolution.Status == "Cancelled";
+        }
+        return false;
     }
 
     public async Task<WorkflowCancelRecord?> TryGetCancelRecordAsync(string requestId, CancellationToken cancellationToken = default)

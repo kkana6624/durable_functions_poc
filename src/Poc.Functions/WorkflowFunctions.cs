@@ -215,8 +215,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             normalized = normalized with { ResultAvailable = publishedResult is not null };
             if (normalized.Status is "Accepted" or "Preparing" or "Running")
             {
-                var cancelRecord = await admission.TryGetCancelRecordAsync(requestId, cancellationToken);
-                if (cancelRecord is not null)
+                if (await admission.IsCancellationRequestedAsync(requestId, cancellationToken))
                 {
                     normalized = normalized with { Status = "Cancelling" };
                 }
