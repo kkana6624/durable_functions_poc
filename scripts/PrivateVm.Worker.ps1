@@ -153,6 +153,27 @@ exit $LASTEXITCODE
         foreach ($file in @('summary.json','summary.txt')) {
             $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',(Join-Path $evidence $file),'--auth-mode','login','--overwrite','false','--no-progress')
         }
+    } elseif ($request.operation -eq 'WorkflowAuth') {
+        $stage='validation_runner'
+        $deployment=Join-Path $PSScriptRoot 'deployment-result.json'
+        Write-DeploymentJson $deployment @{ outputs=$outputs; source_provenance=$request.source_provenance; package_sha256=$request.package_sha256 }
+        $runner=@'
+$r=Get-Content -LiteralPath ./request.json -Raw | ConvertFrom-Json
+& ./Invoke-WorkflowAuthValidation.ps1 -DeploymentResultPath ./deployment-result.json -Resource ([string]$r.auth_resource) -OwnerId ([string]$r.auth_owner_id) -OrgId ([string]$r.auth_org_id) -EvidenceDirectory ./evidence -TimeoutSeconds ([int]$r.timeout_seconds)
+exit $LASTEXITCODE
+'@
+        Push-Location $PSScriptRoot
+        try {
+            $null=& (Join-Path $PSHOME 'pwsh') -NoLogo -NoProfile -NonInteractive -Command $runner 2>&1
+            $result.exit_code=[int]$LASTEXITCODE
+        } finally { Pop-Location }
+        if ($result.exit_code -notin @(0,1,2)) { $result.exit_code=1 }
+        if ($result.exit_code -eq 1) { $result.failure_stage='validation_runner' }
+        $stage='validation_summary'
+        $result.summary_available=(Test-Path -LiteralPath (Join-Path $evidence 'summary.json'))
+        if (-not $result.summary_available) { throw 'Missing sanitized workflow auth summary.' }
+        $stage='summary_upload'
+        $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/summary.json",'--file',(Join-Path $evidence 'summary.json'),'--auth-mode','login','--overwrite','false','--no-progress')
     } else { $stage='operation'; throw 'Unknown private VM operation.' }
     $result.error_code=$(if ($result.exit_code -eq 1) { 'ValidationFailed' } else { $null })
 } catch {

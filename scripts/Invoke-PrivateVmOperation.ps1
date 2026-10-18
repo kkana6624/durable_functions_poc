@@ -19,7 +19,7 @@ function Invoke-PrivateVmOperation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Outputs,
-        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete')][string]$Operation,
+        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete','WorkflowAuth')][string]$Operation,
         [Parameter(Mandatory)][string]$EvidenceDirectory,
         [string]$PackagePath,
         [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$PackageSha256='',
@@ -27,7 +27,10 @@ function Invoke-PrivateVmOperation {
         [ValidateSet('single','three','classification','failure','admission20','conflict','timeout','cancellation')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
         [switch]$Smoke,
         [switch]$DedicatedEnvironment,
-        [hashtable]$RecoveryContext=@{}
+        [hashtable]$RecoveryContext=@{},
+        [string]$AuthResource='',
+        [string]$AuthOwnerId='',
+        [string]$AuthOrgId=''
     )
     foreach ($key in @('subscription_id','resource_group_name','validation_vm_name','vm_control_container_name','storage_account_name','function_app_name','function_app_url','function_private_ip')) {
         if (-not $Outputs.ContainsKey($key) -or [string]::IsNullOrWhiteSpace([string]$Outputs[$key])) { throw "Private VM output '$key' is required; apply the private network infrastructure first." }
@@ -38,6 +41,11 @@ function Invoke-PrivateVmOperation {
         . (Join-Path $PSScriptRoot 'Recovery.Context.ps1')
         $phase=if ($Operation -eq 'RecoveryStart') { 'Start' } else { 'Complete' }
         $RecoveryContext=Assert-PocRecoveryContext -Phase $phase -Context $RecoveryContext
+    }
+    if ($Operation -eq 'WorkflowAuth') {
+        if ([string]::IsNullOrWhiteSpace($AuthResource) -or [string]::IsNullOrWhiteSpace($AuthOwnerId) -or [string]::IsNullOrWhiteSpace($AuthOrgId)) {
+            throw 'WorkflowAuth requires AuthResource, AuthOwnerId, and AuthOrgId.'
+        }
     }
     $script:DeploymentSubscriptionId=$Outputs.subscription_id
     $id=[Guid]::NewGuid().ToString('N')
@@ -53,8 +61,12 @@ function Invoke-PrivateVmOperation {
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-PocRecoveryValidation.ps1') -Destination $bundle
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Recovery.Context.ps1') -Destination $bundle
         }
+        if ($Operation -eq 'WorkflowAuth') {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-WorkflowAuthValidation.ps1') -Destination $bundle
+        }
         $request=@{ operation=$Operation; outputs=$Outputs; timeout_seconds=$TimeoutSeconds; scenarios=@($Scenarios); smoke=[bool]$Smoke; dedicated_environment=[bool]$DedicatedEnvironment; operation_id=$id; package_sha256=$PackageSha256 }
         if ($Operation -in @('RecoveryStart','RecoveryComplete')) { $request.recovery_context=$RecoveryContext }
+        if ($Operation -eq 'WorkflowAuth') { $request.auth_resource=$AuthResource; $request.auth_owner_id=$AuthOwnerId; $request.auth_org_id=$AuthOrgId }
         # Preserve the source identity on the initiating host. The guest executes a
         # bundle without .git and must not mislabel that bundle as a Git checkout.
         $repository=Split-Path $PSScriptRoot -Parent
@@ -145,8 +157,9 @@ echo 'Private VM operation completed; sanitized results are in the control conta
             if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','function_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
             $failureStage=[string]$result.failure_stage
         }
-        if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete') -and $result.summary_available) {
-            foreach ($name in @('summary.json','summary.txt')) {
+        if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth') -and $result.summary_available) {
+            $summaryNames = if ($Operation -eq 'WorkflowAuth') { @('summary.json') } else { @('summary.json','summary.txt') }
+            foreach ($name in $summaryNames) {
                 $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',(Join-Path $EvidenceDirectory $name),'--overwrite','true','--auth-mode','login','--no-progress')
             }
         }

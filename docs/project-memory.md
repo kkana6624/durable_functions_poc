@@ -273,14 +273,17 @@ Entra認証・App Role・信頼された利用者情報の伝播は今回対象�
 
 ## コミットと検証済み範囲
 
-- **今回の作業開始時 HEAD（履歴チェックポイント）**: `e24f967` — `fix(cancellation): arbitrate resolution atomicity, enforce strict cancel authorization, and harden validation scripts`（直前の `7821d82` は実機検証完了、`c43889d` は V12 キャンセル実装）。最新状態は常に git log / git status で確認します。
-- **今回の変更前のローカル検証結果（履歴）**:
+- **今回の作業開始時 HEAD（履歴チェックポイント）**: `9ad401c` — `fix(cancellation): harden restart recovery validation, partial cancel writes, and resolution integrity`。最新状態は常に git log / git status で確認します。
+- **今回の変更・実機検証結果**:
+  - **B案（Entra ID サービス間認証・App Role 認可）Azure 実機完全実証（Pass）**:
+    - 証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`（終了コード 0、Pass、`CustomApiChecksPassed`）
+    - Entra App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 割り当て、および Function App への EasyAuth v2（`active_directory_v2`）適用による実機検証に合格。
   - .NET 単体テスト: 285 件 Pass（Poc.Tests 283 件 + DtsProbe 2 件合格、0 Fail / 0 Skip）
   - Release publish: 成功
   - PowerShell オフライン試験: 8 組成功（Autoscale / Deploy.Workflow / Deployment.Common / PocValidation / PrivateVm / RecoveryValidation / Test-Deployment / WorkflowAuthValidation）
   - Terraform Mock 試験: main 37 件 + bootstrap 1 件成功
-  - 証跡ログ: `artifacts/runner-validation/`、`artifacts/reliability-validation/`、`publish.log`（`artifacts/` は Git 管理外）
-- **未検証範囲**: Azure 実環境へのデプロイ（今回追加分の実機検証）、Entra 認証・RBAC、Durable Entity の実環境復旧、実 Batch 上での Job 停止は未実施。
+  - 証跡ログ: `artifacts/private-auth-validation/`、`artifacts/private-validation/`、`artifacts/runner-validation/`、`artifacts/reliability-validation/`、`publish.log`（`artifacts/` は Git 管理外）
+- **未検証範囲**: DTS 環境での実機回帰、実 C++ バイナリ連携（V10）、Batch `OutputFiles` 大容量出力直送（T09）、Storage/Batch 全面閉域化（V00）。
 
 ## 実装済みの改善内容
 
@@ -298,8 +301,18 @@ Entra認証・App Role・信頼された利用者情報の伝播は今回対象�
   - **取消専用例外の保持とイベント再送**: `WorkflowCancelledException` が汎用例外に潰されるのを防止し、キャンセル通知イベントの送信失敗を検知して適切にハンドリング。
   - **終端状態へのキャンセル要求ハンドリング**: 既に Failed / TimedOut となったジョブに対するキャンセル要求の再送時に無効な 202 を返さないよう保護。
   - **Restart モード復旧検証の厳格化**: `Invoke-PocRecoveryValidation.ps1` の Restart モードにおいて、再起動コマンドの呼び出しだけでなく Azure REST API での `Running` 状態到達を必須確認。
-  - **キャンセル部分書き込み障害時の余分な Batch 計算抑止**: `cancel.json` の書き込みが失敗して `resolution.json`（Cancelled）のみが残った場合でも、`ClassifyAsync` および `GetWorkflowStatus` が `resolution.json` のキャンセル状態を認識し、余分な Batch Job 作成・Task 監視を即時抑止。
+  - **キャンセル部分書き込み障害時の余分な Batch 計算抑止**: `cancel.json` の書き込みが失敗して `resolution.json`（Cancelled）のみが残った場合でも、`ClassifyAsync` および `GetWorkflowStatus` が `resolution.json` のキャンセル状態を認識し、余分な Batch Job 作成・Task監視を即時抑止。
   - **調停レコードの整合性検証**: `WorkflowResolutionRecord.Validate` により、破損・改ざんされた `resolution.json`（不正な Version、RequestId 不一致、不正 Status）を検出し、500 エラー（IntegrityFailure）または致命的例外として即時昇格。
+- **V11 Entra ID サービス間認証・App Role 認可の実機実証（B案）**:
+  - **テナント・API 登録構成**: App Registration `poc-workflow-api` を作成し、Application 限定 App Role（`Workflow.Execute`）、optional claim（`idtyp: app`）、identifier URI（`api://<client-id>`）を設定。
+  - **Graph API による App Role 割当**: 閉域検証 VM の Managed Identity（`poc-df40481149-validation`）に対し、Microsoft Graph API 経由で `Workflow.Execute` ロールを付与。
+  - **EasyAuth v2 のインフラ適用**: Terraform により `poc-df40481149-func` の `auth_settings_v2`（`active_directory_v2`、`unauthenticated_action: Return401`）を有効化し、`WORKFLOW_AUTH_MODE=EntraEasyAuth` を設定。
+  - **閉域検証 VM からの完全実機検証（Pass）**:
+    - `anonymous`、`keyOnly`、`forgedPrincipal`、`bearerWithoutKey` の各プローブで確実に HTTP 401 遮断を観測。
+    - 所有者欠落および他所有者要求での HTTP 403 遮断を観測。
+    - 正当な IMDS Bearer トークン + Function Key による 202 受理、同一再送 202、入力競合 409、ステータスポーリング（`Preparing` / `Running` / `Publishing` / `Succeeded`）、結果取得（200 OK、ハッシュ・フィンガープリント完全整合）を実証（`artifacts/private-auth-validation/20261018-160545-4455/summary.json`）。
+  - **データ変換堅牢化**: `ConvertTo-DeploymentHashtable` に文字列・プリミティブ値ガードを追加し、配列内文字列が `[pscustomobject]` キャストで `@{ Length = ... }` ハッシュテーブル化する問題を解消。また、認証ランナーのポーリング許容ステータスに `Preparing` と `Publishing` を追加。
+  - **閉域認証実行ランナーの整備**: `scripts/Invoke-PrivateWorkflowAuthValidation.ps1` を新設し、`Invoke-PrivateVmOperation.ps1` / `PrivateVm.Worker.ps1` に `WorkflowAuth` オペレーションを追加。
 
 ## 調査で判明した技術的制約
 

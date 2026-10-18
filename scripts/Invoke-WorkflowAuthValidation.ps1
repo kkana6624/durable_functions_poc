@@ -177,16 +177,20 @@ function Invoke-WorkflowAuthValidation {
                 if ($r.Data.requestId -cne $id -or $r.Data.instanceId -cne $jobId -or $r.Data.jobId -cne $jobId) { Stop-WorkflowAuthValidation 'StatusIdentityMismatch' }
                 if ($r.Data.status -in @('Failed','TimedOut','Cancelled')) { Stop-WorkflowAuthValidation 'WorkflowFailed' }
                 if ($r.Data.status -ceq 'Succeeded' -and $r.Data.resultAvailable -eq $true) { break }
-                if ($r.Data.status -cnotin @('Accepted','Running','Succeeded')) { Stop-WorkflowAuthValidation 'InvalidStatus' }
+                if ($r.Data.status -cnotin @('Accepted','Preparing','Running','Publishing','Succeeded')) { Stop-WorkflowAuthValidation 'InvalidStatus' }
             } elseif ($r.Code -notin @(404,503)) { Stop-WorkflowAuthValidation 'StatusRejected' }
             if ([DateTime]::UtcNow -ge $deadline) { Stop-WorkflowAuthValidation 'WorkflowTimeout' }
             Start-Sleep -Seconds $PollSeconds
         } while ($true)
         $headers['x-functions-key']=$keys.GetWorkflowResult
         $r=Invoke-WorkflowAuthHttp ($origin+$path+'/result') Get $headers $null
-        if ($r.Code -ne 200 -or $r.Data.requestId -cne $id -or $r.Data.status -cne 'Succeeded' -or
-            $r.Data.taskCount -ne 1 -or $r.Data.sum -ne 1 -or (@($r.Data.taskIds) -join ',') -cne 'task-00' -or
-            $r.Data.jobId -cne $jobId -or $r.Data.fingerprint -cne $fingerprint) { Stop-WorkflowAuthValidation 'ResultMismatch' }
+        if ($r.Code -ne 200) { Stop-WorkflowAuthValidation ("ResultStatus$($r.Code)") }
+        if ($r.Data.requestId -cne $id) { Stop-WorkflowAuthValidation 'ResultRequestIdMismatch' }
+        if ($r.Data.status -cne 'Succeeded') { Stop-WorkflowAuthValidation 'ResultStateMismatch' }
+        if ($r.Data.taskCount -ne 1 -or $r.Data.sum -ne 1) { Stop-WorkflowAuthValidation 'ResultSumMismatch' }
+        if ((@($r.Data.taskIds) -join ',') -cne 'task-00') { Stop-WorkflowAuthValidation 'ResultTaskIdsMismatch' }
+        if ($r.Data.jobId -cne $jobId) { Stop-WorkflowAuthValidation 'ResultJobIdMismatch' }
+        if ($r.Data.fingerprint -cne $fingerprint) { Stop-WorkflowAuthValidation 'ResultFingerprintMismatch' }
         $summary.checks+=@{name='ownerReplayConflictStatusResult';code=200}
         $summary.status='Pass'; $summary.reason='CustomApiChecksPassed'; $summary.exitCode=0
     } catch { if ($_.Exception.Data['WorkflowAuthCode']) { $summary.reason=[string]$_.Exception.Data['WorkflowAuthCode'] } }

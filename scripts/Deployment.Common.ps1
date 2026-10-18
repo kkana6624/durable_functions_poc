@@ -8,6 +8,7 @@ function ConvertTo-DeploymentHashtable {
         foreach ($key in $Value.Keys) { $result[$key] = ConvertTo-DeploymentHashtable $Value[$key] }
         return $result
     }
+    if ($Value -is [string] -or $Value -is [System.ValueType]) { return $Value }
     if ($Value -is [pscustomobject]) {
         $result = @{}
         foreach ($property in $Value.PSObject.Properties) { $result[$property.Name] = ConvertTo-DeploymentHashtable $property.Value }

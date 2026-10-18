@@ -82,7 +82,7 @@ function Invoke-AzJson {
         $script:transportDownloads+=$name
         if ($name -eq 'vm-operation.json') {
             $id=if ($script:transportInvalidId) { 'wrong-id' } else { $script:transportRequest.operation_id }
-            @{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -in @('Validate','RecoveryStart','RecoveryComplete'));validation=@{Ready=$true} } |
+            @{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth'));validation=@{Ready=$true} } |
                 ConvertTo-Json | Set-Content -LiteralPath $file -Encoding UTF8
         } elseif ($name -eq 'summary.json') { '{"status":"NotRun"}' | Set-Content -LiteralPath $file -Encoding UTF8 }
         else { 'NotRun fixture' | Set-Content -LiteralPath $file -Encoding UTF8 }
@@ -151,7 +151,12 @@ try {
     $callCount=$script:transportCalls.Count
     $badContext=$context.Clone(); $badContext.statusUri='https://function.example/?code=PRIVATE-FUNCTION-KEY'
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation RecoveryComplete -RecoveryContext $badContext -EvidenceDirectory $evidence } 'InvalidRecoveryContext'
-    Assert-True ($script:transportCalls.Count -eq $callCount) 'Untrusted recovery fields must be rejected before any Azure transport call'
+    $script:transportInvalidId=$false
+    $script:transportDownloads=@()
+    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation WorkflowAuth -AuthResource 'api://res' -AuthOwnerId 'owner1' -AuthOrgId 'org1' -EvidenceDirectory $evidence
+    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.auth_resource -eq 'api://res' -and $script:transportRequest.auth_owner_id -eq 'owner1') 'WorkflowAuth must transfer resource and owner arguments'
+    Assert-True ('summary.json' -in $script:transportDownloads) 'WorkflowAuth must download sanitized summary.json'
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation WorkflowAuth -EvidenceDirectory $evidence } 'WorkflowAuth requires AuthResource, AuthOwnerId, and AuthOrgId'
     $script:transportInvalidId=$true
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -EvidenceDirectory $evidence } 'invalid operation result'
     Assert-True (($script:transportCalls -join "`n") -notmatch 'PRIVATE-FUNCTION-KEY|--sas-token|[?&](sig|code)=') 'Transport commands must not carry secrets'
