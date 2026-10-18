@@ -134,7 +134,7 @@ function Invoke-DeploymentValidation {
     else { Write-Host 'All configured Batch nodes are ready.' }
     if ($Phase -eq 'Pool') { return [pscustomobject]@{ Ready=$true; Phase='Pool'; Smoke='Not tested'; BatchNodeType=$nodeType; BatchScaleMode=$scaleMode } }
     }
-    $expected = @('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity',
+    $expected = @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity',
         'EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',
         'WorkflowAdmissionEntity','TerminateBatchJobActivity')
     $null = Wait-ValidationCondition -RetryErrors -Description 'Function indexing' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
@@ -164,10 +164,10 @@ function Invoke-DeploymentValidation {
     if ($started.StatusCode -ne 202 -or -not $started.Data.instanceId -or -not $started.Data.statusQueryGetUri) {
         throw 'Workflow starter did not return HTTP 202 with instanceId and statusQueryGetUri.'
     }
-    $statusUri = [Uri]$started.Data.statusQueryGetUri
-    if ($statusUri.Scheme -ne 'https' -or $statusUri.Host -ne ([Uri]$Outputs.function_app_url).Host) {
-        throw 'Workflow status URL must use HTTPS on this Function App host.'
-    }
+    Assert-PocPublicStatusUri -StatusUri $started.Data.statusQueryGetUri -Outputs $Outputs -RequestId $requestId
+    # Smoke inspects Durable output internally; system credentials never come
+    # from the caller-facing response and are never included in evidence.
+    $statusUri = [Uri](Get-PocRecoveryStatusUri -Outputs $Outputs -InstanceId $started.Data.instanceId)
     $status = Wait-ValidationCondition -RetryErrors -Description 'Three-task workflow' -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
         $response = Invoke-ValidationHttp -Uri $statusUri.AbsoluteUri
         if ($response.StatusCode -eq 404) { return $null }

@@ -1,3 +1,19 @@
+function Get-PocRecoveryStatusUri {
+    param([hashtable]$Outputs,[string]$InstanceId)
+    $keys=Invoke-AzJson -Sensitive -Arguments @('functionapp','keys','list','--name',$Outputs.function_app_name,'--resource-group',$Outputs.resource_group_name)
+    if (-not $keys.systemKeys.durabletask_extension) { throw 'DurableSystemKeyUnavailable' }
+    # The system key is held only in memory, never serialized into the context.
+    return $Outputs.function_app_url.TrimEnd('/')+'/runtime/webhooks/durabletask/instances/'+[Uri]::EscapeDataString($InstanceId)+'?code='+[Uri]::EscapeDataString([string]$keys.systemKeys.durabletask_extension)
+}
+
+function Assert-PocPublicStatusUri {
+    param([string]$StatusUri,[hashtable]$Outputs,[string]$RequestId)
+    $status=$null
+    if (-not [Uri]::TryCreate($StatusUri,[UriKind]::Absolute,[ref]$status)) { throw 'InvalidStatusOrigin' }
+    $app=[Uri]$Outputs.function_app_url
+    $expectedPath='/api/workflows/'+[Uri]::EscapeDataString($RequestId)
+    if ($status.Scheme -ne 'https' -or $status.Authority -ne $app.Authority -or $status.UserInfo -or $status.Fragment -or $status.Query -or $status.AbsolutePath -cne $expectedPath) { throw 'InvalidStatusOrigin' }
+}
 # Shared by deployment smoke and the independent validation runner.
 function Assert-PocPublishedDocuments {
     [CmdletBinding()]

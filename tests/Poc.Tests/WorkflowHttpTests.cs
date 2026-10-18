@@ -35,7 +35,7 @@ public class WorkflowHttpTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
         Assert.True(body.TryGetProperty("error", out var errorProp));
-        Assert.False(string.IsNullOrWhiteSpace(errorProp.GetString()));
+        Assert.Equal("Workflow request is invalid.", errorProp.GetString());
     }
 
     [Theory]
@@ -61,7 +61,7 @@ public class WorkflowHttpTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
         Assert.True(body.TryGetProperty("error", out var errorProp));
-        Assert.False(string.IsNullOrWhiteSpace(errorProp.GetString()));
+        Assert.Equal("Workflow request is invalid.", errorProp.GetString());
     }
 
     [Fact]
@@ -109,6 +109,24 @@ public class WorkflowHttpTests
         Assert.Equal("Admission could not be confirmed. Retry with the same requestId and input.", errorProp.GetString());
     }
 
+    [Fact]
+    public async Task StartWorkflow_PermanentRpcFailure_ReturnsFixedServerError()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new Mock<IResultRepository>();
+        repo.Setup(r => r.PutIfAbsentAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RpcException(new Status(StatusCode.PermissionDenied, "SECRET_SENTINEL")));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo.Object));
+        var request = CreateRequest(JsonSerializer.Serialize(new WorkflowRequest("req-permanent-rpc")));
+
+        var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow admission could not be confirmed.", body.GetProperty("error").GetString());
+        Assert.DoesNotContain("SECRET_SENTINEL", body.GetRawText());
+    }
+
     [Theory]
     [InlineData(StatusCode.DeadlineExceeded)]
     [InlineData(StatusCode.ResourceExhausted)]
@@ -141,7 +159,8 @@ public class WorkflowHttpTests
         var repo = new InMemoryResultRepository();
         var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
         var workflowReq = new WorkflowRequest("req-success-202");
-        var request = CreateRequest(JsonSerializer.Serialize(workflowReq), "https://myfunctions.azurewebsites.net/api/workflows");
+        var request = CreateRequest(JsonSerializer.Serialize(workflowReq),
+            "https://myfunctions.azurewebsites.net/tenant/api/workflows?code=secret-function-key");
 
         var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
 
@@ -150,7 +169,9 @@ public class WorkflowHttpTests
         // Location header verification
         Assert.True(response.Headers.TryGetValues("Location", out var locationValues));
         var location = Assert.Single(locationValues);
-        Assert.NotEmpty(location);
+        Assert.Equal("https://myfunctions.azurewebsites.net/tenant/api/workflows/req-success-202", location);
+        Assert.DoesNotContain("secret-function-key", location);
+        Assert.DoesNotContain("runtime/webhooks", location, StringComparison.OrdinalIgnoreCase);
 
         // Retry-After header verification
         Assert.True(response.Headers.TryGetValues("Retry-After", out var retryAfterValues));
@@ -168,6 +189,12 @@ public class WorkflowHttpTests
 
         Assert.True(body.TryGetProperty("statusQueryGetUri", out var statusUriProp));
         Assert.Equal(location, statusUriProp.GetString());
+        Assert.DoesNotContain("secret-function-key", body.GetRawText());
+
+        var statusUri = new Uri(statusUriProp.GetString()!);
+        Assert.Equal("myfunctions.azurewebsites.net", statusUri.Host);
+        Assert.Equal("/tenant/api/workflows/req-success-202", statusUri.AbsolutePath);
+        Assert.Empty(statusUri.Query);
 
         // Verify entity was signaled for orchestration start
         entities.Verify(e => e.SignalEntityAsync(
@@ -322,8 +349,7 @@ public class WorkflowHttpTests
         var response = await functions.StartWorkflow(CreateRequest(JsonSerializer.Serialize(req), headers: headers), client.Object, TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
-        Assert.True(body.TryGetProperty("error", out var errorProp));
-        Assert.Contains("X-Poc-Owner-Id", errorProp.GetString());
+        Assert.Equal("Workflow request is invalid.", body.GetProperty("error").GetString());
     }
 
     [Fact]
@@ -454,11 +480,11 @@ public class WorkflowHttpTests
     [InlineData(OrchestrationRuntimeStatus.Running, """{"state": "Cancelling"}""", "Cancelling", false, null, null)]
     [InlineData(OrchestrationRuntimeStatus.Running, null, "Running", false, null, null)]
     [InlineData(OrchestrationRuntimeStatus.Running, """{"state": "SomethingElse"}""", "Running", false, null, null)]
-    [InlineData(OrchestrationRuntimeStatus.Completed, null, "Succeeded", true, null, null)]
-    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": true}}""", "TimedOut", false, true, null)]
-    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": false}}""", "TimedOut", false, false, null)]
-    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": true}, "terminationError": "Batch error"}""", "TimedOut", false, false, "Batch error")]
-    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Failed", "error": "Crash"}""", "Failed", false, null, "Crash")]
+    [InlineData(OrchestrationRuntimeStatus.Completed, null, "Succeeded", false, null, null)]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": true}}""", "TimedOut", false, true, "Workflow exceeded its monitoring deadline.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": false}}""", "TimedOut", false, false, "Workflow exceeded its monitoring deadline.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": true}, "terminationError": "SECRET_SENTINEL"}""", "TimedOut", false, false, "Batch job termination could not be confirmed.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Failed", "error": "SECRET_SENTINEL"}""", "Failed", false, null, "Workflow execution failed.")]
     [InlineData(OrchestrationRuntimeStatus.Terminated, null, "Cancelled", false, null, null)]
     public void NormalizeStatus_MapsCorrectly(
         OrchestrationRuntimeStatus? status,
@@ -486,6 +512,7 @@ public class WorkflowHttpTests
         Assert.Equal(expectedResultAvailable, normalized.ResultAvailable);
         Assert.Equal(expectedTerminationConfirmed, normalized.TerminationConfirmed);
         Assert.Equal(expectedError, normalized.Error);
+        Assert.DoesNotContain("SECRET_SENTINEL", JsonSerializer.Serialize(normalized));
     }
 
     [Fact]
@@ -519,6 +546,8 @@ public class WorkflowHttpTests
         var response = await functions.GetWorkflowStatus(request, invalidRequestId, client.Object, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow request is invalid.", body.GetProperty("error").GetString());
     }
 
     [Fact]
@@ -533,6 +562,8 @@ public class WorkflowHttpTests
         var response = await functions.GetWorkflowStatus(request, "valid-req", client.Object, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow request is invalid.", body.GetProperty("error").GetString());
     }
 
     [Fact]
@@ -579,6 +610,136 @@ public class WorkflowHttpTests
         Assert.False(body.GetProperty("resultAvailable").GetBoolean());
         // Verify secrets are hidden
         Assert.False(body.TryGetProperty("statusQueryGetUri", out _));
+    }
+
+    [Fact]
+    public async Task GetWorkflowStatus_OldCustomStatusError_IsNotReflected()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-status-secret-mask";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        await repo.PutIfAbsentAsync(WorkflowIdentity.RequestPath(requestId),
+            new WorkflowAdmission.AdmissionRecord(1, instanceId, new WorkflowRequest(requestId)), TestContext.Current.CancellationToken);
+        client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+            {
+                RuntimeStatus = OrchestrationRuntimeStatus.Failed,
+                SerializedCustomStatus = """{"state":"Failed","error":"SECRET_SENTINEL","terminationError":"SECRET_SENTINEL"}"""
+            });
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
+        var response = await functions.GetWorkflowStatus(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow execution failed.", body.GetProperty("error").GetString());
+        Assert.DoesNotContain("SECRET_SENTINEL", body.GetRawText());
+    }
+
+    [Fact]
+    public async Task GetWorkflowStatus_CompletedWithoutVerifiedResult_ReportsResultUnavailable()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-status-no-result";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        await repo.PutIfAbsentAsync(WorkflowIdentity.RequestPath(requestId),
+            new WorkflowAdmission.AdmissionRecord(1, instanceId, new WorkflowRequest(requestId)), TestContext.Current.CancellationToken);
+        client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+            {
+                RuntimeStatus = OrchestrationRuntimeStatus.Completed
+            });
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var statusRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
+        var statusResponse = await functions.GetWorkflowStatus(statusRequest, requestId, client.Object, TestContext.Current.CancellationToken);
+        var statusBody = await ReadJsonBodyAsync(statusResponse, TestContext.Current.CancellationToken);
+        Assert.Equal("Succeeded", statusBody.GetProperty("status").GetString());
+        Assert.False(statusBody.GetProperty("resultAvailable").GetBoolean());
+
+        var resultRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/result", method: "GET");
+        var resultResponse = await functions.GetWorkflowResult(resultRequest, requestId, client.Object, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, resultResponse.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(StatusCode.Unavailable, HttpStatusCode.ServiceUnavailable, "Workflow status could not be verified. Retry later.")]
+    [InlineData(StatusCode.PermissionDenied, HttpStatusCode.InternalServerError, "Workflow status could not be verified.")]
+    public async Task GetWorkflowStatus_RepositoryFailure_ReturnsFixedResponse(StatusCode grpcStatus, HttpStatusCode expectedStatus, string expectedError)
+    {
+        var (client, _) = CreateDurableClient();
+        var requestId = "req-status-repository-error";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var repo = new Mock<IResultRepository>();
+        repo.Setup(r => r.ReadAsync<WorkflowAdmission.AdmissionRecord>(WorkflowIdentity.RequestPath(requestId), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WorkflowAdmission.AdmissionRecord(1, instanceId, new WorkflowRequest(requestId)));
+        repo.Setup(r => r.ReadAsync<WorkflowOwnerRecord>(WorkflowIdentity.OwnerPath(requestId), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new FileNotFoundException());
+        repo.Setup(r => r.ReadAsync<ManifestResult>(WorkflowIdentity.ManifestPath(requestId), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RpcException(new Status(grpcStatus, "SECRET_SENTINEL")));
+        client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OrchestrationMetadata?)null);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo.Object), new WorkflowAdmission(repo.Object));
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
+        var response = await functions.GetWorkflowStatus(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        if (expectedStatus == HttpStatusCode.ServiceUnavailable)
+        {
+            Assert.True(response.Headers.TryGetValues("Retry-After", out var retryAfter));
+            Assert.Equal("10", Assert.Single(retryAfter));
+        }
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal(expectedError, body.GetProperty("error").GetString());
+        Assert.DoesNotContain("SECRET_SENTINEL", body.GetRawText());
+
+        var resultRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/result", method: "GET");
+        var resultResponse = await functions.GetWorkflowResult(resultRequest, requestId, client.Object, TestContext.Current.CancellationToken);
+        Assert.Equal(expectedStatus, resultResponse.StatusCode);
+        if (expectedStatus == HttpStatusCode.ServiceUnavailable)
+        {
+            Assert.True(resultResponse.Headers.TryGetValues("Retry-After", out var retryAfter));
+            Assert.Equal("10", Assert.Single(retryAfter));
+        }
+        var resultBody = await ReadJsonBodyAsync(resultResponse, TestContext.Current.CancellationToken);
+        var expectedResultError = expectedStatus == HttpStatusCode.ServiceUnavailable
+            ? "Workflow result could not be verified. Retry later."
+            : "Workflow result could not be verified.";
+        Assert.Equal(expectedResultError, resultBody.GetProperty("error").GetString());
+        Assert.DoesNotContain("SECRET_SENTINEL", resultBody.GetRawText());
+    }
+
+    [Fact]
+    public async Task GetWorkflowStatusAndResult_InvalidPublishedArtifacts_ReturnFixed500WithoutDetails()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-invalid-published";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        await repo.PutIfAbsentAsync(WorkflowIdentity.RequestPath(requestId),
+            new WorkflowAdmission.AdmissionRecord(1, instanceId, new WorkflowRequest(requestId)), TestContext.Current.CancellationToken);
+        repo.Documents[WorkflowIdentity.ManifestPath(requestId)] = "not-json-SECRET_SENTINEL";
+        client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((OrchestrationMetadata?)null);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var statusRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
+        var statusResponse = await functions.GetWorkflowStatus(statusRequest, requestId, client.Object, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.InternalServerError, statusResponse.StatusCode);
+        var statusBody = await ReadJsonBodyAsync(statusResponse, TestContext.Current.CancellationToken);
+        Assert.Equal("Published workflow results are inconsistent.", statusBody.GetProperty("error").GetString());
+        Assert.DoesNotContain("SECRET_SENTINEL", statusBody.GetRawText());
+
+        var resultRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/result", method: "GET");
+        var resultResponse = await functions.GetWorkflowResult(resultRequest, requestId, client.Object, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.InternalServerError, resultResponse.StatusCode);
+        var resultBody = await ReadJsonBodyAsync(resultResponse, TestContext.Current.CancellationToken);
+        Assert.Equal("Published workflow results are inconsistent.", resultBody.GetProperty("error").GetString());
+        Assert.DoesNotContain("SECRET_SENTINEL", resultBody.GetRawText());
     }
 
     [Fact]
@@ -740,20 +901,32 @@ public class WorkflowHttpTests
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
         var requestId = "req-result-published-001";
-        var jobId = WorkflowIdentity.JobId(requestId);
-        var fingerprint = WorkflowIdentity.Hash("fingerprint-test");
-
-        var aggregate = new AggregateResult(requestId, jobId, fingerprint, 3, 3, ["task-00", "task-01", "task-02"]);
-        var manifest = new ManifestResult(requestId, jobId, fingerprint, "Succeeded", 3, 3,
-            "https://test.invalid/runs/poc-req-result-published-001/final/aggregate.json",
-            ["https://test.invalid/runs/poc-req-result-published-001/tasks/task-00/result.json"]);
+        var workflowRequest = new WorkflowRequest(requestId, "light", 3);
+        var operations = CreateOperations(repo);
+        var plan = await operations.ClassifyAsync(workflowRequest, TestContext.Current.CancellationToken);
+        await operations.FetchAndPersistAsync(plan, TestContext.Current.CancellationToken);
+        await operations.AggregateAsync(plan, TestContext.Current.CancellationToken);
+        await operations.PublishManifestAsync(plan, TestContext.Current.CancellationToken);
+        var jobId = plan.JobId;
+        var fingerprint = plan.Fingerprint;
 
         await repo.PutIfAbsentAsync(WorkflowIdentity.RequestPath(requestId),
             new WorkflowAdmission.AdmissionRecord(1, WorkflowIdentity.InstanceId(requestId), new WorkflowRequest(requestId)), TestContext.Current.CancellationToken);
-        await repo.PutIfAbsentAsync(WorkflowIdentity.AggregatePath(requestId), aggregate, TestContext.Current.CancellationToken);
-        await repo.PutIfAbsentAsync(WorkflowIdentity.ManifestPath(requestId), manifest, TestContext.Current.CancellationToken);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+            {
+                RuntimeStatus = OrchestrationRuntimeStatus.Completed
+            });
+
+        var functions = new WorkflowFunctions(operations, new WorkflowAdmission(repo));
+        var statusRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
+        var statusResponse = await functions.GetWorkflowStatus(statusRequest, requestId, client.Object, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
+        var statusBody = await ReadJsonBodyAsync(statusResponse, TestContext.Current.CancellationToken);
+        Assert.True(statusBody.GetProperty("resultAvailable").GetBoolean());
+
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/result", method: "GET");
 
         var response = await functions.GetWorkflowResult(request, requestId, client.Object, TestContext.Current.CancellationToken);

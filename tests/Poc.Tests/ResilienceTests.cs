@@ -96,7 +96,7 @@ public class ResilienceTests
         context.Setup(c => c.CreateTimer(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .Returns((DateTime _, CancellationToken token) => Task.Delay(Timeout.Infinite, token));
         var stopping = context.Setup(c => c.CallActivityAsync<BatchJobTerminationStatus>(nameof(WorkflowFunctions.TerminateBatchJobActivity), plan, It.IsAny<TaskOptions>()));
-        if (stopFails) stopping.ThrowsAsync(new WorkflowConflictException("foreign job"));
+        if (stopFails) stopping.ThrowsAsync(new WorkflowConflictException("SECRET_SENTINEL"));
         else stopping.ReturnsAsync(new BatchJobTerminationStatus("Completed", true));
         var statuses = new List<string>();
         context.Setup(c => c.SetCustomStatus(It.IsAny<object>())).Callback<object>(s => statuses.Add(System.Text.Json.JsonSerializer.Serialize(s)));
@@ -104,7 +104,8 @@ public class ResilienceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => WorkflowFunctions.MainOrchestrator(context.Object));
         context.Verify(c => c.CallActivityAsync<ManifestReference>(nameof(WorkflowFunctions.PublishManifestActivity), It.IsAny<object>(), It.IsAny<TaskOptions>()), Times.Never);
         Assert.Contains("TimedOut", statuses.Last());
-        Assert.Contains(stopFails ? "foreign job" : "Completed", statuses.Last());
+        Assert.Contains(stopFails ? "batch_termination_failed" : "Completed", statuses.Last());
+        Assert.DoesNotContain("SECRET_SENTINEL", statuses.Last());
     }
 
     [Fact]

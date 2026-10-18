@@ -78,6 +78,38 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
         {
             manifest = await results.ReadAsync<ManifestResult>(WorkflowIdentity.ManifestPath(requestId), cancellationToken);
             aggregate = await results.ReadAsync<AggregateResult>(WorkflowIdentity.AggregatePath(requestId), cancellationToken);
+
+            if (manifest is null || aggregate is null || manifest.Status != "Succeeded" ||
+                manifest.RequestId != requestId || aggregate.RequestId != requestId ||
+                manifest.JobId != WorkflowIdentity.JobId(requestId) || manifest.JobId != aggregate.JobId ||
+                manifest.Fingerprint is null || manifest.Fingerprint.Length != 64 ||
+                manifest.Fingerprint.Any(character => !char.IsAsciiHexDigitLower(character)) ||
+                manifest.Fingerprint != aggregate.Fingerprint ||
+                aggregate.TaskCount is < 1 or > 3 || manifest.TaskCount != aggregate.TaskCount ||
+                aggregate.Sum != aggregate.TaskCount || manifest.Sum != aggregate.Sum ||
+                aggregate.TaskIds is null || manifest.TaskUris is null)
+                throw InvalidPublishedResult();
+
+            var expectedIds = Enumerable.Range(0, aggregate.TaskCount).Select(index => $"task-{index:00}").ToArray();
+            var taskPaths = expectedIds.Select(id => $"runs/poc-{requestId}/tasks/{id}/result.json").ToArray();
+            if (!aggregate.TaskIds.SequenceEqual(expectedIds) ||
+                manifest.AggregateUri != results.GetUri(WorkflowIdentity.AggregatePath(requestId)) ||
+                !manifest.TaskUris.SequenceEqual(taskPaths.Select(results.GetUri)))
+                throw InvalidPublishedResult();
+
+            string? classification = null;
+            for (int index = 0; index < taskPaths.Length; index++)
+            {
+                // Read only repository-owned paths. Manifest URIs are compared,
+                // never followed or used as an alternate source of results.
+                var task = await results.ReadAsync<TaskResult>(taskPaths[index], cancellationToken);
+                if (task is null || task.RequestId != requestId || task.JobId != manifest.JobId ||
+                    task.Fingerprint != manifest.Fingerprint || task.TaskId != expectedIds[index] ||
+                    task.Value != 1 || task.Classification is not ("light" or "heavy") ||
+                    (classification is not null && task.Classification != classification))
+                    throw InvalidPublishedResult();
+                classification = task.Classification;
+            }
         }
         catch (FileNotFoundException)
         {
@@ -91,19 +123,15 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
         {
             return null;
         }
-
-        if (manifest.Status != "Succeeded" ||
-            manifest.RequestId != requestId ||
-            aggregate.RequestId != requestId ||
-            manifest.JobId != aggregate.JobId ||
-            manifest.Fingerprint != aggregate.Fingerprint ||
-            manifest.Sum != aggregate.Sum ||
-            manifest.TaskCount != aggregate.TaskCount ||
-            aggregate.TaskIds is null)
+        catch (System.Text.Json.JsonException)
         {
-            throw new InvalidDataException("Published manifest and aggregate do not match or are invalid.");
+            // Do not expose malformed document contents or JSON parser details.
+            throw InvalidPublishedResult();
         }
 
         return new WorkflowResultResponse(requestId, manifest.JobId, manifest.Fingerprint, "Succeeded", aggregate.TaskCount, aggregate.Sum, aggregate.TaskIds);
     }
+
+    private static InvalidDataException InvalidPublishedResult() =>
+        new("Published workflow results are invalid.");
 }

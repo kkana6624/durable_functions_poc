@@ -17,7 +17,7 @@ function Invoke-PocValidationHttp {
     param($Uri,$Method,$Headers,$Body)
     if ($Method -eq 'Post') {
         $script:posts++; $script:request=ConvertTo-DeploymentHashtable ($Body|ConvertFrom-Json);$script:instance=Get-PocIdentity $script:request.requestId
-        return @{StatusCode=202;Data=[pscustomobject]@{instanceId=$script:instance;statusQueryGetUri="https://app.azurewebsites.net/runtime/webhooks/durabletask/instances/$($script:instance)?code=$script:secret"}}
+        return @{StatusCode=202;Data=[pscustomobject]@{instanceId=$script:instance;statusQueryGetUri="https://app.azurewebsites.net/api/workflows/$($script:request.requestId)"}}
     }
     return @{StatusCode=202;Data=[pscustomobject]@{runtimeStatus='Running';createdTime=$script:now}}
 }

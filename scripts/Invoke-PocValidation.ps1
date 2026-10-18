@@ -161,14 +161,13 @@ function Wait-PocWorkflow {
 }
 
 function Assert-PocAccepted {
-    param($Response,[hashtable]$Outputs,[string]$InstanceId)
+    param($Response,[hashtable]$Outputs,[string]$InstanceId,[string]$RequestId)
     if ($Response.StatusCode -ne 202 -or -not $Response.Data.instanceId -or -not $Response.Data.statusQueryGetUri) { Stop-PocValidation 'InvalidAdmissionResponse' }
     if ($Response.Data.instanceId -ne $InstanceId) { Stop-PocValidation 'InstanceIdentityMismatch' }
-    $status = [Uri]$Response.Data.statusQueryGetUri
-    $app = [Uri]$Outputs.function_app_url
-    $expectedPath = '/runtime/webhooks/durabletask/instances/' + [Uri]::EscapeDataString($InstanceId)
-    if ($status.Scheme -ne 'https' -or $status.Authority -ne $app.Authority -or $status.UserInfo -or $status.Fragment -or $status.AbsolutePath -cne $expectedPath) { Stop-PocValidation 'InvalidStatusOrigin' }
-    return $status.AbsoluteUri
+    Assert-PocPublicStatusUri -StatusUri $Response.Data.statusQueryGetUri -Outputs $Outputs -RequestId $RequestId
+    # Detailed outcome/history checks are privileged runner diagnostics. Never
+    # obtain their system-key URL from the public admission response.
+    return Get-PocRecoveryStatusUri -Outputs $Outputs -InstanceId $InstanceId
 }
 
 function Get-PocIdentity([string]$RequestId) {
@@ -232,7 +231,7 @@ function Invoke-PocScenario {
             else { @(Invoke-PocValidationHttp -Uri $uri -Method Post -Headers $headers -Body $body) }
         if ($Name -eq 'admission20' -and $responses.Count -ne 20) { Stop-PocValidation 'ConcurrentResponseCountMismatch' }
         $statusUri = $null
-        foreach ($response in $responses) { $statusUri = Assert-PocAccepted -Response $response -Outputs $Outputs -InstanceId $jobId }
+        foreach ($response in $responses) { $statusUri = Assert-PocAccepted -Response $response -Outputs $Outputs -InstanceId $jobId -RequestId $requestId }
         $run.admissionHttpStatuses = @($responses | ForEach-Object { 202 })
         if ($Name -eq 'conflict') {
             $different = $request.Clone(); $different.heavyDelaySeconds=4
@@ -314,7 +313,7 @@ function Invoke-PocScenario {
         $run.sum=$manifest.sum; $run.taskCount=$count; $run.classification=$selected; $run.fingerprint=[string]$manifest.fingerprint
         if ($Name -eq 'admission20') {
             $resend = Invoke-PocValidationHttp -Uri $uri -Method Post -Headers $headers -Body $body
-            $resendUri = Assert-PocAccepted -Response $resend -Outputs $Outputs -InstanceId $jobId
+            $resendUri = Assert-PocAccepted -Response $resend -Outputs $Outputs -InstanceId $jobId -RequestId $requestId
             $after = Wait-PocWorkflow -StatusUri $resendUri -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds
             if ($after.runtimeStatus -ne 'Completed' -or $after.createdTime -ne $status.createdTime) { Stop-PocValidation 'CompletedResendChangedExecution' }
             $afterBatch = Get-PocBatchObservation -Outputs $Outputs -JobId $jobId

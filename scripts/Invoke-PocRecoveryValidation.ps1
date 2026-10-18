@@ -18,14 +18,6 @@ if (-not (Get-Command Invoke-PrivateVmOperation -ErrorAction SilentlyContinue) -
 . (Join-Path $PSScriptRoot 'Recovery.Context.ps1')
 foreach ($recoveryArgumentName in $recoveryEntryArguments.Keys) { Set-Variable -Name $recoveryArgumentName -Value $recoveryEntryArguments[$recoveryArgumentName] }
 
-function Get-PocRecoveryStatusUri {
-    param([hashtable]$Outputs,[string]$InstanceId)
-    $keys=Invoke-AzJson -Sensitive -Arguments @('functionapp','keys','list','--name',$Outputs.function_app_name,'--resource-group',$Outputs.resource_group_name)
-    if (-not $keys.systemKeys.durabletask_extension) { Stop-PocValidation 'DurableSystemKeyUnavailable' }
-    # The system key is held only in memory, never serialized into the context.
-    return $Outputs.function_app_url.TrimEnd('/')+'/runtime/webhooks/durabletask/instances/'+[Uri]::EscapeDataString($InstanceId)+'?code='+[Uri]::EscapeDataString([string]$keys.systemKeys.durabletask_extension)
-}
-
 function Get-PocBatchWallClockConstraintSeconds {
     param($Job)
     $constraintSeconds=$null
@@ -67,7 +59,7 @@ function Invoke-PocRecoveryGuest {
             $key=Get-PocValidationKey $Outputs
             try { $accepted=Invoke-PocValidationHttp -Uri ($Outputs.function_app_url.TrimEnd('/')+'/api/workflows') -Method Post -Headers @{'x-functions-key'=$key} -Body ($request|ConvertTo-Json -Compress) }
             finally { $key=$null }
-            $statusUri=Assert-PocAccepted -Response $accepted -Outputs $Outputs -InstanceId $instance
+            $statusUri=Assert-PocAccepted -Response $accepted -Outputs $Outputs -InstanceId $instance -RequestId $request.requestId
             $watch=[Diagnostics.Stopwatch]::StartNew()
             do {
                 $batch=$null

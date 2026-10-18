@@ -53,7 +53,7 @@ function Invoke-AzJson {
         return [pscustomobject]@{ value=$nodes }
     }
     if ($command -match '^functionapp function list ') {
-        $names=@('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity',
+        $names=@('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity',
             'EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',
             'WorkflowAdmissionEntity','TerminateBatchJobActivity')
         if ($script:scenario -eq 'missingfunction') { $names=$names[0..8] }
@@ -62,6 +62,10 @@ function Invoke-AzJson {
     if ($command -match '^functionapp function keys list ') {
         Assert-True $Sensitive 'Function key retrieval must be sensitive'
         return [pscustomobject]@{ default='DO-NOT-LOG-FUNCTION-KEY' }
+    }
+    if ($command -match '^functionapp keys list ') {
+        Assert-True $Sensitive 'System key retrieval must be sensitive'
+        return [pscustomobject]@{ systemKeys=[pscustomobject]@{ durabletask_extension='DO-NOT-LOG-STATUS-KEY' } }
     }
     if ($command -match '^storage blob download ') {
         Assert-True ('--no-progress' -in $Arguments) 'Blob transfer progress must not contaminate Azure CLI JSON'
@@ -84,8 +88,9 @@ function Invoke-ValidationHttp {
     if ($Method -eq 'Post') {
         $script:requestId=($Body | ConvertFrom-Json).requestId
         Assert-True ($Headers['x-functions-key'] -eq 'DO-NOT-LOG-FUNCTION-KEY') 'Key should use header'
-        return @{ StatusCode=202; Data=[pscustomobject]@{ instanceId='poc-instance'; statusQueryGetUri='https://poc.example/status?code=DO-NOT-LOG-STATUS-KEY' } }
+        return @{ StatusCode=202; Data=[pscustomobject]@{ instanceId='poc-instance'; statusQueryGetUri="https://poc.example/api/workflows/$script:requestId" } }
     }
+    Assert-True ($Uri -match '/runtime/webhooks/durabletask/instances/poc-instance\?code=DO-NOT-LOG-STATUS-KEY$') 'Smoke diagnostics must use the independently fetched system key'
     $script:httpReads++
     if ($script:scenario -eq 'workflowpending' -and $script:httpReads -eq 1) { return @{ StatusCode=404; Data=$null } }
     $state=if ($script:scenario -eq 'workflowfailed') { 'Failed' } else { 'Completed' }
@@ -96,6 +101,21 @@ $outputs=@{ subscription_id='subscription'; resource_group_name='poc-rg'; functi
     batch_pool_id='pool'; batch_account_name='account'; batch_resource_group_name='batch-rg' }
 $outputs.batch_node_count=1
 
+# The public admission URI is a key-free application route; diagnostics are
+# independently built from operator credentials and must never be accepted here.
+Assert-PocPublicStatusUri -StatusUri 'https://poc.example/api/workflows/known' -Outputs $outputs -RequestId known
+foreach ($invalidStatusUri in @(
+    'https://poc.example/api/workflows/known?code=DO-NOT-LOG',
+    'https://poc.example/api/workflows/known#fragment',
+    'https://user@poc.example/api/workflows/known',
+    'https://other.example/api/workflows/known',
+    'http://poc.example/api/workflows/known',
+    'https://poc.example/runtime/webhooks/durabletask/instances/known',
+    'https://poc.example/api/workflows/another',
+    'not-a-uri'
+)) {
+    Assert-Fails { Assert-PocPublicStatusUri -StatusUri $invalidStatusUri -Outputs $outputs -RequestId known } 'InvalidStatusOrigin'
+}
 $result=Invoke-DeploymentValidation -Outputs $outputs -Phase All -Smoke -TimeoutSeconds 2 -PollSeconds 1
 Assert-True ($result.Smoke -eq 'Pass' -and $result.Sum -eq 3) 'Full smoke should pass'
 Assert-True (@($script:calls | Where-Object { $_ -match '--resource https://batch.core.windows.net/' }).Count -eq 2) 'Batch reads must use correct audience'

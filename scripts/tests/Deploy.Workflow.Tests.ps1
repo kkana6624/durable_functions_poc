@@ -19,7 +19,7 @@ function Invoke-ValidationHttp {
     [IO.File]::AppendAllText($env:POC_FAKE_TRACE,"http $Method`n")
     if ($Method -eq 'Post') {
         $env:POC_FAKE_REQUESTID=($Body | ConvertFrom-Json).requestId
-        return @{ StatusCode=202; Data=[pscustomobject]@{ instanceId='instance'; statusQueryGetUri='https://poc.example/status?code=PRIVATE' } }
+        return @{ StatusCode=202; Data=[pscustomobject]@{ instanceId='instance'; statusQueryGetUri="https://poc.example/api/workflows/$env:POC_FAKE_REQUESTID" } }
     }
     return @{ StatusCode=200; Data=[pscustomobject]@{ runtimeStatus='Completed'; output=[pscustomobject]@{ state='Succeeded' } } }
 }
@@ -74,9 +74,10 @@ elseif ($command -match '^storage container exists') { '{"exists":true}' }
 elseif ($command -match '^rest .*?/nodes\?') { '{"value":[{"state":"idle","schedulingState":"enabled"}]}' }
 elseif ($command -match '^rest ') { '{"allocationState":"steady"}' }
 elseif ($command -match '^functionapp function list') {
-    @('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity','WorkflowAdmissionEntity','TerminateBatchJobActivity') | ForEach-Object { @{name="poc-app/$_"} } | ConvertTo-Json
+    @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity','EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity','WorkflowAdmissionEntity','TerminateBatchJobActivity') | ForEach-Object { @{name="poc-app/$_"} } | ConvertTo-Json
 }
 elseif ($command -match '^functionapp function keys list') { '{"default":"PRIVATE-FUNCTION-KEY"}' }
+elseif ($command -match '^functionapp keys list') { '{"systemKeys":{"durabletask_extension":"PRIVATE-SYSTEM-KEY"}}' }
 elseif ($command -match '^storage blob download') {
     $file=$args[[Array]::IndexOf($args,'--file')+1]
     $root="https://pocstorage.blob.core.windows.net/poc-results/runs/poc-$env:POC_FAKE_REQUESTID"

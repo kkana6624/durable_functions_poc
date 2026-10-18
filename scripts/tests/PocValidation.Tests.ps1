@@ -84,7 +84,7 @@ function New-FakeAdmission {
     $script:current = $script:requests[$request.requestId]
     $instance = Get-PocJobId -RequestId $request.requestId
     return @{ StatusCode=202; Data=[pscustomobject]@{
-        instanceId=$instance; statusQueryGetUri="https://poc.example/runtime/webhooks/durabletask/instances/$instance`?code=$script:secret"
+        instanceId=$instance; statusQueryGetUri="https://poc.example/api/workflows/$($request.requestId)"
         terminatePostUri="https://poc.example/terminate?code=$script:secret"; unexpected=$script:secret
     } }
 }
@@ -189,6 +189,10 @@ $null = New-Item -ItemType Directory -Path $temporary
 try {
     function Invoke-AzJson {
         param([string[]]$Arguments,[switch]$Sensitive)
+        if ($Arguments[0..2] -join ' ' -eq 'functionapp keys list') {
+            Assert-True $Sensitive 'System key retrieval must be sensitive'
+            return [pscustomobject]@{ systemKeys=[pscustomobject]@{ durabletask_extension=$script:secret } }
+        }
         Assert-True ($Sensitive -and $Arguments[0] -eq 'storage' -and $Arguments[2] -eq 'download' -and '--no-progress' -in $Arguments) 'Runner Blob transfer must suppress progress and sensitive output'
         $file=$Arguments[[Array]::IndexOf($Arguments,'--file')+1]
         [IO.File]::WriteAllText($file,'{"transfer":"checked"}')

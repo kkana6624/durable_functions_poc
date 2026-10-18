@@ -1,5 +1,21 @@
 # プロジェクトメモリ
 
+## 2026-10-18 V11のHTTPエラー・結果可用性の整合（ローカル実装）
+
+- 独自HTTPのエラー応答と、旧custom statusから読み出すエラーを固定の説明へ統一しました。orchestratorが書くcustom status・監視結果・明示的な失敗ログから生の例外messageを除去しました。
+- 状態照会と結果取得は同じ公開成果物検証を使用します。manifest・aggregate・全Task結果の固定パス、識別子、fingerprint、件数・合計、分類等を照合し、欠損は取得不可、不整合は安全な500、照会の一時障害は503とRetry-Afterで返します。manifestに記載された外部URIは辿りません。
+- 検証は現行の整数1専用PoC契約内の整合性確認です。複数Blobの原子的スナップショット、状態照会後の存在、権限を持つ改竄者への耐性を保証しません。
+- SDK例外とinner exceptionをDurable境界で安全化する処理は未対応です。再試行分類・timeout判定への影響を別単位で設計し、全ログ・全履歴での秘密非露出を今回の変更だけで断言しません。認証境界・所有者競合対策とAzure検証も引き続き残作業です。
+- 確定したローカル検証: ReleaseのPoc.Tests 191/191件・DtsProbe 2/2件（計193件）が成功しました。Release publish（`artifacts/api-contract-release-publish`）が成功し、`local.settings*` が含まれないことを確認しました。`git diff --check` も成功し、生成物の混入はありません。Azure配置・実機検証は今回実施していません。
+
+## 2026-10-18 V11開始応答の独自URL契約（ローカル実装）
+
+- 開始202の本文 `statusQueryGetUri` と `Location` を独自状態照会 `/api/workflows/{requestId}` に統一し、`Retry-After: 10` を返します。利用者向け開始応答からDurable管理URLとキーを除去します。
+- 内部検証runnerは開始URLを検証した後、既存のsystem key取得権限を使い管理URIをメモリ内で生成して詳細診断を継続します。管理URI・キーを証跡へ保存しません。開始専用Function keyを別Functionへ流用しません。
+- PowerShellオフライン試験4組（Test-Deployment / PocValidation / RecoveryValidation / Deploy.Workflow）が成功しました。独自開始URLのquery・fragment・userinfo・異origin・HTTP・管理APIパス・別requestId・不正URIを拒否し、内部診断が別途取得したsystem keyを使うことを確認しました。Function登録の期待一覧は14件です。Fake試験でありAzure接続は行っていません。
+- V11は未完です。Entra認証・App Role、所有者/組織の信頼境界、所有者なし旧受付との競合、他の応答・例外の安全化、および最新コードのAzure検証を引き続き行います。実装順序は [次期実装計画](next-implementation-plan.md) を参照してください。
+- ローカル検証: ReleaseのPoc.Tests 148/148件・DtsProbe 2/2件が成功しました。Release publish（`artifacts/api-response-release-publish`）も成功し、`local.settings.json` が含まれないことを確認しました。Azureへの配置・実機検証は今回実施していません。
+
 ## 2026-10-18 カテゴリ A（追加の耐障害性・運用系検証：`V05` / `V07` / `V08` / `V09`）の実装・Azure 実機検証完了
 
 - **権限反映**: `dts-poc` および `poc` 両環境の検証 VM 用カスタムロール（`azurerm_role_definition.validation_function`）に対して `Microsoft.Web/sites/host/listkeys/action` の targeted `terraform apply`（各 1 件 update、追加・削除 0 件）を実施し、実機ロール定義への反映を確認しました。

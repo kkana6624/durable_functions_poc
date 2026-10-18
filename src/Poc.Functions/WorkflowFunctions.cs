@@ -13,6 +13,13 @@ namespace Poc.Functions;
 public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdmission admission)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private const string InvalidRequestMessage = "Workflow request is invalid.";
+    private const string WorkflowFailedMessage = "Workflow execution failed.";
+    private const string WorkflowTimedOutMessage = "Workflow exceeded its monitoring deadline.";
+    private const string TerminationUnconfirmedMessage = "Batch job termination could not be confirmed.";
+    private const string IntegrityFailureMessage = "Published workflow results are inconsistent.";
+    private const string StatusUnavailableMessage = "Workflow status could not be verified. Retry later.";
+    private const string ResultUnavailableMessage = "Workflow result could not be verified. Retry later.";
 
     private static WorkflowOwner? ExtractOwner(HttpRequestData request)
     {
@@ -49,13 +56,13 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         catch (Exception ex) when (ex is JsonException or ArgumentException)
         {
             var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
-            await badRequest.WriteAsJsonAsync(new { error = ex.Message });
+            await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
         }
         try
         {
             var instanceId = await admission.AdmitAsync(input, client, owner, cancellationToken);
-            return await AcceptedAsync(request, client, instanceId);
+            return await AcceptedAsync(request, instanceId, input.RequestId);
         }
         catch (WorkflowForbiddenException)
         {
@@ -69,13 +76,16 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             await conflict.WriteAsJsonAsync(new { error = "requestId already has different configuration.", instanceId = WorkflowIdentity.InstanceId(input.RequestId) });
             return conflict;
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && (IsTransientFailure(ex, cancellationToken) || ex is
-            Grpc.Core.RpcException { StatusCode: Grpc.Core.StatusCode.Unavailable or Grpc.Core.StatusCode.DeadlineExceeded or Grpc.Core.StatusCode.ResourceExhausted }))
+        catch (Exception ex) when (IsTransientRequestFailure(ex, cancellationToken))
         {
             var unavailable = request.CreateResponse(HttpStatusCode.ServiceUnavailable);
             unavailable.Headers.Add("Retry-After", "10");
             await unavailable.WriteAsJsonAsync(new { error = "Admission could not be confirmed. Retry with the same requestId and input." });
             return unavailable;
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await CreateErrorResponseAsync(request, HttpStatusCode.InternalServerError, "Workflow admission could not be confirmed.");
         }
     }
 
@@ -90,8 +100,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
 
         string? customState = null;
-        string? customError = null;
-        string? terminationError = null;
+        bool terminationFailed = false;
         bool? terminationCompleted = null;
 
         if (!string.IsNullOrWhiteSpace(instance.SerializedCustomStatus))
@@ -106,13 +115,13 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                     {
                         if (stateEl.ValueKind == JsonValueKind.String) customState = stateEl.GetString();
                     }
-                    if (root.TryGetProperty("error", out var errorEl) || root.TryGetProperty("Error", out errorEl))
-                    {
-                        if (errorEl.ValueKind == JsonValueKind.String) customError = errorEl.GetString();
-                    }
                     if (root.TryGetProperty("terminationError", out var termErrEl) || root.TryGetProperty("TerminationError", out termErrEl))
                     {
-                        if (termErrEl.ValueKind == JsonValueKind.String) terminationError = termErrEl.GetString();
+                        terminationFailed = termErrEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(termErrEl.GetString());
+                    }
+                    if (root.TryGetProperty("terminationErrorCode", out var termErrCodeEl) || root.TryGetProperty("TerminationErrorCode", out termErrCodeEl))
+                    {
+                        terminationFailed |= termErrCodeEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(termErrCodeEl.GetString());
                     }
                     if (root.TryGetProperty("termination", out var termEl) || root.TryGetProperty("Termination", out termEl))
                     {
@@ -148,17 +157,18 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
 
         if (instance.RuntimeStatus == OrchestrationRuntimeStatus.Completed)
         {
-            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Succeeded", ResultAvailable: true);
+            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Succeeded", ResultAvailable: false);
         }
 
         if (instance.RuntimeStatus == OrchestrationRuntimeStatus.Failed)
         {
             if (customState == "TimedOut")
             {
-                bool confirmed = (terminationCompleted == true) && string.IsNullOrEmpty(terminationError);
-                return new WorkflowStatusResponse(requestId, instanceId, jobId, "TimedOut", ResultAvailable: false, TerminationConfirmed: confirmed, Error: customError ?? terminationError);
+                bool confirmed = (terminationCompleted == true) && !terminationFailed;
+                return new WorkflowStatusResponse(requestId, instanceId, jobId, "TimedOut", ResultAvailable: false,
+                    TerminationConfirmed: confirmed, Error: terminationFailed ? TerminationUnconfirmedMessage : WorkflowTimedOutMessage);
             }
-            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Failed", ResultAvailable: false, Error: customError);
+            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Failed", ResultAvailable: false, Error: WorkflowFailedMessage);
         }
 
 #pragma warning disable CS0618
@@ -184,23 +194,31 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             new WorkflowRequest(requestId).Validate();
             caller = ExtractOwner(request);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
-            await badRequest.WriteAsJsonAsync(new { error = ex.Message });
+            await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
-        }
-
-        if (!await admission.ExistsAsync(requestId, client, cancellationToken))
-        {
-            var notFound = request.CreateResponse(HttpStatusCode.NotFound);
-            await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
-            return notFound;
         }
 
         try
         {
+            if (!await admission.ExistsAsync(requestId, client, cancellationToken))
+            {
+                var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+                await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
+                return notFound;
+            }
+
             await admission.AuthorizeAccessAsync(requestId, caller, cancellationToken);
+            var instance = await client.GetInstanceAsync(WorkflowIdentity.InstanceId(requestId), getInputsAndOutputs: true, cancellationToken);
+            var normalized = NormalizeStatus(requestId, instance);
+            var publishedResult = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
+            normalized = normalized with { ResultAvailable = publishedResult is not null };
+
+            var response = request.CreateResponse(HttpStatusCode.OK);
+            await response.WriteAsJsonAsync(normalized);
+            return response;
         }
         catch (WorkflowForbiddenException)
         {
@@ -208,13 +226,18 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
             return forbidden;
         }
-
-        var instance = await client.GetInstanceAsync(WorkflowIdentity.InstanceId(requestId), getInputsAndOutputs: true, cancellationToken);
-        var normalized = NormalizeStatus(requestId, instance);
-
-        var response = request.CreateResponse(HttpStatusCode.OK);
-        await response.WriteAsJsonAsync(normalized);
-        return response;
+        catch (InvalidDataException)
+        {
+            return await CreateErrorResponseAsync(request, HttpStatusCode.InternalServerError, IntegrityFailureMessage);
+        }
+        catch (Exception ex) when (IsTransientRequestFailure(ex, cancellationToken))
+        {
+            return await CreateUnavailableResponseAsync(request, StatusUnavailableMessage);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await CreateErrorResponseAsync(request, HttpStatusCode.InternalServerError, "Workflow status could not be verified.");
+        }
     }
 
     [Function(nameof(GetWorkflowResult))]
@@ -230,23 +253,36 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             new WorkflowRequest(requestId).Validate();
             caller = ExtractOwner(request);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
-            await badRequest.WriteAsJsonAsync(new { error = ex.Message });
+            await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
-        }
-
-        if (!await admission.ExistsAsync(requestId, client, cancellationToken))
-        {
-            var notFound = request.CreateResponse(HttpStatusCode.NotFound);
-            await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
-            return notFound;
         }
 
         try
         {
+            if (!await admission.ExistsAsync(requestId, client, cancellationToken))
+            {
+                var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+                await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
+                return notFound;
+            }
+
             await admission.AuthorizeAccessAsync(requestId, caller, cancellationToken);
+            var result = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
+            if (result is null)
+            {
+                var instance = await client.GetInstanceAsync(WorkflowIdentity.InstanceId(requestId), getInputsAndOutputs: true, cancellationToken);
+                var normalized = NormalizeStatus(requestId, instance);
+                var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                await conflict.WriteAsJsonAsync(new { error = "Workflow result is not available.", requestId, status = normalized.Status });
+                return conflict;
+            }
+
+            var response = request.CreateResponse(HttpStatusCode.OK);
+            await response.WriteAsJsonAsync(result);
+            return response;
         }
         catch (WorkflowForbiddenException)
         {
@@ -254,29 +290,64 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
             return forbidden;
         }
-
-        var result = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
-        if (result is null)
+        catch (InvalidDataException)
         {
-            var instance = await client.GetInstanceAsync(WorkflowIdentity.InstanceId(requestId), getInputsAndOutputs: true, cancellationToken);
-            var normalized = NormalizeStatus(requestId, instance);
-            var conflict = request.CreateResponse(HttpStatusCode.Conflict);
-            await conflict.WriteAsJsonAsync(new { error = "Workflow result is not available.", requestId, status = normalized.Status });
-            return conflict;
+            return await CreateErrorResponseAsync(request, HttpStatusCode.InternalServerError, IntegrityFailureMessage);
         }
+        catch (Exception ex) when (IsTransientRequestFailure(ex, cancellationToken))
+        {
+            return await CreateUnavailableResponseAsync(request, ResultUnavailableMessage);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await CreateErrorResponseAsync(request, HttpStatusCode.InternalServerError, "Workflow result could not be verified.");
+        }
+    }
 
-        var response = request.CreateResponse(HttpStatusCode.OK);
-        await response.WriteAsJsonAsync(result);
+    private static bool IsTransientRequestFailure(Exception exception, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return false;
+        if (exception is AggregateException aggregate)
+        {
+            var errors = aggregate.Flatten().InnerExceptions;
+            return errors.Count > 0 && errors.All(inner => IsTransientRequestFailure(inner, cancellationToken));
+        }
+        if (exception is Grpc.Core.RpcException rpcException)
+        {
+            return rpcException.StatusCode is Grpc.Core.StatusCode.Unavailable or
+                Grpc.Core.StatusCode.DeadlineExceeded or Grpc.Core.StatusCode.ResourceExhausted;
+        }
+        return IsTransientFailure(exception, cancellationToken);
+    }
+
+    private static async Task<HttpResponseData> CreateUnavailableResponseAsync(HttpRequestData request, string message)
+    {
+        var response = request.CreateResponse(HttpStatusCode.ServiceUnavailable);
+        response.Headers.Add("Retry-After", "10");
+        await response.WriteAsJsonAsync(new { error = message });
         return response;
     }
 
-    private static async Task<HttpResponseData> AcceptedAsync(HttpRequestData request, DurableTaskClient client, string instanceId)
+    private static async Task<HttpResponseData> CreateErrorResponseAsync(HttpRequestData request, HttpStatusCode statusCode, string message)
     {
-        var management = client.CreateHttpManagementPayload(instanceId, request);
+        var response = request.CreateResponse(statusCode);
+        await response.WriteAsJsonAsync(new { error = message });
+        return response;
+    }
+
+    private static async Task<HttpResponseData> AcceptedAsync(HttpRequestData request, string instanceId, string requestId)
+    {
+        var requestUrl = request.Url;
+        var statusUrl = new UriBuilder(requestUrl)
+        {
+            Path = $"{requestUrl.AbsolutePath.TrimEnd('/')}/{Uri.EscapeDataString(requestId)}",
+            Query = string.Empty,
+            Fragment = string.Empty
+        }.Uri.AbsoluteUri;
         var response = request.CreateResponse(HttpStatusCode.Accepted);
-        response.Headers.Add("Location", management.StatusQueryGetUri);
+        response.Headers.Add("Location", statusUrl);
         response.Headers.Add("Retry-After", "10");
-        await response.WriteAsJsonAsync(new { id = instanceId, instanceId, statusQueryGetUri = management.StatusQueryGetUri });
+        await response.WriteAsJsonAsync(new { id = instanceId, instanceId, statusQueryGetUri = statusUrl });
         return response;
     }
 
@@ -287,7 +358,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         var logger = context.CreateReplaySafeLogger(nameof(MainOrchestrator));
         var terminalState = "Failed";
         BatchJobTerminationStatus? termination = null;
-        string? terminationError = null;
+        string? terminationErrorCode = null;
         try
         {
             var plan = await context.CallActivityAsync<WorkflowPlan>(nameof(ClassifyActivity), input, RetryOptions());
@@ -325,12 +396,19 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                             var next = context.CurrentUtcDateTime.AddSeconds(5);
                             await context.CreateTimer(next < stopDeadline ? next : stopDeadline, CancellationToken.None);
                         } while (context.CurrentUtcDateTime < stopDeadline);
-                        if (termination?.Completed != true) terminationError = "Batch job termination confirmation deadline exceeded.";
+                        if (termination?.Completed != true) terminationErrorCode = "batch_termination_unconfirmed";
                     }
-                    catch (Exception stopException) { terminationError = stopException.Message; }
+                    catch (Exception) { terminationErrorCode = "batch_termination_failed"; }
                 }
-                context.SetCustomStatus(new { state, plan.JobId, tasks = results });
-                throw new InvalidOperationException($"{state}: {string.Join("; ", failures.Select(result => $"{result.TaskId}: {result.Error}"))}");
+                var failureCode = state == "TimedOut" ? "workflow_timed_out" : "workflow_failed";
+                var taskSummary = results.Select(result => new
+                {
+                    result.TaskId,
+                    result.State,
+                    errorCode = result.State == "TimedOut" ? "task_timed_out" : result.State == "Failed" ? "task_failed" : null
+                }).ToArray();
+                context.SetCustomStatus(new { state, plan.JobId, errorCode = failureCode, terminationErrorCode, tasks = taskSummary });
+                throw new InvalidOperationException(state == "TimedOut" ? WorkflowTimedOutMessage : WorkflowFailedMessage);
             }
             context.SetCustomStatus(new { state = "Persisting", plan.JobId });
             await context.CallActivityAsync<ResultReference[]>(nameof(FetchAndPersistActivity), plan, RetryOptions());
@@ -339,10 +417,11 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             context.SetCustomStatus(new { state = "Succeeded", plan.JobId, manifest.Uri });
             return new WorkflowOutput("Succeeded", input.RequestId, plan.JobId, manifest.Uri);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            context.SetCustomStatus(new { state = terminalState, jobId = WorkflowIdentity.JobId(input.RequestId), error = ex.Message, termination, terminationError });
-            logger.LogError("Request {RequestId} failed: {Error}", input.RequestId, ex.Message);
+            var errorCode = terminalState == "TimedOut" ? "workflow_timed_out" : "workflow_failed";
+            context.SetCustomStatus(new { state = terminalState, jobId = WorkflowIdentity.JobId(input.RequestId), errorCode, termination, terminationErrorCode });
+            logger.LogError("Request {RequestId} failed with {ErrorCode}", input.RequestId, errorCode);
             throw;
         }
     }
@@ -363,16 +442,18 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 logger.LogInformation("Job {JobId}, task {TaskId}: {State}, exit {ExitCode}",
                     spec.Plan.JobId, spec.TaskId, status.State, status.ExitCode);
                 if (status.Completed)
-                    return new TaskMonitorResult(spec.TaskId, status.Succeeded ? "Succeeded" : "Failed", status.Failure ?? (status.Succeeded ? null : $"Exit code {status.ExitCode}"));
+                    return new TaskMonitorResult(spec.TaskId, status.Succeeded ? "Succeeded" : "Failed", status.Succeeded ? null : "Batch task failed.");
                 var next = context.CurrentUtcDateTime.AddSeconds(spec.Plan.PollSeconds);
                 await context.CreateTimer(next < deadline ? next : deadline, CancellationToken.None);
             }
             return new TaskMonitorResult(spec.TaskId, "TimedOut", "Shared monitoring deadline exceeded; parent will terminate the Batch job.");
         }
-        catch (TimeoutException ex) { return new(spec.TaskId, "TimedOut", ex.Message); }
+        catch (TimeoutException) { return new(spec.TaskId, "TimedOut", "Workflow monitoring deadline exceeded."); }
         catch (TaskFailedException ex)
         {
-            return new TaskMonitorResult(spec.TaskId, context.CurrentUtcDateTime >= deadline || ex.FailureDetails.IsCausedBy<TimeoutException>() ? "TimedOut" : "Failed", ex.Message);
+            var timedOut = context.CurrentUtcDateTime >= deadline || ex.FailureDetails.IsCausedBy<TimeoutException>();
+            return new TaskMonitorResult(spec.TaskId, timedOut ? "TimedOut" : "Failed",
+                timedOut ? "Workflow monitoring deadline exceeded." : "Batch task monitoring failed.");
         }
     }
 

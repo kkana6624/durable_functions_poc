@@ -41,7 +41,7 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 - 新規 PoC 用 Batch Account / Windows Pool の作成、または既存 Batch 環境の読み取り専用参照
 - Terraform state backend の準備（新規作成または既存参照）
 - Function App のビルド・単体テスト・パッケージングと、検証 VM から Private SCM への Entra 認証 ZIP デプロイ
-- デプロイ後の準備完了確認（Pool ノード状態および 12 個の Functions 登録検出）
+- デプロイ後の準備完了確認（Pool ノード状態および 14 個の Functions 登録検出）
 
 ### 1. 事前準備
 
@@ -135,7 +135,7 @@ Function App の Managed Identity に対する権限付与は Terraform 内で�
 | **State 管理**<br>(`infra/bootstrap/`) | Resource Group / Storage Account / Blob Container (`tfstate`) / 実行者 RBAC | `Backend.Create=true` 時に新規作成（既存時は参照） | Terraform の remote state 保存専用。誤削除防止のため `prevent_destroy` を設定 |
 | **基盤グループ**<br>(`infra/main.tf`) | Resource Group (`azurerm_resource_group`) | `create_resource_group=true` で新規作成、`false` で既存 RG を参照 | PoC リソース一式の格納先 |
 | **ストレージ**<br>(`infra/main.tf`, `validation-vm.tf`) | Storage Account (`poc<suffix>`) + Container `poc-results` / `poc-vm-control` | 新規作成（共有キー無効・OAuth/MI 強制・TLS 1.2） | ・`poc-results`: ワークフロー入力 `request.json`、各 Task 結果、`aggregate.json`、`manifest.json` の保存先<br>・`poc-vm-control`: 検証 VM とのバンドル・証跡受け渡し専用<br>・Functions ホスト領域（および `azureStorage` モード時の Durable History/Queue）としても使用 |
-| **ワークフロー実行**<br>(`infra/main.tf`) | App Service Plan (`B1` Linux) + Linux Function App (`.NET 10 isolated`) | Function App は新規作成。Plan は既定で新規作成、`existing_service_plan_id` 指定時は既存 Linux Plan を読み取り専用参照 | Durable Functions（HTTP 受付・Orchestrator・Activity・Entity 計 12 関数）をホスト。Always On 有効、公開アクセス無効（`public_network_access_enabled=false`） |
+| **ワークフロー実行**<br>(`infra/main.tf`) | App Service Plan (`B1` Linux) + Linux Function App (`.NET 10 isolated`) | Function App は新規作成。Plan は既定で新規作成、`existing_service_plan_id` 指定時は既存 Linux Plan を読み取り専用参照 | Durable Functions（HTTP 受付・状態・結果照会、Orchestrator・Activity・Entity 計 14 関数）をホスト。Always On 有効、公開アクセス無効（`public_network_access_enabled=false`） |
 | **Durable バックエンド（選択時）**<br>(`infra/durable-task-scheduler.tf`) | Durable Task Scheduler (`Microsoft.DurableTask/schedulers`) + Task Hub + 30日保持ポリシー | `durable_backend='durableTaskScheduler'` の場合のみ AzAPI で新規作成 | Durable Functions の状態・メッセージを高速 gRPC で管理するマネージドバックエンド（Consumption SKU）。既定の `azureStorage` 選択時は作成しない |
 | **計算基盤（Batch）**<br>(`infra/batch.tf`) | Batch Account (`BatchService`) + Windows Server 2022 Pool (`Standard_D2s_v5` 等) | `batch_mode='new'` で新規作成、`existing` で既存環境を読み取り専用参照 | 計算 Task のキューイングと Windows 計算ノード（`spot` または `dedicated`、1〜3 台、`fixed` または 0 台 `autoscale`）の割り当て。Gallery イメージまたは Marketplace イメージを参照 |
 | **閉域ネットワーク・検証 VM**<br>(`infra/validation-vm.tf`) | VNet + Subnets (`validation-vm`, `private-endpoints`) + NSG (`DenyAllInbound`) + Public IP + NAT Gateway + Private Endpoint (`sites`) + Private DNS Zone (`privatelink.azurewebsites.net`) + RHEL 9 VM (`Standard_F1as_v7`) | 新規作成 | 公開アクセスを遮断した Function App / Private SCM に対し、VNet 内部からデプロイと HTTP 検証を行うための RHEL 9 検証 VM（Public IP なし・SSH 受信拒否・Run Command 操作・cloud-init で CLI / PowerShell 自動導入） |
@@ -341,7 +341,7 @@ Azure への配置は冒頭の `deploy.ps1` を使用します。ローカル端
 
 ### 2. ワークフローの開始と状態照会
 
-以下はローカルエンドポイントへのリクエスト例です。Azure 上の `workflow_url` に対して実行する際は、Function key を `x-functions-key` ヘッダーに指定してください（Function key やレスポンスに含まれる Durable 管理 URL はログに記録・公開しないでください）。
+以下はローカルエンドポイントへのリクエスト例です。所有者ヘッダーはローカルの所有者照合用であり、利用者認証ではありません。Azure 上では各 API に有効な Function key を `x-functions-key` に指定してください。開始専用の Function key は別 Function の状態照会には使えません。
 
 ```powershell
 $body = @{
@@ -352,18 +352,25 @@ $body = @{
   lightDelaySeconds = 5
   heavyDelaySeconds = 15
 } | ConvertTo-Json
-$started = Invoke-RestMethod -Method Post -Uri 'http://localhost:7071/api/workflows' -ContentType 'application/json' -Body $body
+$headers = @{ 'X-Poc-Owner-Id' = 'local-example-owner' }
+$started = Invoke-RestMethod -Method Post -Uri 'http://localhost:7071/api/workflows' -ContentType 'application/json' -Headers $headers -Body $body
 $started
 # 応答中の statusQueryGetUri を使用して状態を照会
-Invoke-RestMethod -Uri $started.statusQueryGetUri
+Invoke-RestMethod -Uri $started.statusQueryGetUri -Headers $headers
 ```
+
+開始202の `statusQueryGetUri` と `Location` は独自の `/api/workflows/{requestId}` を指し、キーを含むDurable管理URLを返しません。`Retry-After` は10秒です。内部検証runnerは開始URL契約を検証した後、system keyから管理URIをメモリ内で生成して詳細診断を続けます。キー・管理URIはログや証跡へ保存しません。この変更はV11の一部であり、Entra認証・App Role検証・所有者伝播の確定および最新コードのAzure実証は未完です。
+
+独自状態照会の `resultAvailable` は、公開manifest・aggregate・全Task結果の存在と現行PoC契約の整合性を確認した時点の値です。DurableがCompletedでも成果物欠損時はfalseとなり、結果取得は409を返します。不整合時は固定メッセージの500、一時障害時は503と `Retry-After: 10` を返します。結果取得時にも再検証するため、状態照会後の削除を含め取得成功を保証する値ではありません。
+
+独自HTTP応答、custom statusのエラー表示、明示的な失敗ログには固定の説明またはコードを使用します。SDK例外・inner exceptionがDurable履歴やランタイムログへ保存される境界の安全化は別の残課題であり、全ログ・全履歴での機密情報非露出を保証するものではありません。
 
 #### パラメータと受付制御（冪等性・重複抑止）の仕様
 - **入力パラメータ**: `taskCount` は `1`〜`3`、`classification` は `light` / `heavy` / `auto` を指定できます。
 - **入力の確定と競合検出**: リクエスト受付時に `runs/poc-<requestId>/request.json` を条件付き作成して入力内容を確定します。同一 `requestId` で異なる入力パラメータが送信された場合は `HTTP 409 (Conflict)` を返します。
 - **同時受付・再送時の動作**: 同一 `requestId` かつ同一入力の同時リクエストや再送は、同じ Durable Entity へ通知されます。Entity が「起動済み状態」と「Main オーケストレーションの起動指示」を永続化することで重複起動を防ぎます。
 - **ステータスコードと再試行**:
-  - `HTTP 202 (Accepted)` は Durable Entity への通知受理を表します。Main オーケストレーションの実インスタンスが登録されるまでの間、状態照会 URL（`statusQueryGetUri`）が一時的に `404` を返す場合は、少し待ってから再照会してください。
+  - `HTTP 202 (Accepted)` は Durable Entity への通知受理を表します。所有者付きで受け付けたジョブの独自状態照会には、受付時と同じ所有者情報が必要です。内部診断のDurable管理APIは、Main実インスタンスの登録前に一時的な `404` を返す場合があります。
   - 受付確認中の一時的な障害時は `HTTP 503` と `Retry-After` ヘッダーを返します。その場合は同じ `requestId` と入力内容で再送できます。
 
 ### 3. 実行結果 Blob の確認
