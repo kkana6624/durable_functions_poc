@@ -93,11 +93,11 @@ function Invoke-WorkflowAuthValidation {
         # Descriptor metadata is claimed provenance, not a live deployed-code measurement.
         if ($deployment.ContainsKey('source_provenance') -and $deployment.source_provenance -is [hashtable]) {
             $provenance=$deployment.source_provenance
-            if ($provenance.ContainsKey('gitRevision') -and $provenance.gitRevision -is [string] -and $provenance.gitRevision -cmatch '\A[0-9a-f]{40}\z') { $summary.provenance.gitRevision=$provenance.gitRevision }
+            if ($provenance.ContainsKey('gitRevision') -and $provenance.gitRevision -is [string] -and $provenance.gitRevision -match '\A[0-9a-fA-F]{40}\z') { $summary.provenance.gitRevision=$provenance.gitRevision.ToLowerInvariant() }
             if ($provenance.ContainsKey('gitDirty') -and $provenance.gitDirty -is [bool]) { $summary.provenance.gitDirty=$provenance.gitDirty }
-            if ($provenance.ContainsKey('sourceSha256') -and $provenance.sourceSha256 -is [string] -and $provenance.sourceSha256 -cmatch '\A[0-9a-f]{64}\z') { $summary.provenance.sourceSha256=$provenance.sourceSha256 }
+            if ($provenance.ContainsKey('sourceSha256') -and $provenance.sourceSha256 -is [string] -and $provenance.sourceSha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.sourceSha256=$provenance.sourceSha256.ToLowerInvariant() }
         }
-        if ($deployment.ContainsKey('package_sha256') -and $deployment.package_sha256 -is [string] -and $deployment.package_sha256 -cmatch '\A[0-9a-f]{64}\z') { $summary.provenance.packageSha256=$deployment.package_sha256 }
+        if ($deployment.ContainsKey('package_sha256') -and $deployment.package_sha256 -is [string] -and $deployment.package_sha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.packageSha256=$deployment.package_sha256.ToLowerInvariant() }
         $outputs=$deployment.outputs
         foreach ($field in @('subscription_id','resource_group_name','function_app_name','function_app_url')) {
             if (-not $outputs.ContainsKey($field) -or [string]::IsNullOrWhiteSpace([string]$outputs[$field])) { Stop-WorkflowAuthValidation 'MissingDeploymentOutput' }

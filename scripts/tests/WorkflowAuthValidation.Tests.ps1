@@ -9,7 +9,7 @@ $script:AzPath='fake'
 $script:secret='NEVER-SERIALIZE-BEARER-KEY-PRINCIPAL'
 $script:mode='pass'; $script:calls=@(); $script:accepted=$false
 $deployment=Join-Path $directory 'deployment.json'
-Write-DeploymentJson $deployment @{source_provenance=@{gitRevision=('a'*40);gitDirty=$false;sourceSha256=('b'*64);untrusted='NEVER-SERIALIZE-BEARER-KEY-PRINCIPAL'};package_sha256=('c'*64);outputs=@{subscription_id='sub';resource_group_name='rg';function_app_name='app';function_app_url='https://app.example';durable_backend='azureStorage';task_hub_name='PocBatchHub'}}
+Write-DeploymentJson $deployment @{source_provenance=@{gitRevision=('A'*40);gitDirty=$false;sourceSha256=('B'*64);untrusted='NEVER-SERIALIZE-BEARER-KEY-PRINCIPAL'};package_sha256=('C'*64);outputs=@{subscription_id='sub';resource_group_name='rg';function_app_name='app';function_app_url='https://app.example';durable_backend='azureStorage';task_hub_name='PocBatchHub'}}
 function Get-WorkflowAuthToken { param($Resource,$ClientId) return $script:secret }
 function Get-WorkflowAuthKeys { param($Outputs) return @{StartWorkflow='start-key';GetWorkflowStatus='status-key';GetWorkflowResult='result-key'} }
 function Invoke-WorkflowAuthHttp {
@@ -62,7 +62,7 @@ try {
         $evidence=Join-Path $directory $mode
         $result=Invoke-WorkflowAuthValidation -DeploymentResultPath $deployment -Resource 'api://api-app' -OwnerId owner -OrgId org -EvidenceDirectory $evidence -PollSeconds 1 -TimeoutSeconds 1
         Assert-True (($result.exitCode -eq 0) -eq ($mode -eq 'pass')) ('Unexpected result: '+$mode+' '+$result.reason)
-        Assert-True ($result.provenance.gitRevision -ceq ('a'*40) -and $result.provenance.packageSha256 -ceq ('c'*64) -and $result.provenance.livePackageVerified -eq $false) 'Descriptor provenance must be selected and remain unverified'
+        Assert-True ($result.provenance.gitRevision -ceq ('a'*40) -and $result.provenance.sourceSha256 -ceq ('b'*64) -and $result.provenance.packageSha256 -ceq ('c'*64) -and $result.provenance.livePackageVerified -eq $false) 'Descriptor provenance must be selected, normalized to lowercase, and remain unverified'
         $text=Get-Content (Join-Path $evidence 'summary.json') -Raw
         Assert-True ($text -notmatch $script:secret -and $text -notmatch 'app.example|start-key|status-key|result-key|sig=') 'Evidence leaked untrusted data'
         Assert-True (@($script:calls|Where-Object {$_.uri -match '/runtime/'}).Count -eq 0) 'Runner must use only custom APIs'

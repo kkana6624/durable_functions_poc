@@ -129,6 +129,9 @@ public sealed class WorkflowAdmission(IResultRepository results)
     }
 
 
+    public Task<WorkflowAdmissionRecord?> GetRecordAsync(string requestId, CancellationToken cancellationToken = default) =>
+        ReadRecordAsync(requestId, cancellationToken);
+
     private async Task<WorkflowAdmissionRecord?> ReadRecordAsync(string requestId, CancellationToken cancellationToken)
     {
         var current = await TryReadAsync<WorkflowAdmissionRecord>(WorkflowIdentity.AdmissionPath(requestId), cancellationToken);

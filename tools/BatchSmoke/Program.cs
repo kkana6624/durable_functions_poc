@@ -15,7 +15,7 @@ var requestId = args.Where((_, index) => index != timeoutIndex + 1 || timeoutInd
 var fail = args.Contains("--fail");
 var batch = new AzureBatchGateway(new BatchClient(new Uri(endpoint), new DefaultAzureCredential()), pool);
 var request = new WorkflowRequest(requestId, "light", 1, fail ? 0 : null, 2, 5);
-var operations = new WorkflowOperations(batch, null!, new StubWorkloadClassifier(), new WorkflowSettings(TimeoutMinutes: (int)Math.Ceiling(timeoutSeconds / 60.0)));
+var operations = new WorkflowOperations(batch, new NullResultRepository(), new StubWorkloadClassifier(), new WorkflowSettings(TimeoutMinutes: (int)Math.Ceiling(timeoutSeconds / 60.0)));
 var plan = await operations.ClassifyAsync(request);
 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 await batch.EnsureJobAsync(plan, timeout.Token);
@@ -36,4 +36,11 @@ while (true)
     }
     // A standalone smoke test may use Delay; Durable orchestrators must use Durable Timer.
     await Task.Delay(TimeSpan.FromSeconds(plan.PollSeconds), timeout.Token);
+}
+
+sealed class NullResultRepository : IResultRepository
+{
+    public Task<string> PutIfAbsentAsync<T>(string path, T value, CancellationToken cancellationToken = default) => Task.FromResult(path);
+    public Task<T> ReadAsync<T>(string path, CancellationToken cancellationToken = default) => throw new FileNotFoundException(path);
+    public string GetUri(string path) => $"https://localhost/{path}";
 }

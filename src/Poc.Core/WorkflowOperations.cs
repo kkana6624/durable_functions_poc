@@ -6,6 +6,7 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
 {
     private async Task<T?> TryReadAsync<T>(string path, CancellationToken cancellationToken) where T : class
     {
+        if (results is null) return null;
         try { return await results.ReadAsync<T>(path, cancellationToken); }
         catch (FileNotFoundException) { return null; }
         catch (KeyNotFoundException) { return null; }

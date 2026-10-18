@@ -159,7 +159,8 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             if (customState == "Cancelled")
             {
                 bool confirmed = (terminationCompleted == true) && !terminationFailed;
-                return new WorkflowStatusResponse(requestId, instanceId, jobId, "Cancelled", ResultAvailable: false,
+                var status = confirmed ? "Cancelled" : "Cancelling";
+                return new WorkflowStatusResponse(requestId, instanceId, jobId, status, ResultAvailable: false,
                     TerminationConfirmed: confirmed, Error: terminationFailed ? TerminationUnconfirmedMessage : WorkflowCancelledMessage);
             }
             return new WorkflowStatusResponse(requestId, instanceId, jobId, "Failed", ResultAvailable: false, Error: WorkflowFailedMessage);
@@ -454,7 +455,28 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
 
             var cancelRecord = await admission.CancelAsync(requestId, caller, reason, cancellationToken);
 
-            await client.RaiseEventAsync(instanceId, WorkflowIdentity.CancelEventName, cancelRecord, cancellation: cancellationToken);
+            if (instance is not null && instance.RuntimeStatus == OrchestrationRuntimeStatus.Failed)
+            {
+                var record = await admission.GetRecordAsync(requestId, cancellationToken);
+                if (record?.Request is not null)
+                {
+                    var plan = await operations.ClassifyAsync(record.Request, cancellationToken);
+                    var term = await operations.TerminateJobAsync(plan, cancellationToken);
+                    if (term.Completed)
+                    {
+                        var confirmedResponse = new WorkflowStatusResponse(
+                            requestId, instanceId, plan.JobId, "Cancelled", ResultAvailable: false,
+                            TerminationConfirmed: true, Error: WorkflowCancelledMessage);
+                        var ok = request.CreateResponse(HttpStatusCode.OK);
+                        await ok.WriteAsJsonAsync(confirmedResponse);
+                        return ok;
+                    }
+                }
+            }
+            else
+            {
+                await client.RaiseEventAsync(instanceId, WorkflowIdentity.CancelEventName, cancelRecord, cancellation: cancellationToken);
+            }
 
             var statusUrl = BuildStatusUrl(request.Url, requestId);
             var response = request.CreateResponse(HttpStatusCode.Accepted);

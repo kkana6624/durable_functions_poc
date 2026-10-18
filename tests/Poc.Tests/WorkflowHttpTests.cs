@@ -485,6 +485,9 @@ public class WorkflowHttpTests
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": true}}""", "TimedOut", false, true, "Workflow exceeded its monitoring deadline.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": false}}""", "TimedOut", false, false, "Workflow exceeded its monitoring deadline.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "TimedOut", "termination": {"completed": true}, "terminationError": "SECRET_SENTINEL"}""", "TimedOut", false, false, "Batch job termination could not be confirmed.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "termination": {"completed": true}}""", "Cancelled", false, true, "Workflow was cancelled by user.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "termination": {"completed": false}}""", "Cancelling", false, false, "Workflow was cancelled by user.")]
+    [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Cancelled", "termination": {"completed": true}, "terminationErrorCode": "batch_termination_failed"}""", "Cancelling", false, false, "Batch job termination could not be confirmed.")]
     [InlineData(OrchestrationRuntimeStatus.Failed, """{"state": "Failed", "error": "SECRET_SENTINEL"}""", "Failed", false, null, "Workflow execution failed.")]
     [InlineData(OrchestrationRuntimeStatus.Terminated, null, "Cancelled", false, null, null)]
     public void NormalizeStatus_MapsCorrectly(
@@ -1138,6 +1141,77 @@ public class WorkflowHttpTests
         var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
         Assert.Equal("Cancelled", body.GetProperty("status").GetString());
         Assert.True(body.GetProperty("terminationConfirmed").GetBoolean());
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_WhenTerminationUnconfirmed_RetriesTermination_AndReturnsOKWhenBatchTerminated()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var batchMock = new Mock<IBatchGateway>();
+        batchMock.Setup(b => b.TerminateJobAsync(It.IsAny<WorkflowPlan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BatchJobTerminationStatus("completed", true));
+
+        var requestId = "req-cancel-retry-ok";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        var mockInstance = new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+        {
+            RuntimeStatus = OrchestrationRuntimeStatus.Failed,
+            SerializedCustomStatus = "{\"state\":\"Cancelled\",\"termination\":{\"completed\":false}}"
+        };
+        client.Setup(c => c.GetInstanceAsync(instanceId, true, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(mockInstance);
+
+        var operations = new WorkflowOperations(batchMock.Object, repo, new StubWorkloadClassifier(), new WorkflowSettings());
+        var functions = new WorkflowFunctions(operations, admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Cancelled", body.GetProperty("status").GetString());
+        Assert.True(body.GetProperty("terminationConfirmed").GetBoolean());
+        batchMock.Verify(b => b.TerminateJobAsync(It.IsAny<WorkflowPlan>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_WhenTerminationUnconfirmed_RetriesTermination_AndReturnsAcceptedWhenBatchStillPending()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var batchMock = new Mock<IBatchGateway>();
+        batchMock.Setup(b => b.TerminateJobAsync(It.IsAny<WorkflowPlan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BatchJobTerminationStatus("active", false));
+
+        var requestId = "req-cancel-retry-pending";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        var mockInstance = new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+        {
+            RuntimeStatus = OrchestrationRuntimeStatus.Failed,
+            SerializedCustomStatus = "{\"state\":\"Cancelled\",\"termination\":{\"completed\":false}}"
+        };
+        client.Setup(c => c.GetInstanceAsync(instanceId, true, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(mockInstance);
+
+        var operations = new WorkflowOperations(batchMock.Object, repo, new StubWorkloadClassifier(), new WorkflowSettings());
+        var functions = new WorkflowFunctions(operations, admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Cancelling", body.GetProperty("status").GetString());
+        batchMock.Verify(b => b.TerminateJobAsync(It.IsAny<WorkflowPlan>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
