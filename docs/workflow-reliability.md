@@ -49,7 +49,8 @@
 
 ### 再試行（Retry）の設計
 
-- **Durableレイヤーの再試行**: Activity 関数は既存の一時障害分類（ネットワーク瞬断、503、スロットリング等）を `TransientWorkflowException` へ変換し、Durable の再試行ハンドラーが「最大3回の試行」かつ「ワークフロー共有の deadline（監視期限）内であること」を確認した上でリトライします。待機時間は Durable Timer により5秒、10秒と設定されます。入力バリデーション不正、HTTP/Azure SDKの401/403、リクエスト競合（409）、結果データ不整合などは恒久エラーとして再試行しません。ただし、Activity側の既存分類は全 `Grpc.Core.RpcException` を一時障害とします。この分類の見直しは別の残課題であり、独自HTTP API側の限定されたgRPC再試行分類とは異なります。
+- **Durableレイヤーの再試行**: Activity 関数は再試行対象の障害（ネットワーク瞬断、503、スロットリング等）を `TransientWorkflowException` へ変換し、Durable の再試行ハンドラーが「最大3回の試行」かつ「ワークフロー共有の deadline（監視期限）内であること」を確認した上でリトライします。待機時間は Durable Timer により5秒、10秒と設定されます。入力バリデーション不正、HTTP/Azure SDKの401/403、リクエスト競合（409）、結果データ不整合などは恒久エラーとして再試行しません。
+- **gRPCの限定分類**: HTTP/Activityとも `Unavailable` / `DeadlineExceeded` / `ResourceExhausted` だけを対象とします。`Cancelled` / `Unknown` / `Internal` / `Aborted` 等は自動再試行対象に含めません。3コードは冪等操作への有界再試行方針であり、必ず回復するという保証ではありません。`DeadlineExceeded` は処理成功後にも返り得て、`ResourceExhausted` はquotaや容量不足を含みます。SDK・gRPC通信層の再試行は別の層で、今回変更していません（参考: [gRPC status codes](https://grpc.io/docs/guides/status-codes/)、[gRPC retry](https://grpc.io/docs/guides/retry/)）。
 - **SDKレイヤーの再試行とタイムアウト**: Azure SDK 側のクライアント再試行は1回、1回の通信試行あたりの `NetworkTimeout` は10秒に設定します。SDK レイヤーでの再試行と Durable レイヤーでの再試行が階層的に実行されるため、総通信試行数が単純に3回とはならない点に留意します。
 - **例外型の判定とキャンセルトークンの伝播**:
   - .NET Isolated Worker の `TaskFailedException` から基底の例外型を判定する際は、`FailureDetails.IsCausedBy<T>()` を使用します（参考: [公式エラー処理](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-error-handling)）。

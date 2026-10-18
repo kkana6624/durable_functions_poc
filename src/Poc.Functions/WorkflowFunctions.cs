@@ -515,7 +515,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         // Azure.Core uses a linked timeout token. The caller's token distinguishes host cancellation.
         OperationCanceledException => true,
         RequestFailedException { Status: 0 or 408 or 429 or 500 or 502 or 503 or 504 } => true,
-        Grpc.Core.RpcException => true,
+        Grpc.Core.RpcException { StatusCode: Grpc.Core.StatusCode.Unavailable or Grpc.Core.StatusCode.DeadlineExceeded or Grpc.Core.StatusCode.ResourceExhausted } => true,
         HttpRequestException { StatusCode: null or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or
             HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout } => true,
         _ => false

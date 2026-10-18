@@ -276,12 +276,77 @@ public class ResilienceTests
         context.Verify(c => c.CallSubOrchestratorAsync<TaskMonitorResult>(nameof(WorkflowFunctions.MonitorBatchTaskOrchestrator), It.IsAny<object>(), null), Times.Never);
     }
 
-    [Fact]
-    public void GrpcFailuresAreTransientAlsoInsideAggregateException()
+    [Theory]
+    [InlineData(Grpc.Core.StatusCode.Unavailable, true)]
+    [InlineData(Grpc.Core.StatusCode.DeadlineExceeded, true)]
+    [InlineData(Grpc.Core.StatusCode.ResourceExhausted, true)]
+    [InlineData(Grpc.Core.StatusCode.Cancelled, false)]
+    [InlineData(Grpc.Core.StatusCode.Unknown, false)]
+    [InlineData(Grpc.Core.StatusCode.InvalidArgument, false)]
+    [InlineData(Grpc.Core.StatusCode.NotFound, false)]
+    [InlineData(Grpc.Core.StatusCode.AlreadyExists, false)]
+    [InlineData(Grpc.Core.StatusCode.PermissionDenied, false)]
+    [InlineData(Grpc.Core.StatusCode.Unauthenticated, false)]
+    [InlineData(Grpc.Core.StatusCode.FailedPrecondition, false)]
+    [InlineData(Grpc.Core.StatusCode.Aborted, false)]
+    [InlineData(Grpc.Core.StatusCode.OutOfRange, false)]
+    [InlineData(Grpc.Core.StatusCode.Unimplemented, false)]
+    [InlineData(Grpc.Core.StatusCode.Internal, false)]
+    [InlineData(Grpc.Core.StatusCode.DataLoss, false)]
+    public async Task GrpcActivityRetryUsesOnlyExplicitlyAllowedStatusCodes(Grpc.Core.StatusCode code, bool expectedTransient)
     {
-        var rpc = new Grpc.Core.RpcException(new Grpc.Core.Status(Grpc.Core.StatusCode.Unavailable, "down"));
-        Assert.True(WorkflowFunctions.IsTransientFailure(rpc, TestContext.Current.CancellationToken));
-        Assert.True(WorkflowFunctions.IsTransientFailure(new AggregateException(rpc), TestContext.Current.CancellationToken));
+        var rpc = new Grpc.Core.RpcException(new Grpc.Core.Status(code, "SECRET_SENTINEL"));
+        await AssertGrpcRetryBoundaryAsync(rpc, expectedTransient);
+        using var caller = new CancellationTokenSource();
+        caller.Cancel();
+        Assert.False(WorkflowFunctions.IsTransientFailure(rpc, caller.Token));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NestedGrpcAggregatesRetryOnlyWhenEveryFailureIsAllowed(bool allTransient)
+    {
+        var failures = new AggregateException(
+            new Grpc.Core.RpcException(new Grpc.Core.Status(Grpc.Core.StatusCode.Unavailable, "SECRET_SENTINEL")),
+            new AggregateException(
+                new RequestFailedException(503, "SECRET_SENTINEL"),
+                new Grpc.Core.RpcException(new Grpc.Core.Status(allTransient
+                    ? Grpc.Core.StatusCode.ResourceExhausted : Grpc.Core.StatusCode.PermissionDenied, "SECRET_SENTINEL"))));
+        await AssertGrpcRetryBoundaryAsync(failures, allTransient);
+    }
+
+    private static async Task AssertGrpcRetryBoundaryAsync(Exception original, bool expectedTransient)
+    {
+        Assert.Equal(expectedTransient, WorkflowFunctions.IsTransientFailure(original, TestContext.Current.CancellationToken));
+        var failure = await Record.ExceptionAsync(() => WorkflowFunctions.RetryableActivity<int>(
+            () => Task.FromException<int>(original), TestContext.Current.CancellationToken));
+        Assert.NotNull(failure);
+        if (expectedTransient)
+        {
+            Assert.IsType<TransientWorkflowException>(failure);
+            Assert.Equal("Workflow activity temporarily failed.", failure.Message);
+        }
+        else
+        {
+            Assert.IsType<PermanentWorkflowException>(failure);
+            Assert.Equal("Workflow activity failed.", failure.Message);
+        }
+        Assert.Null(failure.InnerException);
+        Assert.Empty(failure.Data);
+        var details = TaskFailureDetails.FromException(failure);
+        Assert.Equal(expectedTransient, details.IsCausedBy<TransientWorkflowException>());
+        Assert.Null(details.InnerFailure);
+        Assert.DoesNotContain("SECRET_SENTINEL", details.ErrorMessage);
+
+        var context = Context();
+        var now = DateTime.UtcNow;
+        context.SetupGet(c => c.CurrentUtcDateTime).Returns(now);
+        context.Setup(c => c.CreateTimer(It.IsAny<DateTime>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        var handler = WorkflowFunctions.RetryOptions(now.AddMinutes(1)).Retry!.Handler!;
+        Assert.Equal(expectedTransient, await handler(new RetryContext(context.Object, 1, details, TimeSpan.Zero, CancellationToken.None)));
+        context.Verify(c => c.CreateTimer(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()),
+            expectedTransient ? Times.Once() : Times.Never());
     }
 
     [Fact]

@@ -1,10 +1,16 @@
 # プロジェクトメモリ
 
+## 2026-10-18 ActivityのgRPC再試行分類の限定（ローカル実装）
+
+- Activity側のgRPC再試行対象を `Unavailable` / `DeadlineExceeded` / `ResourceExhausted` に限定し、既存の独自HTTP API分類と揃えました。その他のコードは自動再試行せず、安全な恒久失敗型へ変換します。caller取消の優先、Aggregate内部全件の判定、安全なmessage・innerなし、最大3回・5/10秒・共有deadlineは維持します。
+- 3コードの採用は、冪等操作に対する有界再試行のアプリ方針です。期限超過は成功済みの場合もあり、資源枯渇はquota・容量不足を含むため、回復を保証しません。SDKやgRPC通信層の再試行は別の層であり、今回変更していません。根拠: [gRPC status codes](https://grpc.io/docs/guides/status-codes/)、[gRPC retry](https://grpc.io/docs/guides/retry/)。
+- 確定したローカル検証: ResilienceTests 56/56件、Release全体のPoc.Tests 209/209件・DtsProbe 2/2件（計211件、失敗・スキップ0件）が成功しました。Release publish（`artifacts/grpc-retry-release-publish`）が成功し、`local.settings*` が含まれないことを確認しました。`git diff --check` も成功し、未追跡ファイル・生成物の混入はありません。Azure配置・実機検証は今回実施していません。
+
 ## 2026-10-18 Activity例外のDurable境界での安全化（ローカル実装）
 
 - 全8 Activityが通る `RetryableActivity` で、元例外を既存の条件で分類した後、固定message・innerなしの例外へ変換します。一時障害は `TransientWorkflowException`、timeoutは `TimeoutException`、恒久失敗は `PermanentWorkflowException` とし、caller取消はcaller tokenを持つ安全な `OperationCanceledException` とします。
 - 利用SDK 1.24.1の `FailureDetails.IsCausedBy<T>()` はErrorTypeによる型判定であるため、一時障害型とtimeout型を維持します。最大3回・5/10秒待機・共有deadlineとCore gateway内部の例外契約は変更していません。
-- 達成範囲はActivity wrapperが外へ渡す例外情報です。Activityの入力・出力、Entity等の別経路、全ランタイムログ・履歴の秘密非露出を保証しません。Activity側で全gRPC例外を一時障害とする既存分類の見直しは、HTTP側の限定分類と区別した次の小単位です。認証境界・所有者競合・Azure検証も残作業です。
+- 達成範囲はActivity wrapperが外へ渡す例外情報です。Activityの入力・出力、Entity等の別経路、全ランタイムログ・履歴の秘密非露出を保証しません。この時点で残したActivityのgRPC分類見直しは上記の小単位で対応しました。認証境界・所有者競合・Azure検証は残作業です。
 - 確定したローカル検証: ReleaseのPoc.Tests 192/192件・DtsProbe 2/2件（計194件）が成功しました。Release publish（`artifacts/activity-boundary-release-publish`）が成功し、`local.settings*` が含まれないことを確認しました。`git diff --check` も成功し、生成物の混入はありません。Azure配置・実機検証は今回実施していません。
 
 ## 2026-10-18 V11のHTTPエラー・結果可用性の整合（ローカル実装）
