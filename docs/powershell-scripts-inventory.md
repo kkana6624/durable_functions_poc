@@ -1,8 +1,8 @@
 # PowerShell スクリプト一覧と機能仕様（PowerShell Scripts Inventory）
 
-更新日: 2026-10-18（コミット 5a45b17 時点）
+更新日: 2026-10-18（最新コード b14b25f 時点）
 
-本書は、本リポジトリ（`durable_functions_poc`）に含まれるすべての PowerShell スクリプト（`scripts/` 配下のメインスクリプト 11 本、および `scripts/tests/` 配下のオフライン単体・統合テストスクリプト 7 本）の役割、パラメータ、提供関数、実行境界、呼び出し関係、テスト検証観点、および終了コード仕様を体系的にまとめた技術仕様書です。
+本書は、本リポジトリ（`durable_functions_poc`）に含まれるすべての PowerShell スクリプト（`scripts/` 配下のメインスクリプト 12 本、および `scripts/tests/` 配下のオフライン単体・統合テストスクリプト 8 本）の役割、パラメータ、提供関数、実行境界、呼び出し関係、テスト検証観点、および終了コード仕様を体系的にまとめた技術仕様書です。
 
 ---
 
@@ -60,6 +60,7 @@ flowchart TD
         pocVal["Invoke-PocValidation.ps1<br/>標準シナリオ検証ランナー"]
         recoveryGuest["Invoke-PocRecoveryValidation.ps1<br/>(Invoke-PocRecoveryGuest)"]
         valAssertions["Validation.Assertions.ps1<br/>共通アサーション"]
+        authVal["Invoke-WorkflowAuthValidation.ps1<br/>ワークフロー認証検証<br/>(VMゲストまたはホスト)"]
     end
 
     subgraph PrivateResources["閉域プライベートリソース (VNet)"]
@@ -100,8 +101,9 @@ flowchart TD
     testDeployGuest --> valAssertions
     recoveryGuest --> valAssertions
     recoveryGuest --> recoveryCtx
+    authVal --> deployCommon
 
-    %% Guest to Private
+    %% Guest to Private / Azure
     testDeployGuest -->|DNS / ZIP Deploy| pe
     testDeployGuest -->|Smoke HTTP| funcApp
     pocVal -->|Start HTTP / Status| funcApp
@@ -110,6 +112,8 @@ flowchart TD
     recoveryGuest -->|Start / Status| funcApp
     recoveryGuest -->|Verify Task| batch
     recoveryGuest -->|Verify JSON| blobData
+    authVal -->|az keys| arm
+    authVal -->|Bearer + Key<br/>Start / Status / Result| funcApp
 
     %% Results back
     worker -->|Upload result.json / summary| vmControlBlob
@@ -155,10 +159,11 @@ flowchart TD
 | **復旧コンテキスト** | [Recovery.Context.ps1](../scripts/Recovery.Context.ps1) | ホスト / ゲスト | 再起動復旧（V05）および停止時タイムアウト（V08）検証用コンテキストのスキーマ検証・日時正規化 |
 | **耐障害性・復旧検証** | [Invoke-PocRecoveryValidation.ps1](../scripts/Invoke-PocRecoveryValidation.ps1) | ホスト / ゲスト | Function App 再起動復旧（V05）およびホスト停止中 Batch 安全網（V08）の実証ランナー |
 | **オートスケール検証** | [Invoke-PocAutoscaleValidation.ps1](../scripts/Invoke-PocAutoscaleValidation.ps1) | ホスト | 0 台待機 Pool へのワークフロー先行投入による自動スケールアウトと完走、および復元を実証するランナー（V09） |
+| **ワークフロー認証検証** | [Invoke-WorkflowAuthValidation.ps1](../scripts/Invoke-WorkflowAuthValidation.ps1) | 検証VMゲスト側またはホスト側 | 厳格モード環境における IMDS Managed Identity Bearer トークン、Function key、所有者・組織の検証および他者拒否を実証する認証ランナー |
 
 ---
 
-## 3. メインスクリプト詳細仕様（scripts/ 配下 11 本）
+## 3. メインスクリプト詳細仕様（scripts/ 配下 12 本）
 
 ### 3.1 deploy.ps1
 
@@ -417,7 +422,53 @@ flowchart TD
 
 ---
 
-## 4. テストスクリプト詳細仕様（scripts/tests/ 配下 7 本）
+### 3.12 Invoke-WorkflowAuthValidation.ps1
+
+- **役割・目的**:
+  明示的に有効化された厳格認証モード（`EntraEasyAuth` / `AuthEnforcement=Strict`）環境において、独自ワークフロー API（開始 `/api/workflows`、状態 `/api/workflows/{id}`、結果 `/api/workflows/{id}/result`）に対する認証・認可保護を包括的に実証する検証ランナー。
+  IMDS（Azure Instance Metadata Service）から取得した VM システム割り当て/ユーザー割り当て Managed Identity の Bearer トークン、および各 Function ごとに個別取得したスコープ付き Function key、ならびに呼び出し元所有者・組織識別子（`X-Poc-Owner-Id`, `X-Poc-Org-Id`）を用いた正常系ワークフロー完走、および未認証・無効認証・ヘッダー偽造・他所有者からの不正アクセスが正しく拒否されることを検証します。
+  本スクリプトは内部診断用の Durable 管理 Webhook URL（`/runtime/webhooks/durabletask/...`）は一切使用せず、すべて独自公開 API のみを経由して実行されます。また、取得した Bearer トークンや Function key などの機密情報がログや出力ファイルに流出しないよう厳格な秘匿処理を実施します。
+- **実行コンテキスト**: 検証 VM ゲスト側（閉域環境）、または IMDS / Azure CLI アクセスが可能なホスト環境
+- **パラメータ一覧**:
+
+| パラメータ名 | 型 | 必須/任意 | デフォルト値 | 用途・制約 |
+|---|---|---|---|---|
+| `-DeploymentResultPath` | `[string]` | 必須 | なし | Terraform デプロイ出力（`subscription_id`, `resource_group_name`, `function_app_name`, `function_app_url`, Durable 設定等）および来歴情報（`source_provenance`, `package_sha256`）を含む JSON ファイルのパス |
+| `-Resource` | `[string]` | 必須 | なし | IMDS OAuth2 トークン要求用のターゲットリソース URI / App ID URI（例: `api://<backend-app-id>`）。改行文字や `?`, `#` を含まないこと |
+| `-ManagedIdentityClientId` | `[string]` | 任意 | `$null` | ユーザー割り当てマネージド ID を指定する場合の Client ID（GUID 形式）。省略時は VM のシステム割り当て ID を使用 |
+| `-OwnerId` | `[string]` | 必須 | なし | 呼び出し元の正規所有者識別子（パターン: `^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`）。HTTP ヘッダー `X-Poc-Owner-Id` に設定 |
+| `-OrgId` | `[string]` | 必須 | なし | 呼び出し元の正規組織識別子（パターン: `^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`）。HTTP ヘッダー `X-Poc-Org-Id` に設定 |
+| `-EvidenceDirectory` | `[string]` | 必須 | なし | 実行結果サマリ（`summary.json`）を保存するディレクトリパス |
+| `-TimeoutSeconds` | `[int]` | 任意 | `900` | ワークフロー完了までの最大ポーリングタイムアウト秒数（範囲: 1〜3600） |
+| `-PollSeconds` | `[int]` | 任意 | `5` | 状態照会のポーリング間隔秒数（範囲: 1〜60） |
+
+- **主要な提供関数**:
+  - `Stop-WorkflowAuthValidation($Code)`: エラーコード（`WorkflowAuthCode`）を例外データに付与して `InvalidOperationException` をスローし、安全な失敗理由コードを記録。
+  - `Get-WorkflowAuthToken($Resource, $ClientId)`: VM の IMDS（`http://169.254.169.254/metadata/identity/oauth2/token`）へ `Metadata: true` ヘッダーを付与して直接アクセスし、VM Managed Identity の Bearer トークンを取得。CLI トークンやディスクキャッシュ、平文引数は使用しない。
+  - `Get-WorkflowAuthKeys($Outputs)`: `Invoke-AzJson -Sensitive` を経由して `az functionapp function keys list` を呼び出し、`StartWorkflow`、`GetWorkflowStatus`、`GetWorkflowResult` の 3 つのエンドポイントに対して個別にスコープ付けされた Function key を安全にメモリ内取得。
+  - `Invoke-WorkflowAuthHttp($Uri, $Method, $Headers, $Body)`: `System.Net.Http.HttpClient` を用いて HTTP 要求を送信。例外発生時にも生 URL、ヘッダー、ボディが PowerShell エラーレコードに残らないように遮蔽。レスポンス長の上限ガード（64KB）および JSON 変換を安全に実施。
+  - `Assert-WorkflowAuthUri($Value, $Origin, $Path)`: 返却された URI（`statusQueryGetUri` や `Location`）が HTTPS、期待されるオリジン、クエリやフラグメントや UserInfo の不存在、および期待されるパス（`/api/workflows/{id}`）に合致することを厳格に照合。
+  - `Invoke-WorkflowAuthValidation`: 以下のステップを順次実行し、サマリと終了コード（Pass=0, Fail=1）を判定：
+    1. タイミングパラメータ、リソース URI、OwnerId、OrgId、ManagedIdentityClientId の形式バリデーション。
+    2. デプロイ結果 JSON の読み込みと、配置記述子に記録された来歴情報（`gitRevision`, `gitDirty`, `sourceSha256`, `package_sha256`）の抽出（scalar 型ガードにより配列や不正型を null 化してマスキング、`livePackageVerified=false`）。
+    3. IMDS トークンおよび 3 つの Function key の取得。
+    4. **未認証・バイパス耐性プローブ**: 匿名（ヘッダーなし）、キーのみ（Bearer なし）、偽造クライアントプリンシパル（`X-MS-CLIENT-PRINCIPAL`）、キーなし Bearer の各パターンで 3 つの API を呼び出し、すべて HTTP 401 または 403 で拒否されることを検証。
+    5. **所有者ヘッダー欠落プローブ**: `X-Poc-Owner-Id` または `X-Poc-Org-Id` が欠落した要求が HTTP 403 で拒否されることを検証。
+    6. **正常系ワークフロー開始**: 正当な Bearer トークン、Function key、所有者・組織ヘッダーを付与してワークフローを開始し、HTTP 202 受領、返却された `instanceId`（`poc-<sha256[:40]>`）、`statusQueryGetUri`、および `Location` の形式妥当性を検証。
+    7. **冪等再送検証**: 同一リクエストの再送が HTTP 202 で正常に受理されることを確認。
+    8. **入力競合検証**: 同一 `requestId` で異なるパラメータ（`taskCount=2`）を送信した場合に HTTP 409（Conflict）で拒否されることを確認。
+    9. **他所有者・他組織アクセス拒否検証**: 異なる OwnerId または OrgId を付与した要求が HTTP 403 で確実に拒否されることを確認。
+    10. **状態照会ポーリング**: `GetWorkflowStatus` 専用キーを用いて `/api/workflows/{id}` をポーリングし、`Succeeded` かつ `resultAvailable=true` になるまで待機。
+    11. **結果照会および整合性照合**: `GetWorkflowResult` 専用キーを用いて `/api/workflows/{id}/result` から最終結果を取得し、`sum=1`, `taskCount=1`, `fingerprint` の一致を確認。
+    12. `finally` ブロックでメモリ内のトークン・キー・ヘッダー変数を破棄し、サニタイズされた `summary.json` を保存。
+- **依存関係・呼び出し関係**:
+  - ドットソース: `Deployment.Common.ps1`
+  - 外部コマンド / サービス: `az` CLI（Function key 取得用）、Azure IMDS（Bearer トークン取得用）、`System.Net.Http`（.NET アセンブリ）
+- **対応テストスクリプト**: `scripts/tests/WorkflowAuthValidation.Tests.ps1`
+
+---
+
+## 4. テストスクリプト詳細仕様（scripts/tests/ 配下 8 本）
 
 すべてのテストスクリプトは、Azure への実接続や課金を一切発生させず、完全オフラインの Fake / Mock 環境で安全かつミリ秒〜秒単位で完結するように設計されています。
 
@@ -430,17 +481,18 @@ flowchart TD
 | [PrivateVm.Tests.ps1](../scripts/tests/PrivateVm.Tests.ps1) | `Invoke-PrivateVmOperation.ps1`, `PrivateVm.Worker.ps1` | ・ホスト・ゲスト間のトランスポート層（バンドル生成、SHA-256 検証、Entra 認証アップロード）の検証<br/>・Run Command の stdout/stderr 集約形式（`[stdout]` / `[stderr]`）からの正常判定抽出<br/>・Private SCM ホスト名解決時の権限最小化（`az functionapp show` ではなく ARM `sites/read` GET の利用）の検証<br/>・Private Endpoint DNS 解決検証<br/>・非同期 ZIP デプロイ（`/api/zipdeploy`）のポーリングと失敗ステージ追跡 |
 | [RecoveryValidation.Tests.ps1](../scripts/tests/RecoveryValidation.Tests.ps1) | `Invoke-PocRecoveryValidation.ps1`, `Recovery.Context.ps1` | ・Function App 再起動復旧（Restart モード）のフェーズ分離実行（Start: Running 確認、Complete: 同一 ID・同一 Task 完了確認）<br/>・ホスト停止中 Batch 安全網（HostStoppedBatchWallClock モード）の検証（停止状態確認、MaxWallClockTimeExpiry 終了理由確認、Manifest 非公開確認）<br/>・`finally` ブロックでの Function App 再起動/復元コマンド発行の保証<br/>・コンテキストデータの日時改変や不正フィールドの拒否 |
 | [AutoscaleValidation.Tests.ps1](../scripts/tests/AutoscaleValidation.Tests.ps1) | `Invoke-PocAutoscaleValidation.ps1` | ・0 台オートスケール検証（V09）のオフラインシーケンス確認<br/>・Batch REST API 呼び出し（`@file` による一時 JSON 経由）のパラメータ照合<br/>・Pool の 0 台縮小、Autoscale 式有効化、0 台確認、ワークフロー投入、スケールアウト検知の推移検証<br/>・`finally` ブロックにおける固定台数構成（Fixed Scale）への確実な復元と準備完了判定の検証 |
+| [WorkflowAuthValidation.Tests.ps1](../scripts/tests/WorkflowAuthValidation.Tests.ps1) | `Invoke-WorkflowAuthValidation.ps1` | ・Fake HTTP / IMDS トークン応答による完全オフライン検証（実 Azure / Entra 呼び出しなし）<br/>・個別スコープの Function key 取得（StartWorkflow, GetWorkflowStatus, GetWorkflowResult）の引数および `-Sensitive` 指定の検証<br/>・正常系検証シーケンス（Start → Status → Result、HTTP 202/200 受理、決定論的 jobId / fingerprint 照合）<br/>・未認証・無効トークン拒否（401/403）および他所有者拒否（403）、入力競合拒否（409）のアサーション<br/>・来歴 field（gitRevision, sourceSha256, package_sha256）の scalar 型ガードによる秘密配列マスキングおよび null 化検証<br/>・証跡ファイル（`summary.json`）への機密（Bearer トークン、Function key、ホスト名、URL 署名）非漏洩アサーション<br/>・不正な公開 URI（HTTP、外部ドメイン、クエリ、フラグメント、Durable 管理 Webhook URL）の拒否検証 |
 
 ---
 
 ## 5. 終了コード仕様のまとめ
 
-リポジトリ内の検証スクリプト群（特に `Invoke-PocValidation.ps1`、`Invoke-PrivatePocValidation.ps1`、`PrivateVm.Worker.ps1`、`Invoke-PocRecoveryValidation.ps1`、`Invoke-PocAutoscaleValidation.ps1`）は、自動化パイプラインや CI/CD での結果判定を一貫させるため、以下の統一された終了コード仕様に準拠しています：
+リポジトリ内の検証スクリプト群（特に `Invoke-PocValidation.ps1`、`Invoke-PrivatePocValidation.ps1`、`PrivateVm.Worker.ps1`、`Invoke-PocRecoveryValidation.ps1`、`Invoke-PocAutoscaleValidation.ps1`、`Invoke-WorkflowAuthValidation.ps1`）は、自動化パイプラインや CI/CD での結果判定を一貫させるため、以下の統一された終了コード仕様に準拠しています：
 
 | 終了コード | 状態 | 意味・判定条件 | 具体例 |
 |---|---|---|---|
-| **`0`** | **Pass** | 選択されたすべての検証シナリオ・テストが成功し、期待された成果物・状態がすべて確認された。 | `single`, `three`, `classification`, `failure`, `conflict` がすべて期待通り完走。復旧・オートスケール検証が成功。 |
-| **`1`** | **Fail / Error** | 1 件以上のシナリオが失敗した、あるいは事前前提条件（Setup）の検証に失敗した。 | アサーション不一致、HTTP 500/404（リトライ上限超過）、Batch Task の異常終了、DNS 解決失敗、権限不足。 |
+| **`0`** | **Pass** | 選択されたすべての検証シナリオ・テストが成功し、期待された成果物・状態がすべて確認された。 | `single`, `three`, `classification`, `failure`, `conflict` がすべて期待通り完走。復旧・オートスケール・ワークフロー認証検証が成功。 |
+| **`1`** | **Fail / Error** | 1 件以上のシナリオが失敗した、あるいは事前前提条件（Setup）の検証に失敗した。 | アサーション不一致、HTTP 500/404（リトライ上限超過）、Batch Task の異常終了、DNS 解決失敗、権限不足、認証トークン/キー取得失敗、所有者認可違反、バイパス検知。 |
 | **`2`** | **Contains NotRun** | 失敗（Fail）は 0 件であるが、安全上の制約や検証環境・機能の前提条件により実行を見合わせた（`NotRun`）シナリオが含まれている。 | `admission20` において、Entity の同時受付は確認できたが全世代のオーケストレーション起動履歴が API から網羅取得できないため一意性判定をスキップした場合。 |
 
 ### 5.1 PowerShell プロセス境界における終了コード伝播の重要事項
@@ -468,5 +520,6 @@ $resultCode = $LASTEXITCODE
 - [one-command-deployment-inventory.md](one-command-deployment-inventory.md): `deploy.ps1` が操作する Terraform IaC 資材一覧、Batch Pool 構成、および管理境界の整理。
 - [workflow-reliability.md](workflow-reliability.md): ワークフローの冪等性、リトライ、タイムアウト、および耐障害性の設計仕様。
 - [reliability-validation.md](reliability-validation.md): Function App 再起動復旧（`V05`）、停止中 Batch 安全網（`V08`）、0 台オートスケール（`V09`）の検証手順と Azure 実機検証結果。
+- [workflow-authentication-design.md](workflow-authentication-design.md): ワークフロー認証・認可境界の設計仕様、EasyAuth IaC、および IMDS トークン検証アーキテクチャ。
 - [durable-task-scheduler-poc.md](durable-task-scheduler-poc.md): Durable Task Scheduler（DTS）バックエンドを採用した場合の構成、IaC 差分、および実機接続検証結果。
 - [project-memory.md](project-memory.md): プロジェクトの歴史的経緯、コミットごとの変更記録、および設計決定のチェックポイント。

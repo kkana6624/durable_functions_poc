@@ -1,31 +1,31 @@
 # 次期実装計画
 
-確認日: 2026-10-18。検証済みコード基準: `main` / `9c96054`。現文書HEADは `e3d3734` です（文書・スクリプト棚卸しのみの変更）。
+確認日: 2026-10-18。最新HEAD: `b14b25f`。実機検証済みコード基準: `main` / `9c96054`。
 
 ## 現在の到達点
 
-今回の認証単位では、既定`PocFunctionKey`の互換を保ち、`EntraEasyAuth`を明示選択した場合の認証アダプターに、既定offのEasyAuth IaCとVM Managed Identity用の独自API認証runnerを追加します。Function keyと必須owner/orgを維持します。[認証境界](workflow-authentication-design.md) に設定・代理主張の責任・環境ガードの限界を記載します。Entra登録・App Role割当・`idtyp` optional claimの実設定は自動変更せず、Azure配置・実principal/偽造ヘッダー試験は未実施です。V11全体は未完です。
+直近のコミット `e1d04d6`、`27b24b4`、`b14b25f` により、受付・所有者の一体化、EasyAuth 認可アダプター、opt-in EasyAuth IaC、および独自 API 認証 runner のローカル実装・単体試験・Mock 検証が完了しています。
 
-厳格モードの`deploy.ps1 -Smoke`は初期検証で拒否します。新しい`Invoke-WorkflowAuthValidation.ps1`の対象は独自開始・状態・結果APIです。既存Smoke/Private/通常シナリオ/Recovery/Autoscaleの内部診断はBearer未対応で、厳格モードの回帰検証には使えません。診断パスをEasyAuthから除外せず、既存runnerの追従を後続作業として残します。SCM配置は既存のEntra/ARM token認証を維持します。
-
-今回のローカル変更では受付・所有者を `admission.json`（Version 2）へ一体化します。所有者なしも不変の属性とし、同一所有者・入力の再送のみ許可します。旧入力/所有者が整合する受付は再送時に正規化し、旧匿名受付への所有者追加、孤立所有者、新旧矛盾は拒否します。旧Starter停止後の切替が前提で、別Blobの読取りと作成、Durable通知との原子性は保証しません。認証境界・Azure配置と実機試験は未実施です。以下の `9c96054` と211件の試験結果は今回の変更前の検証基準です。
-
-独自の開始・状態照会・結果取得API、所有者レコードの照合、開始応答の管理URL除去、HTTPエラーとActivity例外の安全化、公開成果物の完全性検証をローカル実装済みです。HTTP/ActivityのgRPC再試行対象は `Unavailable` / `DeadlineExceeded` / `ResourceExhausted` に限定しました。V11全体の認証とAzure実証は未完です。受付・所有者の競合対策は今回のローカル変更で扱います。
-
-最新のRelease検証はPoc.Tests 209件・DtsProbe 2件、計211件成功（失敗・スキップ0件）です。Release publish（`artifacts/grpc-retry-release-publish`）も成功し、`local.settings*` の非混入を確認しました。開始URL変更時のPowerShellオフライン4組の成功と、過去のTerraform/Azure検証は [プロジェクトメモリ](project-memory.md)・[検証結果](test-results.md) に分離して記録しています。最新変更のAzure照会・再配置・実機検証は行っていません。
-
-V05/V07/V08/V09 の Azure 成功は既存の検証記録による到達点であり、最新コミットの配置・回帰成功を意味しません。全世代の起動履歴を網羅できないため、admission20 の厳密な一意性判定は引き続き NotRun とします。
+- **受付・所有者の一体化（`e1d04d6`）**: `WorkflowAdmission.cs` において `runs/poc-<requestId>/admission.json`（Version 2）へ入力・instanceId・所有者・組織をまとめ、Blob 条件付き書き込み（If-None-Match）で原子的確定。同一所有者・同一入力の再送のみ許可、所有者・組織不一致時は 403、入力不一致時は 409。旧受付レコード（Version 1）からの安全な移行と旧匿名受付への所有者追加拒否をローカル検証済み。
+- **EasyAuth 認可アダプター（`27b24b4`）**: 既定の `PocFunctionKey` 互換を保ちつつ、`EntraEasyAuth` モード選択時に `x-ms-client-principal` 解析、tenant / issuer / audience、許可 backend client ID、App Role、`idtyp=app`（Delegated の scope は即時拒否）、および必須 owner/org を検査するアダプター（`WorkflowAuthentication.cs`）をローカル検証済み。
+- **EasyAuth IaC と独自 API 認証 runner（`b14b25f`）**: Terraform に opt-in の `workflow_auth_mode`（`none` / `strict`）および EasyAuth v2 ブロック（`modes.tftest.hcl` 37件 Pass）を追加。さらに検証 VM 内または直接到達環境から VM Managed Identity / IMDS トークンおよび Function key を用いて独自開始・状態・結果 API を検証する `Invoke-WorkflowAuthValidation.ps1`（PowerShell オフライン 8 組全件 Pass）を実装完了。
+- **検証実績**: Release 単体テスト全 261 件（`Poc.Tests` 259 件＋`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 37 件、PowerShell オフライン試験 8 組全件が合格。Release publish（`artifacts/auth-boundary-release-publish`）成功・`local.settings*` 不在。
+- **未実施・前提事項**:
+  - 既定の `PocFunctionKey` 互換を維持し、Functions 期待数は 14 件。
+  - 最新コードの Azure 再配置・実機回帰試験は未実施（以前の V05/V07/V08/V09 実機成功は `9c96054` 時点）。
+  - Entra の専用 PoC API 登録・Application 限定 App Role 割当・`idtyp` optional claim 設定等の実テナント設定は自動変更しておらず、実機での偽造ヘッダー遮断や実 token 認証は未実証。
+  - 厳格モードでは既存の Smoke / Private / 通常シナリオ / Recovery / Autoscale の内部診断が Bearer 未対応のため、`deploy.ps1 -Smoke` は初期検証で拒否。診断パス除外は設けず、新 runner（`Invoke-WorkflowAuthValidation.ps1`）で独自 API を検証する設計。SCM 配置は既存の Entra/ARM token 認証を維持。
 
 ## 優先順序と完了条件
 
 | 順序 | 実装単位 | 完了条件 |
 |---|---|---|
-| 1 | V11: 受付・所有者の一体化と旧レコードの扱い（ローカル変更） | 単一の不変受付レコードと旧受付の移行・拒否条件をローカル検証。旧Starter停止後の配置とAzure実証は後続 |
-| 2 | V11: 認証境界 | 信頼されたバックエンドのEntra認証とApp Role検証、所有者・組織の伝播契約を実装。未認証・権限不足・他所有者・他組織を拒否 |
-| 3 | V11: 最新コードの配置・runner・実機試験 | Functions期待一覧は14件へ更新済み。認証に合わせrunnerを独自APIへ追従し、両Durableバックエンドで認証、再送、状態、結果、他利用者拒否、機密非露出と既存シナリオの回帰を検証 |
-| 4 | V12: 利用者キャンセル | 要求永続化、冪等cancel API、投入停止、Batch停止確認、取消とmanifest公開の排他調停を実装。受付前後・Job作成中・Task投入中・実行中・公開直前・完了後の競合を検証 |
-| 5 | V10/T09: ファイル入出力 | 入力確定、Blob version/ETag/size/SHA-256とバイナリ版を実行契約へ追加。固定バイナリ、ResourceFiles、OutputFiles直送を導入し、転送成功とハッシュ照合後だけmanifest公開 |
-| 6 | V00・運用検証 | Storage/Batch閉域化、DNS・送信経路・SCM経路、オンプレ接続を段階検証。その後Spot回収・一時障害注入・保持/清掃を拡充 |
+| 1 | V11: 受付・所有者の一体化と旧レコードの扱い | **【ローカル完了】** 単一の不変受付レコード（`admission.json` v2）と旧受付移行・拒否条件をローカル検証（単体テスト拡充 277 行）。旧 Starter 停止後の配置と Azure 実機切替は順序 3 へ引き継ぎ |
+| 2 | V11: 認証境界（アダプター・IaC・runner） | **【ローカル完了】** 信頼されたバックエンドの Entra 認証・App Role・`idtyp=app` 検証アダプター、opt-in EasyAuth IaC、VM MI 用認証 runner（`Invoke-WorkflowAuthValidation.ps1`）を実装・検証（全 261 件・Mock 37 件・オフライン 8 組 Pass） |
+| 3 | V11: Azure配置・実機回帰およびEntra実設定の準備 | **【次の実装対象】** 専用 PoC API 登録・App Role・`idtyp` 実設定の準備、専用厳格モード環境での配置・実機回帰、実 EasyAuth 偽造ヘッダー遮断検証、既存 runner の Bearer 追従検討、および新旧両 Durable バックエンドでの回帰検証 |
+| 4 | V12: 利用者キャンセル | **【並行/後続の実装対象】** 要求永続化、冪等 cancel API、投入停止、Batch 停止確認、取消と manifest 公開の排他調停を実装。受付前後・Job 作成中・Task 投入中・実行中・公開直前・完了後の競合を検証 |
+| 5 | V10/T09: ファイル入出力 | 入力確定、Blob version/ETag/size/SHA-256 とバイナリ版を実行契約へ追加。固定バイナリ、ResourceFiles、OutputFiles 直送を導入し、転送成功とハッシュ照合後だけ manifest 公開 |
+| 6 | V00・運用検証 | Storage/Batch 閉域化、DNS・送信経路・SCM 経路、オンプレ接続を段階検証。その後 Spot 回収・一時障害注入・保持/清掃を拡充 |
 
 ## 実装済みの境界と次の実装
 
@@ -33,9 +33,9 @@ V05/V07/V08/V09 の Azure 成功は既存の検証記録による到達点であ
 
 続くローカル実装でHTTP/旧custom statusのエラー遮蔽、明示ログのコード化、状態・結果API共通の公開成果物検証を追加しました。さらにActivity wrapperでは、再試行分類とtimeout型を維持し、固定message・innerなしの例外を外へ渡します。gRPC分類はHTTP/Activityとも `Unavailable` / `DeadlineExceeded` / `ResourceExhausted` に限定しました。これは冪等操作への有界再試行方針であり、回復保証ではありません。SDK層の再試行は別の層で、今回変更していません。他のデータ経路の機密情報対策、全ランタイムログ・履歴の評価、認証、Azure検証を残します。成果物検証は照会時点の整合性であり、複数Blobのトランザクションや後続取得成功を保証しません。
 
-直前の`e1d04d6`では `WorkflowAdmission.cs` の受付と所有者の永続化を単一レコードへまとめました。同一入力・同一所有者の再送、異なる入力・所有者・組織の競合、所有者なし旧受付の扱い、確定前後の再試行をローカル検証済みです。今回の認証アダプターはその契約へ接続し、Entraの構成・実機検証を次段階に残します。
+コミット `e1d04d6` では `WorkflowAdmission.cs` の受付と所有者の永続化を単一レコードへまとめました。同一入力・同一所有者の再送、異なる入力・所有者・組織の競合、所有者なし旧受付の扱い、確定前後の再試行をローカル検証済みです。続くコミット `27b24b4` で認証アダプターを接続し、`b14b25f` で opt-in EasyAuth IaC および独自 API 認証 runner を追加しました。
 
-今回の単一レコード化は、別Blobだった所有者と受付の確認・claimの交差を新Starter間で防ぎます。現PoCでは所有者なし受付を維持し、所有者必須化は後続の認証済みAPI契約で検討します。旧レコードの移行は旧Starter停止後を前提とし、任意利用者による旧ジョブの所有権取得を許しません。
+単一レコード化は、別Blobだった所有者と受付の確認・claimの交差を新Starter間で防ぎます。現PoCでは所有者なし受付を維持し、所有者必須化は後続の認証済みAPI契約で検討します。旧レコードの移行は旧Starter停止後を前提とし、任意利用者による旧ジョブの所有権取得を許しません。
 
 互換`PocFunctionKey`モードで任意の `X-Poc-Owner-Id` / `X-Poc-Org-Id` を直接使う経路は利用者認証になりません。`EntraEasyAuth`モードは認可済みバックエンドのみから必須owner/orgを受け取り、その値を利用者セッションへ正しく結び付ける責任をバックエンドに委ねます。企業認証基盤・ID空間の確定、トークン登録・EasyAuth配置と実機拒否検証は引き続き必要です。
 

@@ -1,19 +1,22 @@
 # PoC 検証結果
 
-## 現在の到達点（2026-10-18、検証済みコード `9c96054`、現文書HEAD `e3d3734`）
+## 現在の到達点（2026-10-18、最新HEAD `b14b25f`、実機検証済みコード `9c96054`）
 
-最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、およびgRPC再試行対象3コードへの限定までです。V11のEntra認証・App Role、所有者/組織の信頼境界、所有者なし旧受付との競合対策は未完です。
+最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。
 
 | 対象 | 最新の確定結果 |
 |---|---|
-| Release単体試験 | Poc.Tests 209/209件、DtsProbe 2/2件、計211件成功（失敗・スキップ0件）。ResilienceTestsは内数56件 |
-| Release publish | `artifacts/grpc-retry-release-publish` 成功、`local.settings*` 不在 |
-| 開始契約・runner | 本文とLocationは独自status URL、Retry-Afterは10秒。内部runnerは別途取得したsystem keyによるメモリ内管理URIで詳細診断を継続。現行のFunctions期待数は14件 |
-| 結果可用性 | 状態・結果APIが同じ成果物検証を使用。欠損はresultAvailable=false/結果409、不整合は固定500、一時障害は503とRetry-After |
+| Release単体試験 | Poc.Tests 259/259件、DtsProbe 2/2件、計261件成功（失敗・スキップ0件）。新規WorkflowAuthorizationTests 40件、拡充されたWorkflowAdmissionTests 15件（277行拡充）、ResilienceTests 56件、WorkflowHttpTests 81件を含む |
+| Release publish | `artifacts/auth-boundary-release-publish` 成功、`local.settings*` 不在 |
+| Terraform Mock | `modes.tftest.hcl` 37/37件全Pass、`fmt -check` / `validate` Pass |
+| PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
+| 受付・所有者一体化 | `admission.json` Version 2で同一レコード化。同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否を検証 |
+| 認証境界アダプター・IaC・runner | `EntraEasyAuth`モードでのBearer/App Role/`idtyp=app`検査アダプター、opt-in EasyAuth IaC、VM Managed Identity用認証runner（`Invoke-WorkflowAuthValidation.ps1`）をローカル検証 |
+| 開始契約・成果物検証 | 本文とLocationは独自status URL、Retry-Afterは10秒。内部runnerは別途取得したsystem keyによるメモリ内管理URIで詳細診断を継続。現行のFunctions期待数は14件。状態・結果APIが同じ公開成果物検証を使用 |
 | 例外・再試行 | Activity wrapperから外へ渡す例外を安全化。gRPCはUnavailable/DeadlineExceeded/ResourceExhaustedに限定し、有界再試行を検証 |
-| Azure | 上記最新コードの配置・実機回帰は未実施。以下のV05/V07/V08/V09成功記録は以前の配置に対する証跡 |
+| Azure | 最新コードの配置・実機回帰は未実施。以下のV05/V07/V08/V09成功記録は以前の配置（`9c96054`時点）に対する証跡 |
 
-Terraform・PowerShell全試験を最新HEADで再実行したという意味ではありません。開始URL変更時のPowerShellオフライン4組成功と、それ以前のTerraform/PowerShell結果は各時点の記録として保持します。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。
+全261件のRelease単体テスト、Terraform Mock 37件、PowerShellオフライン試験8組は最新HEADで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entraの実テナント設定（App Role割当・`idtyp`設定）や実EasyAuth環境での偽造ヘッダー遮断検証は未実施です。
 
 以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
 
@@ -160,31 +163,43 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 > [!NOTE]
 > 当時はAzure実環境への接続値・資格情報が未提供のため、この時点の検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しました。後続のAzure成功記録と最新コードの未検証範囲はページ上部を参照してください。
 
-## .NET 単体テストの構成と検証項目（過去チェックポイント：全 91 件・7 テストクラス）
+## .NET 単体テストの構成と検証項目（最新HEAD `b14b25f`：全 261 件・10 テストクラス）
 
-信頼性改善および HTTP レイヤー／Gateway 検証の追加を経て、.NET 単体テストは 30 件（初版）→ 54 件（信頼性改善時）→ 91 件へと拡充された当時の記録です（全テストが Fake / Mock を用いてオフラインで実行され合格）。**現行コードの最新状態は、後続の改修（独自API契約、エラー遮蔽、公開成果物検証、Activity安全例外化、gRPC再試行限定）を経て計 211 件（`Poc.Tests` 209 件 + `DtsProbe` 2 件、内 `ResilienceTests` 56 件）全件 Pass** となっており、下表の内訳は当時の歴史的チェックポイントとしての記録となります。
+信頼性改善および HTTP レイヤー／Gateway 検証の追加、独自API契約・エラー遮蔽・公開成果物検証・Activity安全例外化・gRPC再試行限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、277行拡充）、および opt-in EasyAuth 認可アダプター（`WorkflowAuthorizationTests` 40件追加）を経て、.NET 単体テストは **全 261 件（`Poc.Tests` 259 件 + `DtsProbe` 2 件、10 テストクラス）すべて合格（261 Pass / 0 Fail / 0 Skip）** となっています。
 
 | テストクラス | テスト数 | 主な検証内容 |
 |---|---|---|
-| `IdentityAndCommandTests` | 6 | リクエスト ID / Job ID / Task ID の決定論的導出、PowerShell コマンドラインのエスケープと生成 |
+| `IdentityAndCommandTests` | 7 | リクエスト ID / Job ID / Task ID の決定論的導出、PowerShell コマンドラインのエスケープと生成 |
 | `OrchestrationTests` | 3 | 親子オーケストレーションの連携、Timer による待機、兄弟 Task 完了待ち、全件成功時のみ Manifest 公開 |
-| `RequestTests` | 13 | 入力パラメータのバリデーション（TaskCount 1〜3、classification、パストラバーサルや不正文字列の拒否） |
-| `ResilienceTests` | 42 | 一時障害（HTTP 408/429/503・gRPC 障害）の Durable 再試行、監視期限超過時の Batch Job 停止（Terminate）照合・完了確認、Manifest 未公開保証、Blob の条件付き作成（If-None-Match）、Task 競合処理、ファイル欠損検知 |
-| `WorkflowAdmissionTests` | 6 | 同一 `requestId` の同時受付、Durable Entity による起動直列化・重複起動抑止、異なる入力パラメータ時の 409 Conflict 競合検出、Entity 状態再読み込み後の重複排除 |
-| `WorkflowHttpTests` | 13 | HTTP トリガー API の挙動検証（不正 JSON や不正パラメータへの 400 Bad Request、RPC 一時障害時の 503 + Retry-After 応答、正常受付時の 202 Accepted と Location / statusQueryGetUri 返却） |
+| `RequestTests` | 12 | 入力パラメータのバリデーション（TaskCount 1〜3、classification、パストラバーサルや不正文字列の拒否） |
+| `ResilienceTests` | 56 | 一時障害（HTTP 408/429/503・gRPC 3コード限定）の Durable 再試行、監視期限超過時の Batch Job 停止（Terminate）照合・完了確認、Manifest 未公開保証、Blob の条件付き作成（If-None-Match）、Task 競合処理、ファイル欠損検知 |
+| `WorkflowAdmissionTests` | 15 | 受付と所有者の単一レコード化（`admission.json` Version 2、277行拡充）、同一所有者・入力の再送許容、異なる入力パラメータ時の 409 Conflict 競合検出、異なる所有者・組織時の 403 拒否、旧受付レコード（Version 1）からの安全な移行と旧匿名受付への所有者追加拒否、Entity 起動直列化 |
+| `WorkflowAuthorizationTests` | 40 | `EntraEasyAuth` モードでの呼出元認可検証。x-ms-client-principal 解析、tenant ID / issuer / audience 検証、許可 backend client ID 照合、App Role 検証、`idtyp=app` 必須検証、scope 存在時の拒否、必須 owner / org ヘッダー検証、認可失敗時の 401 / 403 応答と機密非露出 |
+| `WorkflowHttpTests` | 81 | HTTP トリガー API の挙動検証（独自 status URL・Location・Retry-After 返却、不正 JSON や不正パラメータへの 400 Bad Request、RPC 一時障害時の 503 + Retry-After 応答、エラー遮蔽・内部例外秘匿、認証モードに応じた認可ディスパッチ） |
 | `WorkflowOperationsTests` | 8 | 3 Task 正常実行と集約（sum=3）、分類と待機時間の保持、Task 失敗時の成果物非公開、Activity リプレイ時の既存リソース再利用、集約破損時の Manifest 公開抑止 |
-| **合計（当時）** | **91** | **91 Pass / 0 Fail / 0 Skip（現行: 211 Pass / 0 Fail / 0 Skip［Poc.Tests 209 + DtsProbe 2］）** |
+| `WorkflowPublishedResultTests` | 37 | 公開成果物（`manifest.json`, `aggregate.json`, `tasks/*/result.json`）の整合性検証。fingerprint、件数、合計値、Task分類・成果物パスの一致照合、成果物欠損時の 409 / resultAvailable=false、不整合時の固定 500、一時障害時の 503 |
+| `DtsProbeTests.HistoryObservationTests`（`DtsProbe.Tests`） | 2 | DTS SDK 直接照会における返却履歴イベント件数集計、ペイロード非表示、全世代観測を主張しない制約の検証 |
+| **合計** | **261** | **261 Pass / 0 Fail / 0 Skip（`Poc.Tests` 259 件 + `DtsProbe` 2 件）** |
 
 ### 単体テスト（Fake / Mock）での検証カテゴリ
 
-- **受付・重複起動の抑止（Admission & Concurrency Control）**
-  - 同一入力パラメータでの同時リクエスト受付と単一インスタンスへの集約
-  - 異なる入力パラメータによる競合検出（HTTP 409 Conflict）
-  - クライアントへの通知応答喪失後の再送処理
-  - 既存インスタンスの再利用と異なる入力による状態汚染の防止
-  - Durable Entity 状態の再読み込み後における Main オーケストレーション重複起動の抑止
+- **受付・所有者の一体化（Atomic Admission & Ownership）**
+  - `admission.json` Version 2 による入力・instanceId・所有者・組織の単一レコード化
+  - 同一所有者・同一入力での再送受け入れと既存インスタンス返却
+  - 所有者不一致・組織不一致時の HTTP 403 Forbidden 拒否
+  - 所有者一致かつ入力不一致時の HTTP 409 Conflict 競合検出
+  - 旧受付レコード（Version 1）からの安全な移行と旧匿名受付への所有者追加拒否
+  - Durable Entity による起動直列化と重複起動抑止
+- **呼出元認可・認証境界（Caller Authorization & Authentication Boundary）**
+  - `EntraEasyAuth` モードにおける `x-ms-client-principal`（JSON / Base64）解析
+  - テナント ID、issuer（`https://login.microsoftonline.com/<tenant-id>/v2.0`）、audience（API client ID）の厳密検証
+  - 許可されたバックエンド Managed Identity client ID のみの allowlist 照合
+  - Application 限定 App Role 検証（ユーザー/委託ロールではなくアプリケーションロール必須）
+  - App-only トークン検証（`idtyp == "app"` 必須、Delegated の `scp` / `http://schemas.microsoft.com/identity/claims/scope` 含有は即時拒否）
+  - 厳格モードにおける必須 `X-Poc-Owner-Id` / `X-Poc-Org-Id` のヘッダー検証と詐称防止
+  - 認証・認可失敗時の安全な HTTP 401 / 403 応答（内部詳細や構成情報の秘匿）
 - **一時障害と再試行制御（Transient Faults & Retry Policies）**
-  - 一時障害（408 / 429 / 503、gRPC `Unavailable` 等）に対する Durable 再試行上限と期限の適用
+  - 一時障害（408 / 429 / 503、gRPC `Unavailable` / `DeadlineExceeded` / `ResourceExhausted` の 3 コード限定）に対する Durable 再試行上限と期限の適用
   - SDK の複合例外（`AggregateException`）およびネットワークタイムアウトの正確な一時障害判定
   - 呼び出し元によるキャンセル要求（`CancellationToken`）の非再試行扱いと伝播
   - 長時間 Activity 実行中に監視期限へ到達した場合の競合制御
@@ -193,10 +208,12 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
   - 停止要求の再実行耐性（冪等性）
   - Job の自然完了と停止処理の競合ハンドリング
   - 停止確認に失敗した場合の Manifest 未公開保証
-- **HTTP レイヤーと入力検証（HTTP API & Request Validation）**
+- **HTTP レイヤーと公開成果物検証（HTTP API, Error Sanitization & Artifact Integrity）**
+  - 独自開始契約（HTTP 202 Accepted、独自 `/api/workflows/{requestId}` status URL、Location、Retry-After 10秒）の返却
   - 不正 JSON 構文および不正リクエストパラメータに対する適切なエラー応答（HTTP 400 Bad Request）
   - gRPC / RPC 一時通信障害時における HTTP 503 Service Unavailable および `Retry-After` ヘッダー付与
-  - 正常受付時における HTTP 202 Accepted および状態照会 URL の返却
+  - HTTP / Activity 境界でのエラー遮蔽と安全例外化（固定 message、inner exception 除去）
+  - 公開成果物（manifest / aggregate / task results）の整合性照合（fingerprint、件数、合計値、Task 分類、成果物パス）
 - **Activity リプレイ耐性とデータ整合性（Replay Safety & Data Integrity）**
   - Activity リプレイ時における既存 Batch Job / Task および Manifest の再利用
   - 計算結果ファイル（`result.txt`）欠損時の明示的な失敗処理
@@ -233,7 +250,7 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 | .NET SDK | 10.0.402 を作業フォルダー内に導入 |
 | .NET package restore | Function project / solution restore 成功 |
 | .NET build / publish | solution build 0 警告・0 エラー、Release publish 成功。`artifacts/build.log` / `artifacts/publish.log` |
-| .NET unit test | 初版: 30 Pass / 0 Fail / 0 Skip（現行: 211 Pass / 0 Fail / 0 Skip［Poc.Tests 209 + DtsProbe 2］） |
+| .NET unit test | 初版: 30 Pass / 0 Fail / 0 Skip（現行: 261 Pass / 0 Fail / 0 Skip［Poc.Tests 259 + DtsProbe 2］） |
 | Terraform fmt / validate | Terraform 1.14.0 / AzureRM 5.10.0、2026-10-16 実測 Pass |
 | Terraform plan / apply | Not tested: Azure 接続値なし |
 | Azure 実行 instance / Job / Task ID | 未発行 |
@@ -272,7 +289,7 @@ SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` 
 |---|---|---|---|---|
 | Build | `dotnet build DurableBatchPoc.slnx --no-restore` | コンパイル成功 | 0 警告・0 エラー。`artifacts/build.log` | Pass |
 | Publish | `dotnet publish src/Poc.Functions/Poc.Functions.csproj -c Release --no-restore -o artifacts/publish` | デプロイ用成果物生成 | 成功。`artifacts/publish.log` / `artifacts/publish/` | Pass |
-| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 初版: 30 Pass、現行: 211 Pass / 0 Fail / 0 Skip［Poc.Tests 209 + DtsProbe 2］ | Pass |
+| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 初版: 30 Pass、現行: 261 Pass / 0 Fail / 0 Skip［Poc.Tests 259 + DtsProbe 2］ | Pass |
 | Windows command | ローカル Windows で `cmd` → `powershell.exe` を実行 | 正常 exit 0 / result 1、故意失敗 exit 42 | 正常 exit 0・result.txt=1、失敗 exit 42・result ファイルなし。`artifacts/test-summary.txt` | Pass（ローカルのみ） |
 | Terraform init | `terraform -chdir=infra init -backend=false` | provider の取得成功 | AzureRM v5.10.0 (signed by HashiCorp)、`.terraform.lock.hcl` 生成 | Pass |
 | Terraform fmt | `terraform -chdir=infra fmt -check` | 差分なし、exit 0 | 2026-10-16 実行、標準出力なし、exit 0 | Pass |

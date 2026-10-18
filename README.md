@@ -6,8 +6,8 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> - **今回の認証境界実装**: 既定の`PocFunctionKey`互換を保ち、`EntraEasyAuth`モードで認証済みバックエンド・App Role・app-only token・必須owner/orgを検査するアダプターを追加します。Function keyも引き続き必要です。Entra登録・EasyAuth IaC・runnerのBearer対応・Azure偽造ヘッダー試験は後続で、Entra運用の完成やAzure実証を意味しません。設定と信頼前提は [認証境界](docs/workflow-authentication-design.md) を参照してください。
-> - **最新コード（`9c96054`、現文書HEAD `e3d3734`）**: 14 個の Functions を登録するコードで、Release の `Poc.Tests` 209/209 件と `DtsProbe` 2/2 件が成功し、Release publish も成功しています。`e3d3734` は文書とスクリプト棚卸しのみの変更です。最新コードの Azure 配置・実機検証は未実施です。以下の Azure 実証は当時12個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
+> - **最新コード（HEAD `b14b25f`、実機検証済みコード `9c96054`）**: 14 個の Functions を登録するコードで、Release 単体テスト全 261 件（`Poc.Tests` 259/259 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）、Terraform Mock 37 件（`modes.tftest.hcl`）、PowerShell オフライン試験 8 組全件が成功し、Release publish も成功しています。受付・所有者の単一レコード化（`admission.json` Version 2）、opt-in の `EntraEasyAuth` 認可アダプター、EasyAuth IaC（`workflow_auth_mode`）、および VM Managed Identity / IMDS 用認証 runner（`Invoke-WorkflowAuthValidation.ps1`）をローカル実装済みです。最新コードの Azure 配置・実機回帰検証は未実施です。以下の Azure 実証は当時 12 個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
+> - **今回の認証境界・受付一体化実装**: 既定の `PocFunctionKey` 互換を保ち、`admission.json`（Version 2）での受付・所有者の一体化、および `EntraEasyAuth` モードで認証済みバックエンド・App Role・app-only token（`idtyp=app`）・必須 owner/org を検査するアダプター、opt-in EasyAuth IaC、独自 API 認証 runner を追加しました。Function key も引き続き必要です。Entra テナントでの実設定（App Role 割当・`idtyp` optional claim 設定）、Azure 実機への配置、実 EasyAuth 環境での偽造ヘッダー遮断試験は未実施であり、実機回帰や Entra 運用の完成を意味しません。設定と信頼前提は [認証境界](docs/workflow-authentication-design.md) を参照してください。
 > - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での0台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
 > - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
 > - **未実証・未完了の範囲**: Entra登録・EasyAuth配置と信頼できるowner/org伝播の実証、現行コードのAzure検証、実C++バイナリと入出力連携（`V10`）、大容量出力（`T09`）、利用者キャンセル連鎖（`V12`）、全面閉域化（`V00`）、Spot回収復旧が残っています。受付と所有者の単一レコード化はローカル実装済みですが、旧Starter停止後のAzure切替・実機検証は未実施です。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
@@ -161,11 +161,12 @@ Function App の Managed Identity に対する権限付与は Terraform 内で�
 | [`scripts/Invoke-PocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocValidation.ps1) | **シナリオ検証ランナー本体**<br>（検証 VM 内または直接到達可能な環境で実行） | インフラの再配置を行わず、HTTP API 経由で各検証シナリオ（`single`, `three`, `classification`, `failure`［exit 42］, `admission20`［20並列受付］, `conflict`［409競合］, `timeout`［監視期限停止・`MaxWallClockTime` 照合］）を実行し、Durable・Batch・Blob の三者を突合して合否（終了コード `0`/`1`/`2`）を判定します。 |
 | [`scripts/Invoke-PocRecoveryValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocRecoveryValidation.ps1) | **Function App 再起動復旧 / ホスト停止安全網の検証**<br>（耐障害性試験 `V05` / `V08` 時） | 既定（`-ValidationMode Restart`）では長時間待機 Task の `Running` 確認後に Function App を `restart` し、再送なしで同一インスタンス・Task が完走し成果物が整合することを検証します。`-ValidationMode HostStoppedBatchWallClock` 指定時は Function App を `stop` した状態で Batch 側の `MaxWallClockTime` により Job が自動終了することを検証します（いずれも `finally` で `start` 復元を実行）。 |
 | [`scripts/Invoke-PocAutoscaleValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocAutoscaleValidation.ps1) | **0 台オートスケール Pool 先行投入の検証**<br>（自動拡張試験 `V09` 時） | 専用 Pool（`batch_mode='new'`）を 0 台 `steady` へ縮小して `$PendingTasks` ベースの Autoscale 式（`PT5M`）を有効化し、ノード 0 台状態から `single` シナリオを投入して 1 台への自動スケールアウトと Task 完走を確認後、`finally` で元の固定スケール構成へ復元します（`existing` 共有 Pool は拒否）。 |
+| [`scripts/Invoke-WorkflowAuthValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-WorkflowAuthValidation.ps1) | **独自 API ワークフロー認証・認可の検証**<br>（認証境界試験時） | 検証 VM 内または直接到達可能な環境で、VM Managed Identity / IMDS から取得した Bearer トークンおよび Function key を用いて、`EntraEasyAuth` モードの独自開始・状態・結果 API への認可、401/403 拒否、所有者照合、および機密非露出を検証するランナーです（内部診断用の EasyAuth 除外パスは設けず、直接独自 API を検証）。 |
 | [`scripts/Invoke-PrivateVmOperation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PrivateVmOperation.ps1)<br>[`scripts/PrivateVm.Worker.ps1`](file:///D:/durable_functions_poc/scripts/PrivateVm.Worker.ps1) | **検証 VM 転送・ゲスト実行基盤**<br>（各スクリプトから内部呼び出し） | ローカル端末と RHEL 9 検証 VM の間で、`poc-vm-control` Blob コンテナと Azure VM Run Command を用いてバンドル転送・cloud-init 待機・ゲスト内処理実行・証跡回収を安全に仲介する共通機構です。 |
 | [`scripts/Deployment.Common.ps1`](file:///D:/durable_functions_poc/scripts/Deployment.Common.ps1)<br>[`scripts/Validation.Assertions.ps1`](file:///D:/durable_functions_poc/scripts/Validation.Assertions.ps1)<br>[`scripts/Recovery.Context.ps1`](file:///D:/durable_functions_poc/scripts/Recovery.Context.ps1) | **共通関数ライブラリ**<br>（内部モジュール） | 設定ファイル（`.psd1`）の検証、POSIX 互換 ZIP の生成、Terraform plan の破壊的変更検査、シークレット秘匿フィルタリング、および状態照合アサーションを提供する内部モジュール群です。 |
 | [`tools/DtsProbe`](file:///D:/durable_functions_poc/tools/DtsProbe/Program.cs) | **DTS データプレーン直接照会ツール**<br>（DTS 環境の独立証跡確認時） | Durable Task Scheduler のエンドポイントへ読み取り専用で接続し、対象インスタンスの状態（`runtimeStatus`）や保持履歴のイベント件数集計（`--history true`）をペイロード非表示で安全に出力する .NET CLI ツールです。 |
 | [`tools/BatchSmoke`](file:///D:/durable_functions_poc/tools/BatchSmoke/Program.cs) | **Batch 単体疎通の補助診断ツール**<br>（開発端末からの直接診断用） | Functions を介さずに開発端末から Batch エンドポイントへ直接ダミー Task を 1 件投入して動作を切り分けるための補助 CLI ツールです（通常の検証では上記の `Invoke-PrivatePocValidation.ps1` を使用します）。 |
-| `scripts/tests/*.Tests.ps1` | **スクリプトのオフライン単体試験**<br>（ローカル CI / 回帰テスト用） | Azure へ一切接続せずに、Fake / Mock を用いてデプロイ制御、シナリオ判定、VM 転送、再起動復旧、0 台オートスケール検証スクリプトのロジックとエラーハンドリングを検証するテストスイート（7 組）です。 |
+| `scripts/tests/*.Tests.ps1` | **スクリプトのオフライン単体試験**<br>（ローカル CI / 回帰テスト用） | Azure へ一切接続せずに、Fake / Mock を用いてデプロイ制御、シナリオ判定、VM 転送、再起動復旧、0 台オートスケール、およびワークフロー認証検証スクリプトのロジックとエラーハンドリングを検証するテストスイート（8 組）です。 |
 
 ---
 
@@ -201,6 +202,7 @@ dotnet test --project tests/DtsProbe.Tests/DtsProbe.Tests.csproj --no-restore
 ./scripts/tests/PrivateVm.Tests.ps1
 ./scripts/tests/RecoveryValidation.Tests.ps1
 ./scripts/tests/AutoscaleValidation.Tests.ps1
+./scripts/tests/WorkflowAuthValidation.Tests.ps1
 
 # Terraform mock_provider試験（providerの取得後、Azureへ接続しない）
 terraform -chdir=infra test
@@ -243,7 +245,7 @@ terraform -chdir=infra/bootstrap test
 
 - **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
 - **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
-- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。コード基準 `9c96054` の Release 検証では `Poc.Tests` 209/209 件、`DtsProbe` 2/2 件が成功し、Release publish も成功しました。現文書HEAD `e3d3734` は文書・スクリプト棚卸しのみの変更です。これはローカル検証であり、最新コードのAzure実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
+- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。最新コード（HEAD `b14b25f`）の Release 検証では全 261 件（`Poc.Tests` 259/259 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）が合格し、Release publish も成功しました。実機検証済みコード `9c96054` から受付・所有者の一体化、EasyAuth 認可アダプター、EasyAuth IaC、認証 runner が追加されています。これはローカル検証であり、最新コードの Azure 実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
 
 ---
 

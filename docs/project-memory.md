@@ -34,11 +34,17 @@ Entra認証・App Role・信頼された利用者情報の伝播は今回対象�
 
 今回の最終検証はsolution Releaseの全221件（Poc.Tests219件・DtsProbe2件）が成功し、失敗・スキップは0件です。Release publish（`artifacts/admission-owner-release-publish`）も成功し、`local.settings*` の非混入を確認しました。`git diff --check` は成功し、変更は意図した8ファイルのみで生成物の混入はありません。Azureへの配置・実機検証は今回実施していません。
 
-## 現在の要約（2026-10-18、検証済みコード `9c96054`、現文書HEAD `e3d3734`）
+## 現在の要約（2026-10-18、最新HEAD `b14b25f`、実機検証済みコード `9c96054`）
 
-検証済みコード `9c96054` のローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定までです。現HEAD `e3d3734` は文書とPowerShellスクリプト棚卸しのみの変更です。ReleaseはPoc.Tests209件＋DtsProbe2件の計211件成功、`artifacts/grpc-retry-release-publish` 成功・`local.settings*` 不在。現行Functions期待数は14件です。今回のAzure配置・実機検証は未実施で、以前のV05/V07/V08/V09成功とは区別します。
+最新HEAD `b14b25f`（コミット `e1d04d6`、`27b24b4`、`b14b25f`）におけるローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。
 
-次の作業はV11の認証・App Role、信頼された所有者/組織の伝播と受付競合対策です。V12キャンセル、V10/T09ファイル入出力、V00閉域接続も残ります。全ランタイムログ・全履歴の安全性、admission20の厳密な全世代起動一意性は保証しません。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
+確定したローカル検証:
+- Release単体テスト: 全261件（`Poc.Tests` 259件＋`DtsProbe` 2件、失敗・スキップ0件）全件Pass。内数として新規 `WorkflowAuthorizationTests` 40件、拡充された `WorkflowAdmissionTests` 15件（277行拡充）、`ResilienceTests` 56件、`WorkflowHttpTests` 81件を含む。Release publish（`artifacts/auth-boundary-release-publish`）成功・`local.settings*` 不在。
+- Terraform Mock: `modes.tftest.hcl` 37/37件全Pass、`fmt -check` / `validate` Pass。
+- PowerShellオフライン試験: 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation）。
+- 境界と前提: 既定の `PocFunctionKey` 互換を維持し、現行Functions期待数は14件です。今回の最新コードのAzure再配置・実機回帰検証は未実施で、以前のV05/V07/V08/V09成功記録（`9c96054`時点）とは区別します。EntraのApp Role割当や`idtyp` optional claim等の実テナント設定は自動変更しておらず、実EasyAuth環境での偽造ヘッダー遮断や実機トークン検証は未実証です。全ランタイムログ・全履歴の機密非露出、admission20の厳密な全世代起動一意性も未保証です。
+
+次の作業はV11のAzure配置・実機回帰およびEntra実設定の準備（専用PoC API登録・App Role・`idtyp`設定、厳格モード専用環境での配置・実機検証、既存runnerのBearer追従検討）、またはV12利用者キャンセル連鎖の実装です。後続にV10/T09ファイル入出力、V00閉域接続も残ります。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
 
 ## 2026-10-18 ActivityのgRPC再試行分類の限定（ローカル実装）
 

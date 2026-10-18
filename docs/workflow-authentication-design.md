@@ -62,6 +62,12 @@ SCM配置は独自API向けBearerとは別に、既存のEntra/ARM token認証�
 
 実行前にAPI登録でApplicationを許可するApp Roleとaccess token optional claim `idtyp`を設定し、runnerのManaged Identityサービス主体へAPIのApp Roleを割り当てます。MIのclient IDは呼出元allowlist、principal/object IDはGraphの割当対象に使い、APIのservice principal object IDとapp/client IDを混同しません。Azure RBACだけではApp Roleは付与されません。IMDSではAPIのresource識別子を指定し、複数user-assigned identityがある場合は対象client ID等を選択します。API audienceとトークン取得resourceが同じ表記になる保証はなく、登録・トークンversionと合わせて確定します。[MIへのApp Role割当](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/assign-app-role-managed-identity-azure-cli)、[VMトークン取得](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token)。
 
+access tokenのversionはresourceであるAPI登録の`api.requestedAccessTokenVersion`で決まり、IMDS等の取得経路やOAuth endpointだけでは決まりません。`2`なら`aud`はAPIのclient ID GUIDであり、IMDSの`resource`に指定する`api://<API-client-id>`と表記が異なります。`null`/`1`のv1 tokenでは`aud`がclient IDまたは要求したresource URIとなり得ます。既存APIのversion変更は既存callerのaudience・issuer・`appid`/`azp`に影響するため、既存登録の用途を確認せず変更しません。[token version](https://learn.microsoft.com/en-us/graph/api/resources/apiapplication)、[access token claims](https://learn.microsoft.com/en-us/entra/identity-platform/access-token-claims-reference)。
+
+新設する場合はsingle-tenantの専用PoC API登録と専用の厳格モード環境を準備し、既存の`poc`/`dts-poc`を上書きしません。Application限定App RoleはAPIのapplication objectに定義し、API service principalを別途確認してからMIへ割り当てます。`idtyp`もAPI側のaccess token optional claimです。API受信専用登録にclient secretは不要です。既存登録を使う場合はappRoles・optionalClaims等の既存値と利用者への影響を確認して変更します。[appRoleの定義](https://learn.microsoft.com/en-us/graph/api/resources/approle)、[optional claim](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference)。MIのrole変更は基盤のtoken cacheにより反映が遅れるため、即時反映を前提にしません。
+
+2026-10-18のread-only確認では、確認対象の既存2環境はEasyAuth無効かつ`WORKFLOW_AUTH_*`未設定で、確認対象VM MIにAPI App Role割当はなく、実行主体から可視のAPI候補も確認できませんでした。これは照会範囲と実行主体の可視性に基づく結果であり、tenant全体にAPI登録や割当が存在しないことの証明ではありません。この確認ではEntra/Azure設定を変更しておらず、実IDもリポジトリに記録しません。
+
 検証VMでprivate Functionへ到達でき、Function key参照のRBACとCLIログインを準備したうえで実行します。API用tokenはCLIの利用者tokenではなくIMDSから取得します。必要な場合は`-ManagedIdentityClientId '<MI-client-id>'`で対象を選択します。
 
 ```powershell
