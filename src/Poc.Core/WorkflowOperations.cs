@@ -79,6 +79,23 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
             throw new InvalidDataException("Aggregate does not match the complete set of task results.");
         var aggregateUri = results.GetUri(WorkflowIdentity.AggregatePath(plan));
         var taskUris = Enumerable.Range(0, tasks.Length).Select(i => results.GetUri(WorkflowIdentity.TaskPath(new(plan, i)))).ToArray();
+
+        try
+        {
+            await results.PutIfAbsentAsync(
+                WorkflowIdentity.ResolutionPath(plan.Request.RequestId),
+                new WorkflowResolutionRecord(1, plan.Request.RequestId, "Succeeded"),
+                cancellationToken);
+        }
+        catch (WorkflowConflictException)
+        {
+            var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(plan.Request.RequestId), cancellationToken);
+            if (resolution?.Status == "Cancelled" || await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(plan.Request.RequestId), cancellationToken) is not null)
+            {
+                throw new WorkflowCancelledException("Workflow was cancelled; manifest will not be published.");
+            }
+        }
+
         var uri = await results.PutIfAbsentAsync(WorkflowIdentity.ManifestPath(plan), new ManifestResult(plan.Request.RequestId, plan.JobId,
             plan.Fingerprint, "Succeeded", tasks.Length, aggregate.Sum, aggregateUri, taskUris), cancellationToken);
         return new(plan.Request.RequestId, uri, aggregateUri, tasks.Length, aggregate.Sum);

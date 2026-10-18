@@ -29,7 +29,7 @@ public class WorkflowOperationsTests
         Assert.Equal(3, aggregate.Sum);
         Assert.Equal(3, aggregate.TaskCount);
         Assert.Equal(3, manifest.Sum);
-        Assert.Equal(5, repository.Documents.Count);
+        Assert.Equal(6, repository.Documents.Count);
         foreach (var index in Enumerable.Range(0, 3))
         {
             var result = await repository.ReadAsync<TaskResult>(WorkflowIdentity.TaskPath(new TaskSpec(plan, index)), TestContext.Current.CancellationToken);
@@ -52,7 +52,7 @@ public class WorkflowOperationsTests
         }
         Assert.Single(batch.Jobs);
         Assert.Equal(3, batch.Tasks.Count);
-        Assert.Equal(5, repository.Creates);
+        Assert.Equal(6, repository.Creates);
     }
 
     [Fact]
@@ -102,6 +102,25 @@ public class WorkflowOperationsTests
         var aggregate = await repository.ReadAsync<AggregateResult>(path, TestContext.Current.CancellationToken);
         repository.Documents[path] = JsonSerializer.Serialize(aggregate with { Sum = 999 });
         await Assert.ThrowsAsync<InvalidDataException>(() => operations.PublishManifestAsync(plan, TestContext.Current.CancellationToken));
+        Assert.False(repository.Documents.ContainsKey(WorkflowIdentity.ManifestPath(plan)));
+    }
+
+    [Fact]
+    public async Task PublishManifest_ThrowsWorkflowCancelledException_WhenResolutionAlreadyCancelled()
+    {
+        var operations = Operations;
+        var plan = await operations.ClassifyAsync(new WorkflowRequest("cancel-race-001"), TestContext.Current.CancellationToken);
+        await EnsureTasksAsync(operations, plan);
+        await operations.FetchAndPersistAsync(plan, TestContext.Current.CancellationToken);
+        await operations.AggregateAsync(plan, TestContext.Current.CancellationToken);
+
+        await repository.PutIfAbsentAsync(
+            WorkflowIdentity.ResolutionPath(plan.Request.RequestId),
+            new WorkflowResolutionRecord(1, plan.Request.RequestId, "Cancelled"),
+            TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<WorkflowCancelledException>(() => operations.PublishManifestAsync(plan, TestContext.Current.CancellationToken));
+        Assert.Contains("cancelled", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.False(repository.Documents.ContainsKey(WorkflowIdentity.ManifestPath(plan)));
     }
 

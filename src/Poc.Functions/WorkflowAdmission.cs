@@ -62,6 +62,13 @@ public sealed class WorkflowAdmission(IResultRepository results)
         if (record?.Owner is not null && record.Owner != caller) ThrowForbidden();
     }
 
+    public async Task AuthorizeCancellationAsync(string requestId, WorkflowOwner? caller, CancellationToken cancellationToken = default)
+    {
+        caller?.Validate();
+        var record = await ReadRecordAsync(requestId, cancellationToken);
+        if (record?.Owner != caller) ThrowForbidden();
+    }
+
     public async Task<bool> ExistsAsync(string requestId, DurableTaskClient client, CancellationToken cancellationToken = default)
     {
         if (await ReadRecordAsync(requestId, cancellationToken) is not null) return true;
@@ -72,7 +79,24 @@ public sealed class WorkflowAdmission(IResultRepository results)
     public async Task<WorkflowCancelRecord> CancelAsync(string requestId, WorkflowOwner? caller, string? reason = null, CancellationToken cancellationToken = default)
     {
         caller?.Validate();
-        await AuthorizeAccessAsync(requestId, caller, cancellationToken);
+        await AuthorizeCancellationAsync(requestId, caller, cancellationToken);
+
+        try
+        {
+            await results.PutIfAbsentAsync(
+                WorkflowIdentity.ResolutionPath(requestId),
+                new WorkflowResolutionRecord(1, requestId, "Cancelled"),
+                cancellationToken);
+        }
+        catch (WorkflowConflictException)
+        {
+            var resolution = await TryReadAsync<WorkflowResolutionRecord>(WorkflowIdentity.ResolutionPath(requestId), cancellationToken);
+            if (resolution?.Status == "Succeeded")
+            {
+                throw new WorkflowConflictException("Workflow is already completed and cannot be cancelled.");
+            }
+        }
+
         var record = new WorkflowCancelRecord(1, requestId, reason, DateTimeOffset.UtcNow, caller);
         try
         {

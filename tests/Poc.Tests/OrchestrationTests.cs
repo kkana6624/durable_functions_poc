@@ -98,6 +98,69 @@ public class OrchestrationTests
     }
 
     [Fact]
+    public async Task MainOrchestrator_WhenPublishManifestActivityThrowsWorkflowCancelled_SetsStateCancelled()
+    {
+        var request = new WorkflowRequest("orchestrator-manifest-cancelled");
+        var plan = Plan(request);
+        var context = Context();
+        context.Setup(c => c.GetInput<WorkflowRequest>()).Returns(request);
+        context.Setup(c => c.CallActivityAsync<WorkflowPlan>(nameof(WorkflowFunctions.ClassifyActivity), request, It.IsAny<TaskOptions>()))
+            .ReturnsAsync(plan);
+        context.Setup(c => c.CallActivityAsync<object>(nameof(WorkflowFunctions.EnsureBatchJobActivity), plan, It.IsAny<TaskOptions>()))
+            .ReturnsAsync((object)null!);
+        var children = Enumerable.Range(0, 3).Select(i => Task.FromResult(new TaskMonitorResult($"task-{i:00}", "Succeeded", null))).ToArray();
+        context.Setup(c => c.CallSubOrchestratorAsync<TaskMonitorResult>(nameof(WorkflowFunctions.MonitorBatchTaskOrchestrator), It.IsAny<object>(), null))
+            .Returns((TaskName _, object input, TaskOptions? _) => children[((TaskSpec)input).Index]);
+        context.Setup(c => c.CallActivityAsync<ResultReference[]>(nameof(WorkflowFunctions.FetchAndPersistActivity), plan, It.IsAny<TaskOptions>())).ReturnsAsync([]);
+        context.Setup(c => c.CallActivityAsync<AggregateReference>(nameof(WorkflowFunctions.AggregateActivity), plan, It.IsAny<TaskOptions>()))
+            .ReturnsAsync(new AggregateReference(request.RequestId, "aggregate", 3, 3));
+
+        var details = new TaskFailureDetails(typeof(WorkflowCancelledException).FullName!, "Workflow was cancelled; manifest will not be published.", null, null, null);
+        context.Setup(c => c.CallActivityAsync<ManifestReference>(nameof(WorkflowFunctions.PublishManifestActivity), plan, It.IsAny<TaskOptions>()))
+            .ThrowsAsync(new TaskFailedException(nameof(WorkflowFunctions.PublishManifestActivity), 1, details));
+
+        object? lastCustomStatus = null;
+        context.Setup(c => c.SetCustomStatus(It.IsAny<object>()))
+            .Callback<object>(s => lastCustomStatus = s);
+
+        await Assert.ThrowsAsync<TaskFailedException>(() => WorkflowFunctions.MainOrchestrator(context.Object));
+
+        Assert.NotNull(lastCustomStatus);
+        var statusProp = lastCustomStatus.GetType().GetProperty("state");
+        Assert.NotNull(statusProp);
+        Assert.Equal("Cancelled", statusProp.GetValue(lastCustomStatus));
+    }
+
+    [Fact]
+    public async Task PublishManifestActivity_PreservesWorkflowCancelledException_AcrossBoundary()
+    {
+        var repo = new InMemoryResultRepository();
+        var operations = new WorkflowOperations(new FakeBatchGateway(), repo, new StubWorkloadClassifier(), new WorkflowSettings());
+        var functions = new WorkflowFunctions(operations, new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
+
+        var request = new WorkflowRequest("activity-cancel-preserve");
+        var plan = Plan(request);
+
+        await repo.PutIfAbsentAsync(WorkflowIdentity.ResolutionPath(request.RequestId),
+            new WorkflowResolutionRecord(1, request.RequestId, "Cancelled"), TestContext.Current.CancellationToken);
+
+        for (int i = 0; i < 3; i++)
+        {
+            var spec = new TaskSpec(plan, i);
+            await repo.PutIfAbsentAsync(WorkflowIdentity.TaskPath(spec),
+                new TaskResult(request.RequestId, plan.JobId, spec.TaskId, "light", "Test", plan.Fingerprint, 1),
+                TestContext.Current.CancellationToken);
+        }
+        await repo.PutIfAbsentAsync(WorkflowIdentity.AggregatePath(plan),
+            new AggregateResult(request.RequestId, plan.JobId, plan.Fingerprint, 3, 3, ["task-00", "task-01", "task-02"]),
+            TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<WorkflowCancelledException>(() =>
+            functions.PublishManifestActivity(plan, TestContext.Current.CancellationToken));
+        Assert.Contains("cancelled", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MonitorUsesDurableTimerAndStopsAtDeadline()
 
     {

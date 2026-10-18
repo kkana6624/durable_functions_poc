@@ -402,7 +402,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 return notFound;
             }
 
-            await admission.AuthorizeAccessAsync(requestId, caller, cancellationToken);
+            await admission.AuthorizeCancellationAsync(requestId, caller, cancellationToken);
 
             var publishedResult = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
             if (publishedResult is not null)
@@ -421,6 +421,12 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 {
                     var conflict = request.CreateResponse(HttpStatusCode.Conflict);
                     await conflict.WriteAsJsonAsync(new { error = "Workflow is already completed and cannot be cancelled.", requestId, status = "Succeeded" });
+                    return conflict;
+                }
+                if (normalized.Status is "Failed" or "TimedOut")
+                {
+                    var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                    await conflict.WriteAsJsonAsync(new { error = $"Workflow is already {normalized.Status.ToLowerInvariant()} and cannot be cancelled.", requestId, status = normalized.Status });
                     return conflict;
                 }
                 if (normalized.Status == "Cancelled")
@@ -449,14 +455,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
 
             var cancelRecord = await admission.CancelAsync(requestId, caller, reason, cancellationToken);
 
-            try
-            {
-                await client.RaiseEventAsync(instanceId, WorkflowIdentity.CancelEventName, cancelRecord, cancellation: cancellationToken);
-            }
-            catch (Exception)
-            {
-                // Best-effort notification; cancel.json is already persisted
-            }
+            await client.RaiseEventAsync(instanceId, WorkflowIdentity.CancelEventName, cancelRecord, cancellation: cancellationToken);
 
             var statusUrl = BuildStatusUrl(request.Url, requestId);
             var response = request.CreateResponse(HttpStatusCode.Accepted);
@@ -471,6 +470,12 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 statusQueryGetUri = statusUrl
             });
             return response;
+        }
+        catch (WorkflowConflictException ex)
+        {
+            var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+            await conflict.WriteAsJsonAsync(new { error = ex.Message, requestId, status = "Succeeded" });
+            return conflict;
         }
         catch (WorkflowForbiddenException)
         {
@@ -705,6 +710,10 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         {
             // MonitorBatchTaskOrchestrator recognizes this top-level type.
             throw new TimeoutException("Workflow activity timed out.");
+        }
+        catch (WorkflowCancelledException ex)
+        {
+            throw new WorkflowCancelledException(ex.Message);
         }
         catch (Exception)
         {

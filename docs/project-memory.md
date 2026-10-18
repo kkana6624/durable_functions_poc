@@ -1,6 +1,41 @@
 # プロジェクトメモリ
 
-## 2026-10-18 15関数パッケージAzure実機デプロイおよび全6シナリオ実機回帰・V12利用者キャンセルの完全合格（今回の作業）
+## 2026-10-18 7821d82 全体レビュー指摘8件の修正完了（P1成果物公開競合・認可境界、P2例外型保持・イベント送達・終端409・検証スクリプト堅牢化）（今回の作業）
+
+コミット `7821d82` を基準としたレビュー指摘8件（P1 2件、P2 6件）の不具合・競合・認可漏れ・テストスクリプト堅牢化の改修を完了しました。
+
+- **対応内容詳細**:
+  1. **[P1] 取消受理後の成果物公開競合の解消**:
+     - `runs/poc-<requestId>/final/resolution.json` (`WorkflowIdentity.ResolutionPath`) を導入し、`PublishManifestAsync` (Succeeded) と `CancelAsync` (Cancelled) の排他調停点として単一 Blob の条件付き書き込み (`PutIfAbsentAsync`) を確立。
+     - 取消確定後の `manifest.json` 公開を確実に抑止し、成果物公開確定後の取消を 409 Conflict で拒否。
+  2. **[P1] 所有者なしジョブへの取消認可境界の厳格化**:
+     - `AuthorizeCancellationAsync` を新設。読み取り互換（`AuthorizeAccessAsync`）と異なり、`record?.Owner != caller` の厳密一致を要求。
+     - 所有者なし旧ジョブに対する第三者 identity（Entra 伝播 Owner/Org 等）からの取消要求を HTTP 403 Forbidden で確実に拒否。
+  3. **[P2] 取消イベント送達失敗の握りつぶし防止**:
+     - `CancelWorkflow` における `client.RaiseEventAsync` の空の try/catch を撤廃。
+     - イベント送信失敗時に 202 を返さずエラー（500/503）として伝播させ、安全な再送・回復を促進。
+  4. **[P2] Activity 境界での WorkflowCancelledException 保持**:
+     - `RetryableActivity` において `catch (WorkflowCancelledException ex) { throw new WorkflowCancelledException(ex.Message); }` を追加。
+     - `PermanentWorkflowException` への型変換を防止し、`MainOrchestrator` の `IsCausedBy<WorkflowCancelledException>()` 判定を正常化（`Cancelled` 終端状態への確実な遷移）。
+  5. **[P2] 終端ジョブ（Failed / TimedOut）に対する取消要求の 409 Conflict 返戻**:
+     - `CancelWorkflow` において `normalized.Status is "Failed" or "TimedOut"` に対するチェックを追加。
+     - 終端ジョブに対する不要な取消レコード作成を抑止し、HTTP 409 Conflict を返戻。
+  6. **[P2・条件付き] CancelWorkflow 専用キーフォールバック到達性の改修**:
+     - `Invoke-PocValidationHttp` に `[int[]]$AllowedStatusCodes = @(404,409)` を追加。
+     - `cancellation` シナリオ初回の 401 応答を例外化せず許容し、`CancelWorkflow` 専用キーへのフォールバック取得ロジックへ正常到達可能に改修。
+  7. **[P2] Function 復旧未確認時の復旧検証失敗保証**:
+     - `Invoke-PocRecoveryValidation.ps1` の `finally` において、`-not $operation.restoredRunningStateVerified` 時に例外を throw するガードを追加。
+  8. **[P2] Autoscale 復元失敗時の証跡 Fail 記録保証**:
+     - `Invoke-PocAutoscaleValidation.ps1` の `finally` 内の Pool 復元および Readiness 検証を try/catch でラップし、失敗時に `$summary.Status = 'Fail'`, `$summary.Reason = 'PoolRestorationFailed'`, `$summary.ExitCode = 1` を記録して再スロー。
+- **確定した検証実績**:
+  - Release 単体テスト: 全279件（`Poc.Tests` 277件 + `DtsProbe` 2件、失敗・スキップ0件）合格（+9件: 競合調停、終端状態409、認可境界、Activity例外保持、Orchestrator遷移試験等）。
+  - PowerShell オフライン試験: 全8組Pass（`PocValidation.Tests.ps1`, `RecoveryValidation.Tests.ps1`, `AutoscaleValidation.Tests.ps1` に新規検証ケースを追加）。
+  - Terraform Mock: 全37件Pass。
+  - `git diff --check`: エラー0件。
+- **Azure 実機境界の明確化**:
+  - 今回の修正コードはローカル環境（Fake/Mock）での検証完了であり、**Azure 実環境へのデプロイ・実機検証は未実施**です。
+
+## 2026-10-18 15関数パッケージAzure実機デプロイおよび全6シナリオ実機回帰・V12利用者キャンセルの完全合格
 
 `CancelWorkflow` を追加した最新の15関数コードパッケージの Azure 実環境デプロイ（`.deploy/poc/20261018-211336-1471`）、および閉域検証 VM 経由での全6シナリオ実機回帰検証（`artifacts/private-validation/20261018-124022-0449/summary.json`）を**全件合格（Pass、終了コード 0）** で完了しました。
 

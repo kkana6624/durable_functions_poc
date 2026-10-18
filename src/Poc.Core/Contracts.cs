@@ -65,6 +65,7 @@ public sealed record WorkflowAdmissionRecord(int SchemaVersion, string InstanceI
     [property: System.Text.Json.Serialization.JsonRequired] WorkflowOwner? Owner);
 public sealed record WorkflowCancelRecord(int SchemaVersion, string RequestId, string? Reason, DateTimeOffset RequestedAtUtc,
     [property: System.Text.Json.Serialization.JsonRequired] WorkflowOwner? Caller);
+public sealed record WorkflowResolutionRecord(int Version, string RequestId, string Status);
 public sealed record WorkflowStatusResponse(string RequestId, string InstanceId, string JobId, string Status, bool ResultAvailable, bool? TerminationConfirmed = null, string? Error = null);
 public sealed record WorkflowResultResponse(string RequestId, string JobId, string Fingerprint, string Status, int TaskCount, int Sum, string[] TaskIds);
 
@@ -107,6 +108,7 @@ public static class WorkflowIdentity
     public static string AdmissionPath(string requestId) => $"runs/poc-{requestId}/admission.json";
     public static string OwnerPath(string requestId) => $"runs/poc-{requestId}/owner.json";
     public static string CancelPath(string requestId) => $"runs/poc-{requestId}/cancel.json";
+    public static string ResolutionPath(string requestId) => $"runs/poc-{requestId}/final/resolution.json";
     public static string AggregatePath(string requestId) => $"runs/poc-{requestId}/final/aggregate.json";
     public static string ManifestPath(string requestId) => $"runs/poc-{requestId}/final/manifest.json";
     public static string AggregatePath(WorkflowPlan plan) => AggregatePath(plan.Request.RequestId);

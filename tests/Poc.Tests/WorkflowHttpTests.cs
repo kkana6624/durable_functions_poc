@@ -1159,6 +1159,156 @@ public class WorkflowHttpTests
         Assert.Equal("Caller is not authorized to access this workflow.", body.GetProperty("error").GetString());
     }
 
+    [Fact]
+    public async Task CancelWorkflow_Conflict_WhenResolutionAlreadySucceeded()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-cancel-resolution-succeeded";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        await repo.PutIfAbsentAsync(WorkflowIdentity.ResolutionPath(requestId),
+            new WorkflowResolutionRecord(1, requestId, "Succeeded"), TestContext.Current.CancellationToken);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow is already completed and cannot be cancelled.", body.GetProperty("error").GetString());
+        Assert.Equal("Succeeded", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_Conflict_WhenWorkflowAlreadyFailed()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-cancel-already-failed";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        var mockInstance = new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+        {
+            RuntimeStatus = OrchestrationRuntimeStatus.Failed,
+            SerializedCustomStatus = "{\"state\":\"Failed\"}"
+        };
+        client.Setup(c => c.GetInstanceAsync(instanceId, true, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(mockInstance);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow is already failed and cannot be cancelled.", body.GetProperty("error").GetString());
+        Assert.Equal("Failed", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_Conflict_WhenWorkflowAlreadyTimedOut()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-cancel-already-timedout";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        var mockInstance = new OrchestrationMetadata(nameof(WorkflowFunctions.MainOrchestrator), instanceId)
+        {
+            RuntimeStatus = OrchestrationRuntimeStatus.Failed,
+            SerializedCustomStatus = "{\"state\":\"TimedOut\"}"
+        };
+        client.Setup(c => c.GetInstanceAsync(instanceId, true, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(mockInstance);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow is already timedout and cannot be cancelled.", body.GetProperty("error").GetString());
+        Assert.Equal("TimedOut", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_Forbidden_WhenOwnerlessWorkflowCancelledByCallerWithOwner()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-cancel-ownerless-forbidden";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST",
+            headers: new Dictionary<string, string> { ["X-Poc-Owner-Id"] = "eve", ["X-Poc-Org-Id"] = "org-attack" });
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Caller is not authorized to access this workflow.", body.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_Accepted_WhenOwnerlessWorkflowCancelledByCallerWithoutOwner()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-cancel-ownerless-accepted";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CancelWorkflow_PropagatesException_WhenRaiseEventAsyncFails()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-cancel-raise-fails";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var input = new WorkflowRequest(requestId, "light", 3);
+        var admission = new WorkflowAdmission(repo);
+        await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+
+        client.Setup(c => c.RaiseEventAsync(instanceId, WorkflowIdentity.CancelEventName, It.IsAny<object>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Durable event queue unavailable."));
+
+        var functions = new WorkflowFunctions(CreateOperations(repo), admission, new PocFunctionKeyCallerResolver());
+        var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/cancel", method: "POST");
+
+        var response = await functions.CancelWorkflow(request, requestId, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.Equal("Workflow cancellation could not be confirmed.", body.GetProperty("error").GetString());
+    }
+
     private static WorkflowOperations CreateOperations(IResultRepository repo) =>
 
         new(new FakeBatchGateway(), repo, new StubWorkloadClassifier(), new WorkflowSettings());

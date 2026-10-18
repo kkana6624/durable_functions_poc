@@ -85,6 +85,7 @@ function Invoke-AzJson {
         return $null
     }
     if ($uri -like '*/disableautoscale?api-version=*') {
+        if ($script:failMode -eq 'restoreFail') { throw $script:secret }
         $script:poolState.enableAutoScale=$false
         return $null
     }
@@ -127,6 +128,12 @@ try {
     Assert-Fails { Invoke-PocAutoscaleValidation -DeploymentResultPath $deployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $enableFailEvidence } $script:secret
     $savedEnable=Get-Content -LiteralPath (Join-Path $enableFailEvidence 'autoscale-result.json') -Raw | ConvertFrom-Json
     Assert-True ($savedEnable.restoredFixedScaleSucceeded -and $script:poolState.targetLowPriorityNodes -eq 1) 'Failed enableautoscale after 0-node resize must still restore fixed 1-node scale in finally'
+
+    $script:failMode='restoreFail'
+    $restoreFailEvidence=Join-Path $work 'restore-fail'
+    Assert-Fails { Invoke-PocAutoscaleValidation -DeploymentResultPath $deployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $restoreFailEvidence } $script:secret
+    $savedRestore=Get-Content -LiteralPath (Join-Path $restoreFailEvidence 'autoscale-result.json') -Raw | ConvertFrom-Json
+    Assert-True ($savedRestore.Status -eq 'Fail' -and $savedRestore.Reason -eq 'PoolRestorationFailed' -and $savedRestore.ExitCode -eq 1) 'Restoration failure must record Status=Fail, Reason=PoolRestorationFailed, ExitCode=1'
     foreach ($file in (Get-ChildItem -LiteralPath $work -Recurse -File)) {
         Assert-True (-not (Get-Content -LiteralPath $file.FullName -Raw).Contains($script:secret)) 'Secret leaked to autoscale evidence'
     }

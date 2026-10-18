@@ -7,7 +7,7 @@ function Assert-Fails([scriptblock]$Action,[string]$Code) {
     throw "Expected $Code"
 }
 $script:secret='DO-NOT-LOG-RECOVERY-SECRET'
-$script:mode='success'; $script:posts=0; $script:commands=@()
+$script:mode='success'; $script:posts=0; $script:commands=@(); $script:startFailsRunning=$false
 $script:now=[DateTime]::UtcNow.ToString('o')
 $script:outputs=@{subscription_id='subscription';resource_group_name='rg';function_app_name='app';function_app_url='https://app.azurewebsites.net';
     network_mode='private-function-vm';batch_pool_id='pool';blob_endpoint='https://store.blob.core.windows.net/';blob_container_name='results'}
@@ -47,7 +47,7 @@ function Invoke-AzJson {
         if ($script:mode -eq 'stopFailed') { throw $script:secret }
         $script:appState='Stopped'
     }
-    if ($Arguments[0..1]-join ' ' -eq 'functionapp start') { $script:appState='Running' }
+    if ($Arguments[0..1]-join ' ' -eq 'functionapp start') { if ($script:startFailsRunning) { $script:appState='Stopped' } else { $script:appState='Running' } }
     return $null
 }
 function Get-PocBlobDocument {
@@ -134,6 +134,9 @@ Assert-True ($v08Result.exit_code -eq 0 -and $v08Op.stopSucceeded -and $v08Op.st
 $script:mode='stopFailed';$script:commands=@();$script:appState='Running'
 Assert-Fails { Invoke-PocRecoveryValidation @v08Args } $script:secret
 Assert-True ('functionapp start' -in $script:commands -and $script:appState -eq 'Running') 'Failed stop must still issue functionapp start in finally'
+$script:startFailsRunning=$true;$script:commands=@()
+Assert-Fails { Invoke-PocRecoveryValidation @v08Args } 'did not return to Running state'
+$script:startFailsRunning=$false;$script:appState='Running'
 $script:mode='success'
 # A fresh child proves dependency param blocks preserve actual CLI arguments.
 $child=Join-Path $work 'child';$null=New-Item -ItemType Directory -Path $child -Force

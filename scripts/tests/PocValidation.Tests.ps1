@@ -56,7 +56,7 @@ $script:outputs = @{
     batch_pool_id='pool'; batch_account_name='account'; batch_resource_group_name='batch-rg'
 }
 
-function Get-PocValidationKey { param($Outputs) return $script:secret }
+function Get-PocValidationKey { param($Outputs, [string]$FunctionName = 'StartWorkflow') if ($FunctionName -eq 'CancelWorkflow') { return 'cancel-function-key' } return $script:secret }
 function Get-PocWorkflowSettings { param($Outputs) return @{ TimeoutMinutes=1; PollSeconds=1 } }
 function Get-FakeHash([string]$Value) {
     $hash=[Security.Cryptography.SHA256]::Create()
@@ -91,11 +91,16 @@ function New-FakeAdmission {
 }
 
 function Invoke-PocValidationHttp {
-    param([string]$Uri, [string]$Method='Get', [hashtable]$Headers=@{}, [string]$Body)
+    param([string]$Uri, [string]$Method='Get', [hashtable]$Headers=@{}, [string]$Body, [int[]]$AllowedStatusCodes=@(404,409))
     if ($Method -eq 'Post') {
-        Assert-True ($Headers['x-functions-key'] -eq $script:secret) 'Starter must receive its key through the header'
+        if ($Uri -notmatch '/cancel$') {
+            Assert-True ($Headers['x-functions-key'] -eq $script:secret) 'Starter must receive its key through the header'
+        }
         if ($script:mode -eq 'starterError') { throw "Secret provider failure: $script:secret $Uri" }
         if ($Uri -match '/cancel$') {
+            if ($script:mode -eq 'cancelNeedsFunctionKey' -and $Headers['x-functions-key'] -ne 'cancel-function-key') {
+                return @{ StatusCode=401; Data=$null }
+            }
             if ($script:mode -eq 'cancelFailed') { return @{ StatusCode=500; Data=[pscustomobject]@{ error=$script:secret } } }
             if ($script:cancelCalls -gt 0 -or $script:mode -eq 'cancelIdempotent') {
                 return @{ StatusCode=200; Data=[pscustomobject]@{ status='Cancelled'; requestId=$script:current.requestId; terminationConfirmed=$true; unexpected=$script:secret } }
@@ -117,7 +122,7 @@ function Invoke-PocValidationHttp {
     $state = 'Succeeded'; $runtime='Completed'
     if ($null -ne $request.failTaskIndex -or $script:mode -eq 'unexpectedFailure') { $state='Failed'; $runtime='Failed' }
     if ($script:mode -in @('timeout','terminationFailed','timeoutNoConstraint','timeoutWrongConstraint','timeoutBadConstraint')) { $state='TimedOut'; $runtime='Failed' }
-    if ($script:mode -in @('cancellation','cancelFailed','missingCancelRecord')) { $state='Cancelled'; $runtime='Failed' }
+    if ($script:mode -in @('cancellation','cancelFailed','missingCancelRecord','cancelNeedsFunctionKey')) { $state='Cancelled'; $runtime='Failed' }
     return @{ StatusCode=200; Data=[pscustomobject]@{
         runtimeStatus=$runtime; createdTime='2026-10-17T00:00:00Z'; output=[pscustomobject]@{ state=$state; requestId=$request.requestId; jobId=(Get-PocJobId $request.requestId) }
         customStatus=[pscustomobject]@{ state=$state; jobId=(Get-PocJobId $request.requestId); error=$script:secret
@@ -180,7 +185,7 @@ function Get-PocBatchObservation {
     param($Outputs,[string]$JobId)
     $script:batchReads++
     $request=$script:current; $fingerprint=Get-FakeFingerprint $request
-    $job=[pscustomobject]@{ id=$JobId; state=$(if ($script:mode -like 'timeout*' -or $script:mode -in @('cancellation','cancelFailed','missingCancelRecord')) { 'completed' } else { 'active' })
+    $job=[pscustomobject]@{ id=$JobId; state=$(if ($script:mode -like 'timeout*' -or $script:mode -in @('cancellation','cancelFailed','missingCancelRecord','cancelNeedsFunctionKey')) { 'completed' } else { 'active' })
         poolInfo=[pscustomobject]@{ poolId=$Outputs.batch_pool_id }; metadata=@([pscustomobject]@{ name='poc-fingerprint'; value=$fingerprint })
         constraints=[pscustomobject]@{ maxWallClockTime='PT1M' }; unexpected=$script:secret }
     if ($script:mode -eq 'timeoutNoConstraint') { $job.constraints=$null }
@@ -309,6 +314,8 @@ try {
     $null=Invoke-TestCase terminationFailed @('timeout') 1 Fail -DedicatedEnvironment -Wait 240
     $cancelResult=Invoke-TestCase cancellation @('cancellation') 0 Pass
     Assert-True ($cancelResult.Scenarios[0].Evidence.runs[0].cancelHttpStatus -eq 202 -and $cancelResult.Scenarios[0].Evidence.runs[0].idempotentCancelHttpStatus -eq 200 -and $cancelResult.Scenarios[0].Evidence.runs[0].businessState -eq 'Cancelled') 'Cancellation must return 202 accepted and then 200 idempotent confirmed'
+    $cancelFallbackResult=Invoke-TestCase cancelNeedsFunctionKey @('cancellation') 0 Pass
+    Assert-True ($cancelFallbackResult.Scenarios[0].Evidence.runs[0].cancelHttpStatus -eq 202) 'Cancellation must fall back to CancelWorkflow function key on 401'
     foreach ($cancelMode in @('cancelFailed','missingCancelRecord')) {
         $null=Invoke-TestCase $cancelMode @('cancellation') 1 Fail
     }

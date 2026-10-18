@@ -223,7 +223,15 @@ function Invoke-PocAutoscaleValidation {
                 $summary.restoredFixedScaleSucceeded=$true
                 $readiness=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 600 -PollSeconds 10
                 $summary.restoredPoolReadyVerified=[bool]$readiness.Ready
+                if (-not $summary.restoredPoolReadyVerified) {
+                    throw 'Restored Batch pool failed readiness verification.'
+                }
             }
+        } catch {
+            $summary.Status='Fail'
+            $summary.Reason='PoolRestorationFailed'
+            $summary.ExitCode=1
+            throw
         } finally {
             $summary.completedUtc=[DateTime]::UtcNow.ToString('o')
             Write-DeploymentJson (Join-Path $EvidenceDirectory 'autoscale-result.json') $summary

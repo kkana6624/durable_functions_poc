@@ -209,6 +209,7 @@ function Invoke-PocRecoveryValidation {
                     $operation.restoredStartCommandSucceeded=$true
                     $restoredApp=Invoke-AzJson -Sensitive -Arguments @('rest','--method','get','--url',('https://management.azure.com'+$siteId+'?api-version=2024-11-01'))
                     $operation.restoredRunningStateVerified=($restoredApp.id -ieq $siteId -and $restoredApp.properties.state -eq 'Running')
+                    if (-not $operation.restoredRunningStateVerified) { throw 'Function App did not return to Running state after stop test.' }
                 }
             } finally {
                 $operation.completedUtc=[DateTime]::UtcNow.ToString('o')

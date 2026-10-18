@@ -18,7 +18,7 @@ function Stop-PocValidation([string]$Code) {
 }
 
 function Invoke-PocValidationHttp {
-    param([string]$Uri, [string]$Method='Get', [hashtable]$Headers=@{}, [string]$Body)
+    param([string]$Uri, [string]$Method='Get', [hashtable]$Headers=@{}, [string]$Body, [int[]]$AllowedStatusCodes = @(404,409))
     try {
         $parameters = @{ Uri=$Uri; Method=$Method; Headers=$Headers; UseBasicParsing=$true; TimeoutSec=60; ErrorAction='Stop'; MaximumRedirection=0 }
         if ($Body) { $parameters.Body=$Body; $parameters.ContentType='application/json' }
@@ -29,8 +29,8 @@ function Invoke-PocValidationHttp {
         $property = $_.Exception.PSObject.Properties['Response']
         if ($property -and $property.Value) {
             $code = [int]$property.Value.StatusCode
+            if ($code -in $AllowedStatusCodes) { return @{ StatusCode=$code; Data=$null } }
             if ($code -in @(401,403)) { Stop-PocValidation "HttpAuthorization$code" }
-            if ($code -in @(404,409)) { return @{ StatusCode=$code; Data=$null } }
         }
         Stop-PocValidation 'HttpRequestFailed'
     }
@@ -244,7 +244,7 @@ function Invoke-PocScenario {
         $cancelUri = $Outputs.function_app_url.TrimEnd('/') + "/api/workflows/$requestId/cancel"
         $cancelHeaders = $headers.Clone()
         if ($Name -eq 'cancellation') {
-            $cancel = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $cancelHeaders -Body (@{ reason='PoC cancellation validation' } | ConvertTo-Json -Compress)
+            $cancel = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $cancelHeaders -Body (@{ reason='PoC cancellation validation' } | ConvertTo-Json -Compress) -AllowedStatusCodes @(401,404,409)
             if ($cancel.StatusCode -eq 401) {
                 $cancelKey = Get-PocValidationKey -Outputs $Outputs -FunctionName 'CancelWorkflow'
                 $cancelHeaders['x-functions-key'] = $cancelKey
