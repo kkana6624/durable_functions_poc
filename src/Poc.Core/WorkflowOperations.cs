@@ -70,4 +70,40 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
             plan.Fingerprint, "Succeeded", tasks.Length, aggregate.Sum, aggregateUri, taskUris), cancellationToken);
         return new(plan.Request.RequestId, uri, aggregateUri, tasks.Length, aggregate.Sum);
     }
+    public async Task<WorkflowResultResponse?> TryGetPublishedResultAsync(string requestId, CancellationToken cancellationToken = default)
+    {
+        ManifestResult manifest;
+        AggregateResult aggregate;
+        try
+        {
+            manifest = await results.ReadAsync<ManifestResult>(WorkflowIdentity.ManifestPath(requestId), cancellationToken);
+            aggregate = await results.ReadAsync<AggregateResult>(WorkflowIdentity.AggregatePath(requestId), cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+
+        if (manifest.Status != "Succeeded" ||
+            manifest.RequestId != requestId ||
+            aggregate.RequestId != requestId ||
+            manifest.JobId != aggregate.JobId ||
+            manifest.Fingerprint != aggregate.Fingerprint ||
+            manifest.Sum != aggregate.Sum ||
+            manifest.TaskCount != aggregate.TaskCount ||
+            aggregate.TaskIds is null)
+        {
+            throw new InvalidDataException("Published manifest and aggregate do not match or are invalid.");
+        }
+
+        return new WorkflowResultResponse(requestId, manifest.JobId, manifest.Fingerprint, "Succeeded", aggregate.TaskCount, aggregate.Sum, aggregate.TaskIds);
+    }
 }

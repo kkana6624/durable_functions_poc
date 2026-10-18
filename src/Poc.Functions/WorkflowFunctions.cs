@@ -14,14 +14,34 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    private static WorkflowOwner? ExtractOwner(HttpRequestData request)
+    {
+        string? ownerId = request.Headers.TryGetValues("X-Poc-Owner-Id", out var ownerVals) ? ownerVals.FirstOrDefault() : null;
+        string? orgId = request.Headers.TryGetValues("X-Poc-Org-Id", out var orgVals) ? orgVals.FirstOrDefault() : null;
+
+        if (ownerId is not null)
+        {
+            var owner = new WorkflowOwner(ownerId, orgId);
+            owner.Validate();
+            return owner;
+        }
+        if (orgId is not null)
+        {
+            throw new ArgumentException("X-Poc-Owner-Id header is required when X-Poc-Org-Id is specified.");
+        }
+        return null;
+    }
+
     [Function(nameof(StartWorkflow))]
     public async Task<HttpResponseData> StartWorkflow(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "workflows")] HttpRequestData request,
         [DurableClient] DurableTaskClient client, CancellationToken cancellationToken)
     {
         WorkflowRequest input;
+        WorkflowOwner? owner;
         try
         {
+            owner = ExtractOwner(request);
             input = await JsonSerializer.DeserializeAsync<WorkflowRequest>(request.Body, JsonOptions)
                 ?? throw new ArgumentException("JSON request body is required.");
             input.Validate();
@@ -34,8 +54,14 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
         try
         {
-            var instanceId = await admission.AdmitAsync(input, client, cancellationToken);
+            var instanceId = await admission.AdmitAsync(input, client, owner, cancellationToken);
             return await AcceptedAsync(request, client, instanceId);
+        }
+        catch (WorkflowForbiddenException)
+        {
+            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
+            return forbidden;
         }
         catch (WorkflowConflictException)
         {
@@ -51,6 +77,197 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             await unavailable.WriteAsJsonAsync(new { error = "Admission could not be confirmed. Retry with the same requestId and input." });
             return unavailable;
         }
+    }
+
+    public static WorkflowStatusResponse NormalizeStatus(string requestId, OrchestrationMetadata? instance)
+    {
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+        var jobId = WorkflowIdentity.JobId(requestId);
+
+        if (instance is null || instance.RuntimeStatus == OrchestrationRuntimeStatus.Pending)
+        {
+            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Accepted", ResultAvailable: false);
+        }
+
+        string? customState = null;
+        string? customError = null;
+        string? terminationError = null;
+        bool? terminationCompleted = null;
+
+        if (!string.IsNullOrWhiteSpace(instance.SerializedCustomStatus))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(instance.SerializedCustomStatus);
+                var root = doc.RootElement;
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    if (root.TryGetProperty("state", out var stateEl) || root.TryGetProperty("State", out stateEl))
+                    {
+                        if (stateEl.ValueKind == JsonValueKind.String) customState = stateEl.GetString();
+                    }
+                    if (root.TryGetProperty("error", out var errorEl) || root.TryGetProperty("Error", out errorEl))
+                    {
+                        if (errorEl.ValueKind == JsonValueKind.String) customError = errorEl.GetString();
+                    }
+                    if (root.TryGetProperty("terminationError", out var termErrEl) || root.TryGetProperty("TerminationError", out termErrEl))
+                    {
+                        if (termErrEl.ValueKind == JsonValueKind.String) terminationError = termErrEl.GetString();
+                    }
+                    if (root.TryGetProperty("termination", out var termEl) || root.TryGetProperty("Termination", out termEl))
+                    {
+                        if (termEl.ValueKind == JsonValueKind.Object)
+                        {
+                            if (termEl.TryGetProperty("completed", out var compEl) || termEl.TryGetProperty("Completed", out compEl))
+                            {
+                                if (compEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                                    terminationCompleted = compEl.GetBoolean();
+                            }
+                        }
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        if (instance.RuntimeStatus == OrchestrationRuntimeStatus.Running)
+        {
+            var mappedStatus = customState switch
+            {
+                "Submitting" => "Preparing",
+                "Persisting" => "Publishing",
+                "Stopping" => "Stopping",
+                "Cancelling" => "Cancelling",
+                _ => "Running"
+            };
+            bool? terminationConfirmed = mappedStatus == "Stopping" ? (terminationCompleted ?? false) : null;
+            return new WorkflowStatusResponse(requestId, instanceId, jobId, mappedStatus, ResultAvailable: false, TerminationConfirmed: terminationConfirmed);
+        }
+
+        if (instance.RuntimeStatus == OrchestrationRuntimeStatus.Completed)
+        {
+            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Succeeded", ResultAvailable: true);
+        }
+
+        if (instance.RuntimeStatus == OrchestrationRuntimeStatus.Failed)
+        {
+            if (customState == "TimedOut")
+            {
+                bool confirmed = (terminationCompleted == true) && string.IsNullOrEmpty(terminationError);
+                return new WorkflowStatusResponse(requestId, instanceId, jobId, "TimedOut", ResultAvailable: false, TerminationConfirmed: confirmed, Error: customError ?? terminationError);
+            }
+            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Failed", ResultAvailable: false, Error: customError);
+        }
+
+#pragma warning disable CS0618
+        if (instance.RuntimeStatus is OrchestrationRuntimeStatus.Terminated or OrchestrationRuntimeStatus.Canceled)
+#pragma warning restore CS0618
+        {
+            return new WorkflowStatusResponse(requestId, instanceId, jobId, "Cancelled", ResultAvailable: false);
+        }
+
+        return new WorkflowStatusResponse(requestId, instanceId, jobId, "Running", ResultAvailable: false);
+    }
+
+    [Function(nameof(GetWorkflowStatus))]
+    public async Task<HttpResponseData> GetWorkflowStatus(
+        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "workflows/{requestId}")] HttpRequestData request,
+        string requestId,
+        [DurableClient] DurableTaskClient client,
+        CancellationToken cancellationToken)
+    {
+        WorkflowOwner? caller;
+        try
+        {
+            new WorkflowRequest(requestId).Validate();
+            caller = ExtractOwner(request);
+        }
+        catch (ArgumentException ex)
+        {
+            var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
+            await badRequest.WriteAsJsonAsync(new { error = ex.Message });
+            return badRequest;
+        }
+
+        if (!await admission.ExistsAsync(requestId, client, cancellationToken))
+        {
+            var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+            await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
+            return notFound;
+        }
+
+        try
+        {
+            await admission.AuthorizeAccessAsync(requestId, caller, cancellationToken);
+        }
+        catch (WorkflowForbiddenException)
+        {
+            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
+            return forbidden;
+        }
+
+        var instance = await client.GetInstanceAsync(WorkflowIdentity.InstanceId(requestId), getInputsAndOutputs: true, cancellationToken);
+        var normalized = NormalizeStatus(requestId, instance);
+
+        var response = request.CreateResponse(HttpStatusCode.OK);
+        await response.WriteAsJsonAsync(normalized);
+        return response;
+    }
+
+    [Function(nameof(GetWorkflowResult))]
+    public async Task<HttpResponseData> GetWorkflowResult(
+        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "workflows/{requestId}/result")] HttpRequestData request,
+        string requestId,
+        [DurableClient] DurableTaskClient client,
+        CancellationToken cancellationToken)
+    {
+        WorkflowOwner? caller;
+        try
+        {
+            new WorkflowRequest(requestId).Validate();
+            caller = ExtractOwner(request);
+        }
+        catch (ArgumentException ex)
+        {
+            var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
+            await badRequest.WriteAsJsonAsync(new { error = ex.Message });
+            return badRequest;
+        }
+
+        if (!await admission.ExistsAsync(requestId, client, cancellationToken))
+        {
+            var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+            await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
+            return notFound;
+        }
+
+        try
+        {
+            await admission.AuthorizeAccessAsync(requestId, caller, cancellationToken);
+        }
+        catch (WorkflowForbiddenException)
+        {
+            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
+            return forbidden;
+        }
+
+        var result = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
+        if (result is null)
+        {
+            var instance = await client.GetInstanceAsync(WorkflowIdentity.InstanceId(requestId), getInputsAndOutputs: true, cancellationToken);
+            var normalized = NormalizeStatus(requestId, instance);
+            var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+            await conflict.WriteAsJsonAsync(new { error = "Workflow result is not available.", requestId, status = normalized.Status });
+            return conflict;
+        }
+
+        var response = request.CreateResponse(HttpStatusCode.OK);
+        await response.WriteAsJsonAsync(result);
+        return response;
     }
 
     private static async Task<HttpResponseData> AcceptedAsync(HttpRequestData request, DurableTaskClient client, string instanceId)
