@@ -10,7 +10,7 @@ using Poc.Core;
 
 namespace Poc.Functions;
 
-public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdmission admission)
+public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdmission admission, IWorkflowCallerResolver callerResolver)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string InvalidRequestMessage = "Workflow request is invalid.";
@@ -21,24 +21,6 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     private const string StatusUnavailableMessage = "Workflow status could not be verified. Retry later.";
     private const string ResultUnavailableMessage = "Workflow result could not be verified. Retry later.";
 
-    private static WorkflowOwner? ExtractOwner(HttpRequestData request)
-    {
-        string? ownerId = request.Headers.TryGetValues("X-Poc-Owner-Id", out var ownerVals) ? ownerVals.FirstOrDefault() : null;
-        string? orgId = request.Headers.TryGetValues("X-Poc-Org-Id", out var orgVals) ? orgVals.FirstOrDefault() : null;
-
-        if (ownerId is not null)
-        {
-            var owner = new WorkflowOwner(ownerId, orgId);
-            owner.Validate();
-            return owner;
-        }
-        if (orgId is not null)
-        {
-            throw new ArgumentException("X-Poc-Owner-Id header is required when X-Poc-Org-Id is specified.");
-        }
-        return null;
-    }
-
     [Function(nameof(StartWorkflow))]
     public async Task<HttpResponseData> StartWorkflow(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "workflows")] HttpRequestData request,
@@ -48,10 +30,14 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         WorkflowOwner? owner;
         try
         {
-            owner = ExtractOwner(request);
+            owner = callerResolver.Resolve(request);
             input = await JsonSerializer.DeserializeAsync<WorkflowRequest>(request.Body, JsonOptions)
                 ?? throw new ArgumentException("JSON request body is required.");
             input.Validate();
+        }
+        catch (WorkflowCallerAuthenticationException ex)
+        {
+            return await CreateErrorResponseAsync(request, ex.StatusCode, "Caller is not authorized to access this workflow.");
         }
         catch (Exception ex) when (ex is JsonException or ArgumentException)
         {
@@ -192,7 +178,11 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         try
         {
             new WorkflowRequest(requestId).Validate();
-            caller = ExtractOwner(request);
+            caller = callerResolver.Resolve(request);
+        }
+        catch (WorkflowCallerAuthenticationException ex)
+        {
+            return await CreateErrorResponseAsync(request, ex.StatusCode, "Caller is not authorized to access this workflow.");
         }
         catch (ArgumentException)
         {
@@ -251,7 +241,11 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         try
         {
             new WorkflowRequest(requestId).Validate();
-            caller = ExtractOwner(request);
+            caller = callerResolver.Resolve(request);
+        }
+        catch (WorkflowCallerAuthenticationException ex)
+        {
+            return await CreateErrorResponseAsync(request, ex.StatusCode, "Caller is not authorized to access this workflow.");
         }
         catch (ArgumentException)
         {

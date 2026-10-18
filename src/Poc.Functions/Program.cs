@@ -10,6 +10,12 @@ using Poc.Functions;
 var builder = FunctionsApplication.CreateBuilder(args);
 builder.ConfigureFunctionsWebApplication();
 
+var authentication = WorkflowAuthenticationOptions.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(authentication);
+builder.Services.AddSingleton<IWorkflowCallerResolver>(authentication.Mode == "EntraEasyAuth"
+    ? new EntraEasyAuthCallerResolver(authentication)
+    : new PocFunctionKeyCallerResolver());
+
 string Required(string name) => builder.Configuration[name] is { Length: > 0 } value
     ? value : throw new InvalidOperationException($"Required setting {name} is missing.");
 int Positive(string name, int fallback) => builder.Configuration[name] is not { Length: > 0 } text

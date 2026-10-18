@@ -1,5 +1,15 @@
 # プロジェクトメモリ
 
+## 2026-10-18 認証境界アダプター（今回の作業）
+
+作業開始時HEADは`e1d04d6`でGitはcleanでした。今回は既定`PocFunctionKey`互換を保ち、`EntraEasyAuth`を明示選択した場合のprincipal解析・tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`・scope不存在を検査するアダプターとローカル拒否試験を追加します。厳格モードではowner/orgが必須で、利用者情報を主張する責任は認可済みバックエンドにあります。Function keyは引き続き必要です。
+
+Azure環境変数のガードは構成の暗号学的証明ではありません。必要claim欠落・曖昧なclaim/ヘッダーは拒否し、実EasyAuth principalにissuer/audience等が揃うかは未確認です。Entra登録・App Role割当・idtyp設定、EasyAuth IaC、runnerのBearer対応、Azure配置・両Durableバックエンドでの認証/偽造ヘッダー試験を残します。今回Azureへ接続していません。契約・公式根拠と後続手順は [認証境界](workflow-authentication-design.md) を参照してください。以下の過去試験数は今回の認証変更の結果ではありません。
+
+今回の関連Release試験は、新規`WorkflowAuthorizationTests`40/40件・既存`WorkflowHttpTests`81/81件が成功しました。Fake HTTP/Mock Durable/メモリ内repositoryによる検証であり、Entraや実EasyAuthの実証ではありません。
+
+認証試験追加後のsolution Releaseは全261件（Poc.Tests259件・DtsProbe2件）が成功し、失敗・スキップは0件です。Release publish（`artifacts/auth-boundary-release-publish`）も成功し、`local.settings*`の非混入を確認しました。`git diff --check`は成功しています。Azure配置・実機試験は未実施です。
+
 ## 2026-10-18 受付と所有者の単一レコード化（今回の作業）
 
 新受付は `runs/poc-<requestId>/admission.json` の Version 2 に入力・instanceId・nullableな所有者/組織をまとめ、条件付き作成で確定します。所有者なし/ありも同じ競合点で調停し、所有者/組織不一致は403、所有者一致・入力不一致は409です。同一所有者・入力の再送を許し、状態・結果照会も新レコードを参照します。

@@ -27,7 +27,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest(invalidJson);
 
         var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
@@ -53,7 +53,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest(invalidBody);
 
         var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
@@ -73,7 +73,7 @@ public class WorkflowHttpTests
         await repo.PutIfAbsentAsync(WorkflowIdentity.AdmissionPath(workflowReq.RequestId),
             new WorkflowAdmissionRecord(2, WorkflowIdentity.InstanceId(workflowReq.RequestId), workflowReq with { TaskCount = 1 }, null),
             TestContext.Current.CancellationToken);
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest(JsonSerializer.Serialize(workflowReq));
 
         var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
@@ -94,7 +94,7 @@ public class WorkflowHttpTests
         repoMock.Setup(r => r.PutIfAbsentAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new RpcException(new Status(StatusCode.Unavailable, "Durable backend temporarily unreachable.")));
 
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repoMock.Object));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repoMock.Object), new PocFunctionKeyCallerResolver());
         var workflowReq = new WorkflowRequest("req-transient-503");
         var request = CreateRequest(JsonSerializer.Serialize(workflowReq));
 
@@ -116,7 +116,7 @@ public class WorkflowHttpTests
         var repo = new Mock<IResultRepository>();
         repo.Setup(r => r.PutIfAbsentAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new RpcException(new Status(StatusCode.PermissionDenied, "SECRET_SENTINEL")));
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo.Object));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo.Object), new PocFunctionKeyCallerResolver());
         var request = CreateRequest(JsonSerializer.Serialize(new WorkflowRequest("req-permanent-rpc")));
 
         var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
@@ -137,7 +137,7 @@ public class WorkflowHttpTests
         repoMock.Setup(r => r.PutIfAbsentAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new RpcException(new Status(code, "gRPC transient issue.")));
 
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repoMock.Object));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repoMock.Object), new PocFunctionKeyCallerResolver());
         var workflowReq = new WorkflowRequest($"req-transient-{code}");
         var request = CreateRequest(JsonSerializer.Serialize(workflowReq));
 
@@ -157,7 +157,7 @@ public class WorkflowHttpTests
     {
         var (client, entities) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var workflowReq = new WorkflowRequest("req-success-202");
         var request = CreateRequest(JsonSerializer.Serialize(workflowReq),
             "https://myfunctions.azurewebsites.net/tenant/api/workflows?code=secret-function-key");
@@ -249,7 +249,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-owner-001");
         var headers = new Dictionary<string, string>
         {
@@ -272,7 +272,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-owner-replay-001");
         var headers = new Dictionary<string, string>
         {
@@ -292,7 +292,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-owner-forbidden-001");
 
         var response1 = await functions.StartWorkflow(CreateRequest(JsonSerializer.Serialize(req), headers: new Dictionary<string, string>
@@ -322,7 +322,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-owner-anon-forbidden");
 
         await functions.StartWorkflow(CreateRequest(JsonSerializer.Serialize(req), headers: new Dictionary<string, string>
@@ -342,7 +342,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-org-without-owner");
         var headers = new Dictionary<string, string> { ["X-Poc-Org-Id"] = "org-only" };
 
@@ -357,7 +357,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-bad-owner-header");
         var headers = new Dictionary<string, string> { ["X-Poc-Owner-Id"] = "-invalid-leading-hyphen" };
 
@@ -370,7 +370,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-unowned-first");
 
         // 1. Initial unowned admission
@@ -394,7 +394,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var req = new WorkflowRequest("req-no-org-first");
 
         // 1. Initial admission with owner only (no org)
@@ -428,7 +428,7 @@ public class WorkflowHttpTests
         await repo.PutIfAbsentAsync(WorkflowIdentity.OwnerPath(requestId),
             new WorkflowOwnerRecord(1, requestId, instanceId, "alice", null), TestContext.Current.CancellationToken);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
 
         // Caller specifies extra OrgId
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET",
@@ -456,7 +456,7 @@ public class WorkflowHttpTests
                 RuntimeStatus = OrchestrationRuntimeStatus.Running
             });
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
 
         // Submit different input with owner header
         var conflictingRequest = new WorkflowRequest(requestId, Classification: "auto", TaskCount: 3);
@@ -541,7 +541,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{invalidRequestId}", method: "GET");
 
         var response = await functions.GetWorkflowStatus(request, invalidRequestId, client.Object, TestContext.Current.CancellationToken);
@@ -556,7 +556,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var headers = new Dictionary<string, string> { ["X-Poc-Owner-Id"] = "-invalid-owner" };
         var request = CreateRequest("", url: "https://localhost/api/workflows/valid-req", method: "GET", headers: headers);
 
@@ -572,7 +572,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: "https://localhost/api/workflows/non-existent-req", method: "GET");
 
         var response = await functions.GetWorkflowStatus(request, "non-existent-req", client.Object, TestContext.Current.CancellationToken);
@@ -598,7 +598,7 @@ public class WorkflowHttpTests
         client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((OrchestrationMetadata?)null);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
 
         var response = await functions.GetWorkflowStatus(request, requestId, client.Object, TestContext.Current.CancellationToken);
@@ -629,7 +629,7 @@ public class WorkflowHttpTests
                 SerializedCustomStatus = """{"state":"Failed","error":"SECRET_SENTINEL","terminationError":"SECRET_SENTINEL"}"""
             });
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
         var response = await functions.GetWorkflowStatus(request, requestId, client.Object, TestContext.Current.CancellationToken);
 
@@ -654,7 +654,7 @@ public class WorkflowHttpTests
                 RuntimeStatus = OrchestrationRuntimeStatus.Completed
             });
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var statusRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
         var statusResponse = await functions.GetWorkflowStatus(statusRequest, requestId, client.Object, TestContext.Current.CancellationToken);
         var statusBody = await ReadJsonBodyAsync(statusResponse, TestContext.Current.CancellationToken);
@@ -686,7 +686,7 @@ public class WorkflowHttpTests
         client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((OrchestrationMetadata?)null);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo.Object), new WorkflowAdmission(repo.Object));
+        var functions = new WorkflowFunctions(CreateOperations(repo.Object), new WorkflowAdmission(repo.Object), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
         var response = await functions.GetWorkflowStatus(request, requestId, client.Object, TestContext.Current.CancellationToken);
 
@@ -728,7 +728,7 @@ public class WorkflowHttpTests
             InstanceId = WorkflowIdentity.InstanceId(request.RequestId),
             Request = request
         });
-        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(null!, new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
 
         var response = await functions.StartWorkflow(CreateRequest(JsonSerializer.Serialize(request)), client.Object,
             TestContext.Current.CancellationToken);
@@ -753,7 +753,7 @@ public class WorkflowHttpTests
         client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((OrchestrationMetadata?)null);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var statusRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
         var statusResponse = await functions.GetWorkflowStatus(statusRequest, requestId, client.Object, TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.InternalServerError, statusResponse.StatusCode);
@@ -790,7 +790,7 @@ public class WorkflowHttpTests
         client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(instance);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
 
         // Missing headers -> 403 Forbidden
         var noHeaderReq = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
@@ -827,7 +827,7 @@ public class WorkflowHttpTests
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: "https://localhost/api/workflows/non-existent/result", method: "GET");
 
         var response = await functions.GetWorkflowResult(request, "non-existent", client.Object, TestContext.Current.CancellationToken);
@@ -848,7 +848,7 @@ public class WorkflowHttpTests
         await repo.PutIfAbsentAsync(WorkflowIdentity.OwnerPath(requestId),
             new WorkflowOwnerRecord(1, requestId, instanceId, "alice"), TestContext.Current.CancellationToken);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/result", method: "GET",
             headers: new Dictionary<string, string> { ["X-Poc-Owner-Id"] = "bob" });
 
@@ -880,7 +880,7 @@ public class WorkflowHttpTests
         client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(instance);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/result", method: "GET");
 
         var response = await functions.GetWorkflowResult(request, requestId, client.Object, TestContext.Current.CancellationToken);
@@ -912,7 +912,7 @@ public class WorkflowHttpTests
         client.Setup(c => c.GetInstanceAsync(instanceId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(instance);
 
-        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(CreateOperations(repo), new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var request = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}/result", method: "GET");
 
         var response = await functions.GetWorkflowResult(request, requestId, client.Object, TestContext.Current.CancellationToken);
@@ -947,7 +947,7 @@ public class WorkflowHttpTests
                 RuntimeStatus = OrchestrationRuntimeStatus.Completed
             });
 
-        var functions = new WorkflowFunctions(operations, new WorkflowAdmission(repo));
+        var functions = new WorkflowFunctions(operations, new WorkflowAdmission(repo), new PocFunctionKeyCallerResolver());
         var statusRequest = CreateRequest("", url: $"https://localhost/api/workflows/{requestId}", method: "GET");
         var statusResponse = await functions.GetWorkflowStatus(statusRequest, requestId, client.Object, TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
