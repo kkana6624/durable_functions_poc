@@ -1,8 +1,8 @@
 # PoC 検証結果
 
-## 現在の到達点（2026-10-19、B案 Entra ID サービス間認証・認可の Azure 実機検証と到達範囲）
+## 現在の到達点（2026-10-19、最新15関数コードの Azure 実機再検証全件合格および B案 Entra ID 認証・認可プロトタイプ検証）
 
-最新の実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、**V12 利用者キャンセル（Job Cancellation）の実装**（`CancelWorkflow` 追加、計15関数、事前Blob永続化 `runs/poc-<requestId>/cancel.json`、Durable外部イベント `CancelRequested`、Batchジョブ有界停止 `TerminateBatchJobActivity`、成果物 `manifest.json` 公開抑止、所有者認可、冪等200/202）を含めた15関数パッケージの Azure 実環境回帰（全6シナリオPass）に加え、**B案: Microsoft Entra ID によるサービス間認証および認可の Azure 実機プロトタイプ検証（主要プローブPass）** を実施しました。
+最新の実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、**V12 利用者キャンセル（Job Cancellation）の実装**（`CancelWorkflow` 追加、計15関数、事前Blob永続化 `runs/poc-<requestId>/cancel.json`、Durable外部イベント `CancelRequested`、Batchジョブ有界停止 `TerminateBatchJobActivity`、成果物 `manifest.json` 公開抑止、所有者認可、冪等200/202）、ならびにレビュー指摘に基づく**取消確定と成果物公開の排他調停（`resolution.json`）**、**停止未確認時の取消再送による Batch 停止再試行**、**停止確認永続化（`termination.json`）の Activity 再試行・状態反映**、**Job 作成前取消のステータス正規化**、**Restart モード復旧状態検証（`HostStoppedBatchWallClock`）**を含めた15関数パッケージを実 Azure 環境へ再デプロイし、閉域検証 VM からの全6シナリオ実機回帰（`single`, `three`, `classification`, `failure`, `conflict`, `cancellation`）において**全件合格（終了コード 0、Pass）**を確認しました。さらに、先行して**B案: Microsoft Entra ID によるサービス間認証および認可の Azure 実機プロトタイプ検証（主要プローブPass）** を実施しています。
 
 | 対象 | 最新の確定結果 |
 |---|---|
@@ -10,16 +10,26 @@
 | Release publish | 成功、`local.settings*` 不在 |
 | Terraform Mock | `modes.tftest.hcl` 37/37件全Pass、`backend.tftest.hcl` 1/1件全Pass |
 | PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
+| **Azure実環境デプロイ・回帰（最新成果）** | **全件Pass**（`poc`環境・Azure Storageバックエンド）。最新成果: `.deploy/poc/20261019-080215-5263`（コミット `839932b`、パッケージSHA-256: `06bf36f4...`、15関数登録・スモーク合格: `deploy-13795081be9948a1b20a2114e447363b`、全6シナリオ実機回帰Pass、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード0）。 |
+| **V12 利用者キャンセル & 排他調停** | **Azure 実機再検証完了（Pass）**。`POST /api/workflows/{requestId}/cancel`、事前Blob永続化（`cancel.json`）、取消確定・成果物公開の単一調停点（`resolution.json`）、Durable外部イベント待機（`CancelRequested`）、Batchジョブ有界停止（`TerminateBatchJobActivity`）、manifest公開抑止、所有者認可（他者403拒否）、停止確認永続化（`termination.json`）と状態反映、冪等200/202を最新Azure実環境で実証（証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`） |
 | **B案: Entra ID サービス間認証・認可** | **Azure 実機検証実施（主要プローブPass）**。App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 割り当て、Function App への EasyAuth v2（`auth_settings_v2`, `active_directory_v2`）適用下で、閉域検証 VM から `Invoke-PrivateWorkflowAuthValidation.ps1` を実行し、主要プローブ遮断（401/403）および正当トークン通過（202/200）を確認（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`、終了コード0、Pass、コミット `9ad401c` 基準）。※App Role不足トークンや未許可ClientIdの実機拒否試験、および稼働パッケージの同定（`livePackageVerified=false`）は未検証。 |
-| V12 利用者キャンセル | **Azure 実機検証完了（Pass）**。`POST /api/workflows/{requestId}/cancel`、事前Blob永続化（`cancel.json`）、Durable外部イベント待機（`CancelRequested`）、Batchジョブ有界停止（`TerminateBatchJobActivity`）、manifest公開抑止、所有者認可（他者403拒否）、冪等200/202をAzure実環境で実証（証跡: `artifacts/private-validation/20261018-124022-0449/summary.json`、コミット `b7ad854` 基準） |
 | 受付・所有者一体化 | `admission.json` Version 2で同一レコード化。同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否を検証（Azure実機でもPass確認） |
-| 例外・再試行・排他調停 | 取消確定と成果物公開の単一調停点（`resolution.json`）、調停レコードの整合性検証、Restart モード復旧状態検証、キャンセル部分書き込み失敗時の余分な Batch 計算抑止、停止未確認時の取消再送による停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を実装・検証完了（ローカル Fake/Mock/単体テスト合格） |
-| Azure実環境デプロイ・回帰（基準デプロイ成果） | **Pass**（`poc`環境・Azure Storageバックエンド）。基準成果: `.deploy/poc/20261018-211336-1471`（コミット `b7ad854`、全6シナリオ実機回帰Pass）、`.deploy/poc/20261019-001001-3480`（コミット `9ad401c`、EasyAuth v2 認証Pass）。※後続の取消調停点（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を含む最新修正はローカル Fake/Mock/単体テストのみの検証です。 |
+| 例外・再試行・排他調停 | 取消確定と成果物公開の単一調停点（`resolution.json`）、調停レコードの整合性検証、Restart モード復旧状態検証、キャンセル部分書き込み失敗時の余分な Batch 計算抑止、停止未確認時の取消再送による停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を実装・実機検証完了（最新デプロイ `.deploy/poc/20261019-080215-5263` による Azure 実機全6シナリオ回帰合格） |
 | Azure（過去の耐障害性検証） | V05（再起動復旧）/ V07（監視期限超過）/ V08（ホスト停止中Batch期限）/ V09（0台オートスケール）は過去の配置でPass実証済み |
 
 全294件のRelease単体テスト、Terraform Mock 38件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entra 認証の実機検証は正当な App Role を持つ VM Managed Identity からの正常系および未認証・所有者不整合の遮断を確認したものであり、App Role 不足トークン・未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`、デプロイ記述子のみ記録）は未検証です。
 
 以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
+
+## 2026-10-19 最新15関数コード（取消調停・停止再送・停止確認永続化・状態正規化）の Azure 実環境再デプロイおよび全6シナリオ実機回帰検証（全件合格）
+
+最新の15関数コード（取消確定と成果物公開の単一調停点 `resolution.json`、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化 `termination.json` の Activity 再試行・状態反映、Job 作成前取消のステータス正規化、Restart モード復旧状態検証 `HostStoppedBatchWallClock`）を実Azure環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、Azure Storageバックエンド）へ再デプロイし、スモークテストおよび閉域検証VMからの全6シナリオ実機回帰試験を実行し、**全件合格（終了コード 0、Pass）** を確認しました。
+
+| 検証項目 | 実行コマンド / 証跡 | 結果と確認内容 |
+|---|---|---|
+| Azure再デプロイ & スモークテスト | `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke`（ログ: `.deploy/poc/20261019-080215-5263/`） | **Pass**（終了コード0）。インフラ計画差分なし（0 add / 1 change / 0 destroy）。Function AppへのZIP配置後、**15関数全件のインデックス登録を確認**（`AggregateActivity`, `CancelWorkflow`, `ClassifyActivity`, `EnsureBatchJobActivity`, `EnsureBatchTaskActivity`, `FetchAndPersistActivity`, `GetBatchTaskStatusActivity`, `GetWorkflowResult`, `GetWorkflowStatus`, `MainOrchestrator`, `MonitorBatchTaskOrchestrator`, `PublishManifestActivity`, `StartWorkflow`, `TerminateBatchJobActivity`, `WorkflowAdmissionEntity`）。スモークテストにて3 Tasks投入・Batch実行・結果回収・`Sum=3`集約完了を確認（`requestId=deploy-13795081be9948a1b20a2114e447363b`、`instanceId=poc-7dcabfe0556442d93128d4355d5e935e72d7c817`、パッケージSHA-256: `06bf36f42ee396c9291e4172a9926021b60b045cb64f11db2d99050fe11ca833`） |
+| 閉域検証VM経由の全6シナリオ実機回帰 | `scripts/Invoke-PrivatePocValidation.ps1 -DeploymentResultPath .deploy/poc/20261019-080215-5263/deployment-result.json -Scenarios single,three,classification,failure,conflict,cancellation`（証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`） | **Pass**（終了コード0）。全6シナリオ全件合格：<br>① `single`: 1 Task完走、`Sum=1`、`runtimeStatus=Completed`<br>② `three`: 3 Tasks完走、`Sum=3`、`runtimeStatus=Completed`<br>③ `classification`: `light`, `heavy`, `auto`（`light`自動判定）の3種投入がすべて正常完了（各`Sum=1`）<br>④ `failure`: Task exitCode=42によりOrchestratorが期待通り`runtimeStatus=Failed`・`businessState=Failed`へ遷移、成果物公開抑止<br>⑤ `conflict`: 同一requestId重複投入に対し`conflictHttpStatus=409`返戻を確認<br>⑥ `cancellation`（V12利用者キャンセル・最新調停ロジック実証）: `POST /api/workflows/{requestId}/cancel` に対し `cancelHttpStatus=202` 受理、先行Blob永続化 `runs/poc-<requestId>/cancel.json` 確認、Orchestratorの外部イベント `CancelRequested` 調停、Batch Job `completed` 強制終了、Task `exitCode=-1073741510` 停止、成果物 `manifest.json` 非公開確認、`businessState=Cancelled`・`runtimeStatus=Failed` 確定、完了後キャンセル再投入に対する `idempotentCancelHttpStatus=200` 冪等応答を確認 |
+| 実機再検証で実証された改善項目 | `src/Poc.Core/WorkflowOperations.cs`, `src/Poc.Functions/WorkflowFunctions.cs`, `src/Poc.Functions/WorkflowAdmission.cs`, `tools/BatchSmoke/Program.cs` | ① 取消確定と成果物公開の排他調停（`resolution.json`）による二重確定抑止。<br>② 停止未確認時の取消再送による Batch 停止再試行の許容と、停止確認情報（`termination.json`）の Activity 内安全永続化・状態 API への即時反映。<br>③ Job 作成前および公開時取消におけるステータス変換の正規化（停止不要経路の正常終了反映）。<br>④ キャンセル部分書き込み失敗時の余分な Batch 計算進行抑止。<br>⑤ 補助 CLI BatchSmoke の NullReferenceException 解消。 |
 
 ## 2026-10-19 B案 Microsoft Entra ID サービス間認証・認可の Azure 実機検証（プロトタイプ到達点）
 

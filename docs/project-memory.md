@@ -1,6 +1,26 @@
 # プロジェクトメモリ
 
-## 2026-10-18 7821d82 全体レビュー指摘8件の修正完了（P1成果物公開競合・認可境界、P2例外型保持・イベント送達・終端409・検証スクリプト堅牢化）（今回の作業）
+## 2026-10-19 最新15関数コード（取消調停・停止再送・停止確認永続化・状態正規化）の Azure 実環境再デプロイおよび全6シナリオ実機回帰全件合格（今回の作業）
+
+レビュー指摘（取消確定と成果物公開の排他調停 `resolution.json`、調停レコード整合性検証、Restart モード復旧状態検証 `HostStoppedBatchWallClock`、キャンセル部分書き込み失敗時の余分な Batch 計算抑止、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化 `termination.json` の Activity 再試行・状態反映、Job 作成前取消のステータス正規化、補助 CLI BatchSmoke 修正）を取り込んだ最新の15関数パッケージを実 Azure 環境へ再デプロイし、閉域検証 VM からの全6シナリオ実機回帰試験を実行して**全件合格（Pass、終了コード 0）** を確認しました。
+
+- **Azure 実機デプロイ成果**: `.deploy/poc/20261019-080215-5263`
+  - インフラ計画差分なし（0 add / 1 change / 0 destroy）。
+  - Function App への ZIP 配置後、**15関数全件のインデックス登録を確認**（`AggregateActivity`, `CancelWorkflow`, `ClassifyActivity`, `EnsureBatchJobActivity`, `EnsureBatchTaskActivity`, `FetchAndPersistActivity`, `GetBatchTaskStatusActivity`, `GetWorkflowResult`, `GetWorkflowStatus`, `MainOrchestrator`, `MonitorBatchTaskOrchestrator`, `PublishManifestActivity`, `StartWorkflow`, `TerminateBatchJobActivity`, `WorkflowAdmissionEntity`）。
+  - パッケージ SHA-256: `06bf36f42ee396c9291e4172a9926021b60b045cb64f11db2d99050fe11ca833`
+  - スモークテスト合格: 3 Tasks 投入・Batch 実行・結果回収・`Sum=3` 集約完了を確認（`requestId=deploy-13795081be9948a1b20a2114e447363b`、`instanceId=poc-7dcabfe0556442d93128d4355d5e935e72d7c817`）。
+- **閉域検証 VM 実機回帰試験（全6シナリオ Pass、終了コード 0）**:
+  - 証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`
+  - `single`: Pass（1 Task 完走、`Sum=1`、`runtimeStatus=Completed`）
+  - `three`: Pass（3 Tasks 完走、`Sum=3`、`runtimeStatus=Completed`）
+  - `classification`: Pass（`light`, `heavy`, `auto`［`light`自動判定］の3種投入がすべて正常完了、各 `Sum=1`）
+  - `failure`: Pass（Task exitCode=42 により Orchestrator が期待通り `runtimeStatus=Failed`・`businessState=Failed` へ遷移、成果物公開抑止）
+  - `conflict`: Pass（同一 requestId 重複投入に対し `conflictHttpStatus=409` 返戻を確認）
+  - `cancellation`: Pass（`cancelHttpStatus=202` 受理、`cancel.json` 先行永続化、Orchestrator の外部イベント `CancelRequested` 調停、Batch Job `completed` 強制終了、Task `exitCode=-1073741510` 停止、成果物 `manifest.json` 非公開確認、`businessState=Cancelled`・`runtimeStatus=Failed` 確定、完了後キャンセル再投入に対する `idempotentCancelHttpStatus=200` 冪等応答を確認）
+- **実機再検証により解消された課題**:
+  - 先行してローカル Fake/Mock/単体テストのみで合格していたレビュー指摘修正群（取消確定の排他調停、停止未確認時の停止再試行、停止確認永続化の例外遮蔽・Activity再試行、Job作成前取消ステータス正規化等）が、**Azure 実機環境でも完全に動作し、回帰問題がないことを実証**しました。
+
+## 2026-10-18 7821d82 全体レビュー指摘8件の修正完了（P1成果物公開競合・認可境界、P2例外型保持・イベント送達・終端409・検証スクリプト堅牢化）
 
 コミット `7821d82` を基準としたレビュー指摘8件（P1 2件、P2 6件）の不具合・競合・認可漏れ・テストスクリプト堅牢化の改修を完了しました。
 
