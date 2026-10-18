@@ -6,7 +6,7 @@
 
 | 対象 | 最新の確定結果 |
 |---|---|
-| Release単体試験 | Poc.Tests 288/288件、DtsProbe 2/2件、計290件成功（失敗・スキップ0件） |
+| Release単体試験 | Poc.Tests 290/290件、DtsProbe 2/2件、計292件成功（失敗・スキップ0件） |
 | Release publish | 成功、`local.settings*` 不在 |
 | Terraform Mock | `modes.tftest.hcl` 37/37件全Pass、`backend.tftest.hcl` 1/1件全Pass |
 | PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
@@ -17,7 +17,7 @@
 | Azure実環境デプロイ・回帰（最新15関数コード） | **Pass**（`poc`環境・Azure Storageバックエンド）。デプロイ成果: `.deploy/poc/20261019-001001-3480`（15関数全件インデックス登録確認、EasyAuth v2 有効化）。 |
 | Azure（過去の耐障害性検証） | V05（再起動復旧）/ V07（監視期限超過）/ V08（ホスト停止中Batch期限）/ V09（0台オートスケール）は過去の配置でPass実証済み |
 
-全290件のRelease単体テスト、Terraform Mock 38件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entra 認証の実機検証は正当な App Role を持つ VM Managed Identity からの正常系および未認証・所有者不整合の遮断を確認したものであり、App Role 不足トークン・未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`、デプロイ記述子のみ記録）は未検証です。
+全292件のRelease単体テスト、Terraform Mock 38件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entra 認証の実機検証は正当な App Role を持つ VM Managed Identity からの正常系および未認証・所有者不整合の遮断を確認したものであり、App Role 不足トークン・未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`、デプロイ記述子のみ記録）は未検証です。
 
 以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
 
@@ -29,7 +29,7 @@ Azure 実環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`�
 |---|---|---|
 | Entra テナント設定 & App Role 割当 | `az ad app create`, `az rest .../appRoleAssignedTo` | **完了**。App 登録 `poc-workflow-api`（Client ID: `9d1aedba-a99b-4896-b212-77cf313dcfb9`、Identifier URI: `api://9d1aedba-a99b-4896-b212-77cf313dcfb9`）、Application 専用 App Role `Workflow.Execute`（ID: `81a93380-4dff-4a6e-883c-61bd66328ef9`）、optional claim `idtyp: app`（`accessToken`）を設定。検証 VM のシステム割り当てマネージド ID（Client ID: `2896f1b6-4379-4e55-bcde-8438912bb918`）へ App Role を割り当て |
 | Function App への EasyAuth v2 適用 | `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1`（デプロイ成果: `.deploy/poc/20261019-001001-3480`） | **Pass**。インフラ計画差分（0 add / 1 change / 0 destroy）。Function App の `auth_settings_v2`（`active_directory_v2`、`unauthenticated_action: Return401`、`allowed_audiences: ["api://..."]`、`allowed_applications: ["2896f1b6..."]`）および `WORKFLOW_AUTH_MODE=EntraEasyAuth` を有効化 |
-| 閉域検証 VM からの認証・認可実機検証 | `scripts/Invoke-PrivateWorkflowAuthValidation.ps1 -DeploymentResultPath .deploy/poc/20261019-001001-3480/deployment-result.json -Resource "api://9d1aedba-a99b-4896-b212-77cf313dcfb9" -ManagedIdentityClientId "2896f1b6-4379-4e55-bcde-8438912bb918"`（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`） | **Pass**（終了コード 0）。<br>① 未認証プローブ遮断: `anonymous`（401）、`keyOnly`（401）、`forgedPrincipal`（401）、`bearerWithoutKey`（401）を 3 種類の独自 API（`StartWorkflow`, `GetWorkflowStatus`, `GetWorkflowResult`）すべてで確認（計 12 プローブ 401 遮断）。<br>② 所有者伝播認可: 認可済みトークン存在下での `X-Poc-Owner-Id` / `X-Poc-Org-Id` 欠落、および別所有者・別組織指定に対し、3 API すべてで 403 遮断を確認。<br>③ 正常系・排他制御: 正当な IMDS トークン（`Workflow.Execute` 付与）＋Function Key＋所有者情報による 202 受理、同一再送 202、入力競合 409、ステータスポーリング（`Accepted` -> `Preparing` -> `Running` -> `Publishing` -> `Succeeded`）、および 200 結果取得（fingerprint / sum / task 完全整合）を確認 |
+| 閉域検証 VM からの認証・認可実機検証 | `scripts/Invoke-PrivateWorkflowAuthValidation.ps1 -DeploymentResultPath .deploy/poc/20261019-001001-3480/deployment-result.json -Resource "api://9d1aedba-a99b-4896-b212-77cf313dcfb9" -OwnerId "auth-user-01" -OrgId "auth-org-01"`（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`） | **Pass**（終了コード 0）。<br>① 未認証プローブ遮断: `anonymous`（401）、`keyOnly`（401）、`forgedPrincipal`（401）、`bearerWithoutKey`（401）を 3 種類の独自 API（`StartWorkflow`, `GetWorkflowStatus`, `GetWorkflowResult`）すべてで確認（計 12 プローブ 401 遮断）。<br>② 所有者伝播認可: 認可済みトークン存在下での `X-Poc-Owner-Id` / `X-Poc-Org-Id` 欠落、および別所有者・別組織指定に対し、3 API すべてで 403 遮断を確認。<br>③ 正常系・排他制御: 正当な IMDS トークン（`Workflow.Execute` 付与）＋Function Key＋所有者情報による 202 受理、同一再送 202、入力競合 409、ステータスポーリング（`Accepted` -> `Preparing` -> `Running` -> `Publishing` -> `Succeeded`）、および 200 結果取得（fingerprint / sum / task 完全整合）を確認 |
 
 ### 実機検証の到達境界と未検証事項
 - **検証された到達点**:

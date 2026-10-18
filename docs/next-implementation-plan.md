@@ -28,7 +28,7 @@
   - `Invoke-PrivatePocValidation.ps1` および `Deployment.Common.ps1`: Azure CLI（`az.cmd`）の標準インストールパスへのフォールバックおよび PATH 環境変数解決を整備。
   - `Deployment.Common.ps1`: `ConvertTo-DeploymentHashtable` の文字列配列型判定バグを修正（プリミティブ／文字列ガード）。
   - `Invoke-WorkflowAuthValidation.ps1`: ポーリング許容状態に `Preparing` / `Publishing` を追加。
-- **検証実績**: Release 単体テスト全 290 件（`Poc.Tests` 288 件＋`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が合格。
+- **検証実績**: Release 単体テスト全 292 件（`Poc.Tests` 290 件＋`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が合格。
 - **未実施・前提事項**:
   - 15 関数コードの Azure Storage バックエンド（`poc` 環境）での実機回帰および V12 実証は完了。DTS（Durable Task Scheduler）バックエンド環境での 15 関数実機回帰は未実施。
   - Entra 実機検証において、App Role 不足トークン（有効だが `Workflow.Execute` を持たないトークン）や未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`）は未検証。

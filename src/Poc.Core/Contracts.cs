@@ -117,6 +117,7 @@ public static class WorkflowIdentity
     public static string AdmissionPath(string requestId) => $"runs/poc-{requestId}/admission.json";
     public static string OwnerPath(string requestId) => $"runs/poc-{requestId}/owner.json";
     public static string CancelPath(string requestId) => $"runs/poc-{requestId}/cancel.json";
+    public static string TerminationPath(string requestId) => $"runs/poc-{requestId}/termination.json";
     public static string ResolutionPath(string requestId) => $"runs/poc-{requestId}/final/resolution.json";
     public static string AggregatePath(string requestId) => $"runs/poc-{requestId}/final/aggregate.json";
     public static string ManifestPath(string requestId) => $"runs/poc-{requestId}/final/manifest.json";

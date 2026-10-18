@@ -158,10 +158,11 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             }
             if (customState == "Cancelled")
             {
-                bool confirmed = (terminationCompleted == true) && !terminationFailed;
+                bool unconfirmed = terminationFailed || terminationCompleted == false;
+                bool confirmed = !unconfirmed;
                 var status = confirmed ? "Cancelled" : "Cancelling";
                 return new WorkflowStatusResponse(requestId, instanceId, jobId, status, ResultAvailable: false,
-                    TerminationConfirmed: confirmed, Error: terminationFailed ? TerminationUnconfirmedMessage : WorkflowCancelledMessage);
+                    TerminationConfirmed: confirmed, Error: unconfirmed ? TerminationUnconfirmedMessage : WorkflowCancelledMessage);
             }
             return new WorkflowStatusResponse(requestId, instanceId, jobId, "Failed", ResultAvailable: false, Error: WorkflowFailedMessage);
         }
@@ -219,6 +220,19 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 if (await admission.IsCancellationRequestedAsync(requestId, cancellationToken))
                 {
                     normalized = normalized with { Status = "Cancelling" };
+                }
+            }
+            if (normalized.Status == "Cancelling" || (normalized.Status == "Cancelled" && normalized.TerminationConfirmed != true))
+            {
+                var term = await admission.ReadTerminationAsync(requestId, cancellationToken);
+                if (term?.Completed == true)
+                {
+                    normalized = normalized with
+                    {
+                        Status = "Cancelled",
+                        TerminationConfirmed = true,
+                        Error = WorkflowCancelledMessage
+                    };
                 }
             }
 
@@ -286,6 +300,19 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             {
                 var instance = await client.GetInstanceAsync(WorkflowIdentity.InstanceId(requestId), getInputsAndOutputs: true, cancellationToken);
                 var normalized = NormalizeStatus(requestId, instance);
+                if (normalized.Status == "Cancelling" || (normalized.Status == "Cancelled" && normalized.TerminationConfirmed != true))
+                {
+                    var term = await admission.ReadTerminationAsync(requestId, cancellationToken);
+                    if (term?.Completed == true)
+                    {
+                        normalized = normalized with
+                        {
+                            Status = "Cancelled",
+                            TerminationConfirmed = true,
+                            Error = WorkflowCancelledMessage
+                        };
+                    }
+                }
                 var conflict = request.CreateResponse(HttpStatusCode.Conflict);
                 await conflict.WriteAsJsonAsync(new { error = "Workflow result is not available.", requestId, status = normalized.Status });
                 return conflict;
@@ -417,6 +444,19 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             if (instance is not null)
             {
                 var normalized = NormalizeStatus(requestId, instance);
+                if (normalized.Status == "Cancelling" || (normalized.Status == "Cancelled" && normalized.TerminationConfirmed != true))
+                {
+                    var term = await admission.ReadTerminationAsync(requestId, cancellationToken);
+                    if (term?.Completed == true)
+                    {
+                        normalized = normalized with
+                        {
+                            Status = "Cancelled",
+                            TerminationConfirmed = true,
+                            Error = WorkflowCancelledMessage
+                        };
+                    }
+                }
                 if (normalized.Status == "Succeeded")
                 {
                     var conflict = request.CreateResponse(HttpStatusCode.Conflict);
@@ -464,6 +504,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                     var term = await operations.TerminateJobAsync(plan, cancellationToken);
                     if (term.Completed)
                     {
+                        await admission.RecordTerminationAsync(requestId, term, cancellationToken);
                         var confirmedResponse = new WorkflowStatusResponse(
                             requestId, instanceId, plan.JobId, "Cancelled", ResultAvailable: false,
                             TerminationConfirmed: true, Error: WorkflowCancelledMessage);
@@ -537,7 +578,8 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             if (plan.CancelRequested || (cancelEventTask.IsCompleted && cancelEventTask.Result is not null))
             {
                 terminalState = "Cancelled";
-                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled" });
+                termination = new BatchJobTerminationStatus("Completed", true);
+                context.SetCustomStatus(new { state = "Cancelled", plan.JobId, errorCode = "workflow_cancelled", termination });
                 throw new InvalidOperationException(WorkflowCancelledMessage);
             }
 
@@ -760,7 +802,15 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     [Function(nameof(EnsureBatchJobActivity))]
     public Task EnsureBatchJobActivity([ActivityTrigger] WorkflowPlan plan, CancellationToken cancellationToken) => RetryableActivity(() => operations.EnsureJobAsync(plan, cancellationToken), cancellationToken);
     [Function(nameof(TerminateBatchJobActivity))]
-    public Task<BatchJobTerminationStatus> TerminateBatchJobActivity([ActivityTrigger] WorkflowPlan plan, CancellationToken cancellationToken) => RetryableActivity(() => operations.TerminateJobAsync(plan, cancellationToken), cancellationToken);
+    public async Task<BatchJobTerminationStatus> TerminateBatchJobActivity([ActivityTrigger] WorkflowPlan plan, CancellationToken cancellationToken)
+    {
+        var status = await RetryableActivity(() => operations.TerminateJobAsync(plan, cancellationToken), cancellationToken);
+        if (status.Completed)
+        {
+            await admission.RecordTerminationAsync(plan.Request.RequestId, status, cancellationToken);
+        }
+        return status;
+    }
     [Function(nameof(EnsureBatchTaskActivity))]
     public Task EnsureBatchTaskActivity([ActivityTrigger] TaskSpec spec, CancellationToken cancellationToken) => RetryableActivity(() => operations.EnsureTaskAsync(spec, cancellationToken), cancellationToken);
     [Function(nameof(GetBatchTaskStatusActivity))]

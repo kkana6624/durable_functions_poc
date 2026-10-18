@@ -128,6 +128,24 @@ public sealed class WorkflowAdmission(IResultRepository results)
         return await TryReadAsync<WorkflowCancelRecord>(WorkflowIdentity.CancelPath(requestId), cancellationToken);
     }
 
+    public async Task RecordTerminationAsync(string requestId, BatchJobTerminationStatus termination, CancellationToken cancellationToken = default)
+    {
+        if (results is null) return;
+        try
+        {
+            await results.PutIfAbsentAsync(WorkflowIdentity.TerminationPath(requestId), termination, cancellationToken);
+        }
+        catch (WorkflowConflictException)
+        {
+            // Already recorded, idempotent
+        }
+    }
+
+    public async Task<BatchJobTerminationStatus?> ReadTerminationAsync(string requestId, CancellationToken cancellationToken = default)
+    {
+        if (results is null) return null;
+        return await TryReadAsync<BatchJobTerminationStatus>(WorkflowIdentity.TerminationPath(requestId), cancellationToken);
+    }
 
     public Task<WorkflowAdmissionRecord?> GetRecordAsync(string requestId, CancellationToken cancellationToken = default) =>
         ReadRecordAsync(requestId, cancellationToken);
