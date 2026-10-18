@@ -26,11 +26,28 @@ resource "azurerm_batch_pool" "poc" {
   max_tasks_per_node             = var.batch_max_tasks_per_node
   inter_node_communication       = "Disabled"
   target_node_communication_mode = "Simplified"
-  fixed_scale {
-    target_dedicated_nodes    = var.batch_node_type == "dedicated" ? var.batch_node_count : 0
-    target_low_priority_nodes = var.batch_node_type == "spot" ? var.batch_node_count : 0
-    resize_timeout            = "PT15M"
-    node_deallocation_method  = "TaskCompletion"
+  dynamic "fixed_scale" {
+    for_each = var.batch_scale_mode == "fixed" ? [1] : []
+    content {
+      target_dedicated_nodes    = var.batch_node_type == "dedicated" ? var.batch_node_count : 0
+      target_low_priority_nodes = var.batch_node_type == "spot" ? var.batch_node_count : 0
+      resize_timeout            = "PT15M"
+      node_deallocation_method  = "TaskCompletion"
+    }
+  }
+  dynamic "auto_scale" {
+    for_each = var.batch_scale_mode == "autoscale" ? [1] : []
+    content {
+      evaluation_interval = var.batch_autoscale_evaluation_interval
+      formula             = <<-EOT
+        $sampleSeconds = 180 * TimeInterval_Second;
+        $samples = $PendingTasks.GetSamplePercent($sampleSeconds);
+        $tasks = $samples < 70 ? 0 : max(0, max($PendingTasks.GetSample($sampleSeconds)));
+        $TargetDedicatedNodes = ${var.batch_node_type == "dedicated" ? "$tasks > 0 ? ${var.batch_node_count} : 0" : "0"};
+        $TargetLowPriorityNodes = ${var.batch_node_type == "spot" ? "$tasks > 0 ? ${var.batch_node_count} : 0" : "0"};
+        $NodeDeallocationOption = taskcompletion;
+      EOT
+    }
   }
   storage_image_reference {
     id        = var.batch_image_source == "gallery" ? data.azurerm_shared_image_version.existing[0].id : null

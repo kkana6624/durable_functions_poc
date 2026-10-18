@@ -77,11 +77,13 @@ function Invoke-DeploymentValidation {
     $endpoint = $Outputs.batch_endpoint.TrimEnd('/')
     $poolId = [Uri]::EscapeDataString($Outputs.batch_pool_id)
     if ($Phase -in @('Pool','All')) {
-    # A referenced pool may intentionally have zero nodes until a task triggers autoscale.
-    # New pools expose their configured count; all of those nodes must be usable.
+    # A referenced or autoscale pool may intentionally have zero nodes until a task triggers autoscale.
+    # New fixed-scale pools expose their configured count; all of those nodes must be usable.
+    $scaleMode = if ($Outputs.ContainsKey('batch_mode') -and $Outputs.batch_mode -eq 'new' -and $Outputs.ContainsKey('batch_scale_mode') -and $null -ne $Outputs.batch_scale_mode) { [string]$Outputs.batch_scale_mode } else { $null }
+    if ($scaleMode -and $scaleMode -cnotin @('fixed','autoscale')) { throw 'batch_scale_mode must be fixed or autoscale.' }
     $minimumNodes = if ($Outputs.ContainsKey('batch_node_count') -and $null -ne $Outputs.batch_node_count) { [int]$Outputs.batch_node_count } else { 0 }
     if ($minimumNodes -lt 0) { throw 'batch_node_count cannot be negative.' }
-    if ($Outputs.ContainsKey('batch_mode') -and $Outputs.batch_mode -eq 'new' -and $minimumNodes -lt 1) { throw 'New pools require a positive batch_node_count.' }
+    if ($Outputs.ContainsKey('batch_mode') -and $Outputs.batch_mode -eq 'new' -and $scaleMode -ne 'autoscale' -and $minimumNodes -lt 1) { throw 'New pools require a positive batch_node_count.' }
     # New metadata identifies the requested capacity type. Older deployment
     # results and reference-only pools retain the previous readiness behavior.
     $nodeType=$null
@@ -92,6 +94,12 @@ function Invoke-DeploymentValidation {
     $readinessDescription=if ($nodeType -eq 'spot') { 'Spot Batch node readiness (capacity is not guaranteed)' } else { 'Batch node readiness' }
     $null = Wait-ValidationCondition -RetryErrors -Description $readinessDescription -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds -Check {
         $pool = Invoke-AzJson -Arguments @('rest','--method','get','--url',"$endpoint/pools/$poolId`?api-version=2025-06-01",'--resource','https://batch.core.windows.net/')
+        if ($scaleMode -eq 'autoscale') {
+            if (-not $pool.PSObject.Properties['enableAutoScale'] -or $pool.enableAutoScale -ne $true) { Stop-Validation 'Batch pool autoscale is not enabled.' }
+            if ($pool.PSObject.Properties['autoScaleRun'] -and $pool.autoScaleRun -and $pool.autoScaleRun.PSObject.Properties['error'] -and $pool.autoScaleRun.error) {
+                Stop-Validation "Batch pool autoscale evaluation failed ($($pool.autoScaleRun.error.code))."
+            }
+        }
         if ($minimumNodes -eq 0) { return $true }
         if ($pool.PSObject.Properties['resizeErrors'] -and @($pool.resizeErrors).Count -gt 0) {
             $codes = @($pool.resizeErrors | ForEach-Object { $_.code }) -join ', '
@@ -120,10 +128,11 @@ function Invoke-DeploymentValidation {
         }
         return $readyNodes.Count -ge $minimumNodes
     }
-    if ($minimumNodes -eq 0) { Write-Host 'Existing Batch pool is accessible; tasks may trigger node allocation.' }
+    if ($scaleMode -eq 'autoscale' -and $minimumNodes -eq 0) { Write-Host 'Autoscale Batch pool is enabled and accessible; tasks will trigger node allocation from zero.' }
+    elseif ($minimumNodes -eq 0) { Write-Host 'Existing Batch pool is accessible; tasks may trigger node allocation.' }
     elseif ($nodeType) { Write-Host "All configured $nodeType Batch nodes are ready." }
     else { Write-Host 'All configured Batch nodes are ready.' }
-    if ($Phase -eq 'Pool') { return [pscustomobject]@{ Ready=$true; Phase='Pool'; Smoke='Not tested'; BatchNodeType=$nodeType } }
+    if ($Phase -eq 'Pool') { return [pscustomobject]@{ Ready=$true; Phase='Pool'; Smoke='Not tested'; BatchNodeType=$nodeType; BatchScaleMode=$scaleMode } }
     }
     $expected = @('StartWorkflow','MainOrchestrator','MonitorBatchTaskOrchestrator','ClassifyActivity',
         'EnsureBatchJobActivity','EnsureBatchTaskActivity','GetBatchTaskStatusActivity','FetchAndPersistActivity','AggregateActivity','PublishManifestActivity',

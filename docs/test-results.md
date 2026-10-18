@@ -1,15 +1,17 @@
 # PoC 検証結果
 
-## 2026-10-18 信頼性検証（再起動復旧・timeout・DTS 履歴集計）の Azure 実接続検証
+## 2026-10-18 カテゴリ A（追加の耐障害性・運用系検証：`V05` / `V07` / `V08` / `V09`）の Azure 実接続検証
 
-検証 VM カスタムロールへの `Microsoft.Web/sites/host/listkeys/action` 権限反映後、`dts-poc` 環境（Durable Task Scheduler バックエンド）にて Function App 再起動復旧検証（`V05`）、監視期限超過 `timeout` シナリオ（`V07`）、および `tools/DtsProbe --history true` の実機確認を実施し、すべて Pass しました。
+検証 VM カスタムロールへの `Microsoft.Web/sites/host/listkeys/action` 権限反映後、`dts-poc` 環境（Durable Task Scheduler バックエンド）および `poc` 環境（Azure Storage バックエンド）にて、Function App 再起動復旧検証（`V05`）、監視期限超過 `timeout` シナリオ（`V07`）、Function ホスト停止中の Batch `MaxWallClockTime` 安全網検証（`V08`）、0 台オートスケール Pool への先行投入検証（`V09`）、および `tools/DtsProbe --history true` の実機確認を実施し、すべて Pass しました。
 
 | 対象 | 実環境・ローカルの結果 |
 |---|---|
 | カスタムロール更新 | `dts-poc` / `poc` 両環境の `azurerm_role_definition.validation_function` を targeted `terraform apply` で更新（各 0 add / 1 change / 0 destroy）。実機ロール定義に `Microsoft.Web/sites/host/listkeys/action` が追加されたことを確認 |
-| スクリプト修正と回帰試験 | ①ゲストバンドル内での `Invoke-PrivateVmOperation.ps1` 条件付き読込、②`PrivateVm.Worker.ps1` における `Test-Deployment.ps1` の `[ValidateSet] $Phase` との変数名衝突解消（`$recoveryPhase`）、③`Get-PocWorkflowSettings` の ARM `POST .../config/appsettings/list` 直接呼出し化（`slotConfigNames` 読取回避）を実施し、オフライン回帰試験 Pass |
-| Function App 再起動復旧（実機 `V05`） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/dts-recovery/`）。1 Task（300 秒遅延）の Batch `running` かつ Durable `Running` を VM で確認後、操作者権限で Function App を `restart`（`finally` で `start` 復元）。再 POST なしで同一 `instanceId`・同一作成時刻・同一 Task（`task-00`）が `Completed` / `Succeeded` となり、`aggregate.json` / `manifest.json` / `tasks/task-00/result.json` の整合を確認 |
-| 監視期限超過 `timeout`（実機 `V07`） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/dts-timeout/`）。監視期限（15 分）超過後に `runtimeStatus=Failed`・`businessState=TimedOut`、Batch Job の `batchMaxWallClockSeconds=900` 一致、Batch Job `completed`（Task 強制終了）、成功 `manifest.json` 非公開を確認 |
+| スクリプト・IaC 拡充と回帰試験 | ①ゲストバンドル内での `Invoke-PrivateVmOperation.ps1` 条件付き読込、②`PrivateVm.Worker.ps1` の `$recoveryPhase` 変数名衝突解消、③`Get-PocWorkflowSettings` の ARM `POST .../config/appsettings/list` 直接呼出し化、④`Invoke-PocRecoveryValidation.ps1` への `-ValidationMode HostStoppedBatchWallClock` 追加、⑤Terraform `batch_scale_mode`（`fixed` / `autoscale`）追加（main Mock 30 件 Pass）および `Invoke-PocAutoscaleValidation.ps1` 実装を実施し、全オフライン回帰試験 Pass |
+| Function App 再起動復旧（実機 `V05`：DTS / Azure Storage 両バックエンド） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/dts-recovery/` および `artifacts/reliability/storage-recovery/`）。1 Task（300 秒遅延）の Batch `running` かつ Durable `Running` を VM で確認後、操作者権限で Function App を `restart`（`finally` で `start` 復元）。再 POST なしで同一 `instanceId`・同一作成時刻・同一 Task（`task-00`）が `Completed` / `Succeeded` となり、`aggregate.json` / `manifest.json` / `tasks/task-00/result.json` の整合を確認 |
+| 監視期限超過 `timeout`（実機 `V07`：DTS / Azure Storage 両バックエンド） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/dts-timeout/` および `artifacts/reliability/storage-timeout/`）。監視期限（15 分）超過後に `runtimeStatus=Failed`・`businessState=TimedOut`、Batch Job の `batchMaxWallClockSeconds=900` 一致、Batch Job `completed`（Task 強制終了）、成功 `manifest.json` 非公開を確認 |
+| ホスト停止中の Batch `MaxWallClockTime` 安全網（実機 `V08`） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/dts-host-stopped-wallclock/`）。Batch Task 開始確認後に Function App を `az functionapp stop` で停止（`Stopped` 確認）し、Function 停止中のまま Batch 側の `MaxWallClockTime`（900 秒）期限到達により Job が `completed`（`batchTerminationReason='MaxWallClockTimeExpiry'`, `manifestPublished=false`）へ自動終了すること、および `finally` で Function App が `Running` に復元されることを確認 |
+| 0 台オートスケール Pool 先行投入（実機 `V09`） | **Pass**（`ExitCode=0`、証跡 `artifacts/reliability/autoscale-v09/`）。専用 Pool（`batch_mode='new'`）を 0 台 `steady` へ縮小し `$PendingTasks` Autoscale 式（`PT5M`）を有効化、0 台待機確認（`zeroNodesVerifiedBeforeSubmission=true`）後に `single` シナリオを投入して Spot 1 台への自動スケールアウト（`scaledUpObserved=true`）と Task 完走（`Sum=1`）、および `finally` での固定 1 台構成復元（`restoredFixedScaleSucceeded=true`, `restoredPoolReadyVerified=true`）を確認 |
 | `DtsProbe --history true`（実機） | **Pass**（証跡 `artifacts/dts-validation/live-instance-history.json`）。スモーク・標準シナリオ・`recovery`・`timeout` の全インスタンスでペイロードを出力せず `historyObservation`（`scope=ReturnedInstanceHistoryOnly`, `allGenerationsObserved=false`, `executionStartedCount=1`）を確認 |
 
 ## 2026-10-17 信頼性の追加実装（ローカル検証）

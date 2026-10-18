@@ -493,3 +493,39 @@ run "invalid_node_type_rejected" {
   variables { batch_node_type = "lowpriority" }
   expect_failures = [var.batch_node_type]
 }
+
+run "spot_autoscale_pool_zero_to_target" {
+  command = apply
+  variables {
+    batch_mode                          = "new"
+    batch_account_id                    = null
+    batch_endpoint                      = null
+    batch_pool_id                       = null
+    batch_node_type                     = "spot"
+    batch_scale_mode                    = "autoscale"
+    batch_autoscale_evaluation_interval = "PT5M"
+    batch_node_count                    = 1
+    gallery_image_version_id            = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/image-rg/providers/Microsoft.Compute/galleries/gallery/images/windows/versions/1.0.0"
+    batch_node_agent_sku_id             = "batch.node.windows amd64"
+  }
+  assert {
+    condition     = length(azurerm_batch_pool.poc[0].fixed_scale) == 0 && length(azurerm_batch_pool.poc[0].auto_scale) == 1 && azurerm_batch_pool.poc[0].auto_scale[0].evaluation_interval == "PT5M" && strcontains(azurerm_batch_pool.poc[0].auto_scale[0].formula, "$TargetDedicatedNodes = 0;") && strcontains(azurerm_batch_pool.poc[0].auto_scale[0].formula, "$TargetLowPriorityNodes = $tasks > 0 ? 1 : 0;")
+    error_message = "Spot autoscale pool must configure 0-to-1 low-priority autoscale without fixed_scale."
+  }
+  assert {
+    condition     = output.deployment.batch_scale_mode == "autoscale" && output.deployment.batch_node_count == 0 && output.deployment.batch_max_node_count == 1 && output.deployment.batch_dedicated_node_count == null && output.deployment.batch_spot_node_count == null
+    error_message = "Autoscale deployment metadata must expose 0 initial minimum nodes and max node count."
+  }
+}
+
+run "invalid_batch_scale_mode_rejected" {
+  command = plan
+  variables { batch_scale_mode = "manual" }
+  expect_failures = [var.batch_scale_mode]
+}
+
+run "invalid_autoscale_interval_rejected" {
+  command = plan
+  variables { batch_autoscale_evaluation_interval = "PT1M" }
+  expect_failures = [var.batch_autoscale_evaluation_interval]
+}

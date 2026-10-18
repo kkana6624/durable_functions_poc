@@ -221,6 +221,24 @@ variable "batch_node_type" {
     error_message = "batch_node_type must be dedicated or spot."
   }
 }
+variable "batch_scale_mode" {
+  type        = string
+  default     = "fixed"
+  description = "New pools only: fixed target nodes or 0-to-batch_node_count autoscale formula. Ignored for existing pools."
+  validation {
+    condition     = contains(["fixed", "autoscale"], var.batch_scale_mode)
+    error_message = "batch_scale_mode must be fixed or autoscale."
+  }
+}
+variable "batch_autoscale_evaluation_interval" {
+  type        = string
+  default     = "PT5M"
+  description = "New autoscale pools only: evaluation interval (minimum PT5M)."
+  validation {
+    condition     = contains(["PT5M", "PT10M", "PT15M", "PT30M"], var.batch_autoscale_evaluation_interval)
+    error_message = "batch_autoscale_evaluation_interval must be PT5M, PT10M, PT15M, or PT30M."
+  }
+}
 variable "batch_max_tasks_per_node" {
   type    = number
   default = 1

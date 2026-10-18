@@ -24,6 +24,9 @@ function Invoke-AzJson {
         if ($script:scenario -eq 'permission') { throw 'AuthorizationPermissionMismatch: Batch data-plane read permission required.' }
         if ($script:scenario -eq 'rbacretry' -and $script:poolReads -lt 2) { throw 'AuthorizationPermissionMismatch: transient RBAC propagation' }
         if ($script:scenario -eq 'resize') { return [pscustomobject]@{ resizeErrors=@([pscustomobject]@{ code='AllocationFailed' }) } }
+        if ($script:scenario -eq 'autoscaleenabled') { return [pscustomobject]@{ allocationState='steady'; enableAutoScale=$true } }
+        if ($script:scenario -eq 'autoscaledisabled') { return [pscustomobject]@{ allocationState='steady'; enableAutoScale=$false } }
+        if ($script:scenario -eq 'autoscaleerror') { return [pscustomobject]@{ allocationState='steady'; enableAutoScale=$true; autoScaleRun=[pscustomobject]@{ error=[pscustomobject]@{ code='InsufficientSampleData' } } } }
         return [pscustomobject]@{ allocationState='steady' }
     }
     if ($command -match '^rest .*?/nodes\?') {
@@ -144,6 +147,18 @@ $outputs.batch_dedicated_node_count=$null; $outputs.batch_spot_node_count=$null
 $script:calls.Clear()
 $result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1
 Assert-True ($result.Ready -and $null -eq $result.BatchNodeType -and @($script:calls | Where-Object { $_ -match '/nodes\?' }).Count -eq 0) 'New reference-only null metadata must preserve existing zero-node pool access checks'
+$outputs.batch_mode='new'; $outputs.batch_scale_mode='autoscale'; $outputs.batch_node_count=0; $outputs.batch_node_type='spot'
+$script:scenario='autoscaleenabled'; $script:calls.Clear()
+$result=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1
+Assert-True ($result.Ready -and $result.BatchScaleMode -eq 'autoscale' -and $result.BatchNodeType -eq 'spot' -and @($script:calls | Where-Object { $_ -match '/nodes\?' }).Count -eq 0) 'New zero-node autoscale pool must verify enableAutoScale without waiting for initial nodes'
+$script:scenario='autoscaledisabled'
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'autoscale is not enabled'
+$script:scenario='autoscaleerror'
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'InsufficientSampleData'
+$outputs.batch_scale_mode='invalid'; $script:calls.Clear()
+Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'batch_scale_mode'
+Assert-True ($script:calls.Count -eq 0) 'Invalid batch_scale_mode must fail before Azure calls'
+$outputs.Remove('batch_scale_mode'); $outputs.batch_mode='existing'; $outputs.batch_node_count=$null; $outputs.batch_node_type=$null
 $script:scenario='permission'
 Assert-Fails { Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 1 -PollSeconds 1 } 'permission'
 $script:scenario='missingfunction'

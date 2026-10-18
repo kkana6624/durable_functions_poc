@@ -55,10 +55,12 @@ output "deployment" {
     batch_account_id           = local.batch_account_id
     batch_account_name         = local.batch_account_name
     batch_resource_group_name  = local.batch_resource_group_name
-    batch_node_count           = var.batch_mode == "new" ? var.batch_node_count : null
+    batch_scale_mode           = var.batch_mode == "new" ? var.batch_scale_mode : null
+    batch_node_count           = var.batch_mode == "new" ? (var.batch_scale_mode == "fixed" ? var.batch_node_count : 0) : null
+    batch_max_node_count       = var.batch_mode == "new" ? var.batch_node_count : null
     batch_node_type            = var.batch_mode == "new" ? var.batch_node_type : null
-    batch_dedicated_node_count = var.batch_mode == "new" ? azurerm_batch_pool.poc[0].fixed_scale[0].target_dedicated_nodes : null
-    batch_spot_node_count      = var.batch_mode == "new" ? azurerm_batch_pool.poc[0].fixed_scale[0].target_low_priority_nodes : null
+    batch_dedicated_node_count = var.batch_mode == "new" && var.batch_scale_mode == "fixed" ? azurerm_batch_pool.poc[0].fixed_scale[0].target_dedicated_nodes : null
+    batch_spot_node_count      = var.batch_mode == "new" && var.batch_scale_mode == "fixed" ? azurerm_batch_pool.poc[0].fixed_scale[0].target_low_priority_nodes : null
     network_mode               = "private-function-vm"
     validation_vm_name         = azurerm_linux_virtual_machine.validation.name
     validation_vm_id           = azurerm_linux_virtual_machine.validation.id
