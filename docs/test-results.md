@@ -1,8 +1,8 @@
 # PoC 検証結果
 
-## 現在の到達点（2026-10-18、最新HEAD `b14b25f`、実機検証済みコード `9c96054`）
+## 現在の到達点（2026-10-18、最新コード実機検証済み）
 
-最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。
+最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。さらに、現行14関数構成および新受付スキーマ（`admission.json` v2）について、Azure実環境（`poc`環境・Azure Storageバックエンド）への配置・スモークテストおよび閉域検証VM経由の主要5シナリオ回帰検証を完了し、全件Passを確認しました。
 
 | 対象 | 最新の確定結果 |
 |---|---|
@@ -10,15 +10,27 @@
 | Release publish | `artifacts/auth-boundary-release-publish` 成功、`local.settings*` 不在 |
 | Terraform Mock | `modes.tftest.hcl` 37/37件全Pass、`fmt -check` / `validate` Pass |
 | PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
-| 受付・所有者一体化 | `admission.json` Version 2で同一レコード化。同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否を検証 |
+| 受付・所有者一体化 | `admission.json` Version 2で同一レコード化。同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否を検証（Azure実機でもPass確認） |
 | 認証境界アダプター・IaC・runner | `EntraEasyAuth`モードでのBearer/App Role/`idtyp=app`検査アダプター、opt-in EasyAuth IaC、VM Managed Identity用認証runner（`Invoke-WorkflowAuthValidation.ps1`）をローカル検証 |
 | 開始契約・成果物検証 | 本文とLocationは独自status URL、Retry-Afterは10秒。内部runnerは別途取得したsystem keyによるメモリ内管理URIで詳細診断を継続。現行のFunctions期待数は14件。状態・結果APIが同じ公開成果物検証を使用 |
 | 例外・再試行 | Activity wrapperから外へ渡す例外を安全化。gRPCはUnavailable/DeadlineExceeded/ResourceExhaustedに限定し、有界再試行を検証 |
-| Azure | 最新コードの配置・実機回帰は未実施。以下のV05/V07/V08/V09成功記録は以前の配置（`9c96054`時点）に対する証跡 |
+| Azure実環境デプロイ・回帰（現行14関数コード） | **Pass**（`poc`環境・Azure Storageバックエンド）。14関数全件インデックス確認、スモークテストPass（3 Tasks、Sum=3）、閉域回帰5シナリオ（`single` / `three` / `classification` / `failure` / `conflict`）全件Pass（証跡: `artifacts/private-validation/20261018-083838-2879/`、終了コード0） |
+| Azure（過去の耐障害性検証） | V05（再起動復旧）/ V07（監視期限超過）/ V08（ホスト停止中Batch期限）/ V09（0台オートスケール）は過去の配置（`9c96054`時点）でPass実証済み |
 
-全261件のRelease単体テスト、Terraform Mock 37件、PowerShellオフライン試験8組は最新HEADで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entraの実テナント設定（App Role割当・`idtyp`設定）や実EasyAuth環境での偽造ヘッダー遮断検証は未実施です。
+全261件のRelease単体テスト、Terraform Mock 37件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entraの実テナント設定（App Role割当・`idtyp`設定）や実EasyAuth環境での偽造ヘッダー遮断検証は未実施です。
 
 以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
+
+## 2026-10-18 最新コード（14 Functions・新受付スキーマ・独自状態API）の Azure 実環境デプロイおよび回帰検証
+
+現行コード（全14 Functions、`admission.json` v2受付、独自状態照会URL契約、エラー遮蔽、公開成果物検証）を実Azure環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、Azure Storageバックエンド）へ配置し、スモークテストおよび閉域検証VMからの主要回帰シナリオを実行しました。
+
+| 検証項目 | 実行コマンド / 証跡 | 結果と確認内容 |
+|---|---|---|
+| Azureデプロイ & スモークテスト | `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke`（ログ: `.deploy/poc/20261018-171029-4809/`） | **Pass**（終了コード0）。インフラ計画差分なし（0 add / 1 change / 0 destroy）。Function AppへのZIP配置後、**全14 Functionsのインデックス登録を確認**（`AggregateActivity`, `ClassifyActivity`, `EnsureBatchJobActivity`, `EnsureBatchTaskActivity`, `FetchAndPersistActivity`, `GetBatchTaskStatusActivity`, `GetWorkflowResult`, `GetWorkflowStatus`, `MainOrchestrator`, `MonitorBatchTaskOrchestrator`, `PublishManifestActivity`, `StartWorkflow`, `TerminateBatchJobActivity`, `WorkflowAdmissionEntity`）。スモークテストにて3 Tasks投入・Batch実行・結果回収・`Sum=3`集約完了を確認（`requestId=deploy-47611f6d13994d43837aaf8b92b38e5d`） |
+| 検証ランナーの新受付スキーマ追従 | `scripts/Invoke-PocValidation.ps1`, `scripts/tests/PocValidation.Tests.ps1` | `runs/poc-<requestId>/admission.json`（Version 2）を優先読取し、旧 `request.json`（Version 1）へフォールバックする後方互換対応を実施。オフライン回帰試験 `PocValidation.Tests.ps1` Pass |
+| 閉域検証VM経由の主要5シナリオ回帰 | `scripts/Invoke-PrivatePocValidation.ps1 -DeploymentResultPath .deploy/poc/20261018-171029-4809/deployment-result.json -Scenarios single,three,classification,failure,conflict`（証跡: `artifacts/private-validation/20261018-083838-2879/summary.json`） | **Pass**（終了コード0）。5シナリオ全件合格：<br>① `single`: 1 Task完走、`Sum=1`、`runtimeStatus=Completed`<br>② `three`: 3 Tasks完走、`Sum=3`、`runtimeStatus=Completed`<br>③ `classification`: `light`, `heavy`, `auto`（`light`自動判定）の3種投入がすべて正常完了<br>④ `failure`: Task exitCode=42によりOrchestratorが期待通り`runtimeStatus=Failed`・`businessState=Failed`へ遷移<br>⑤ `conflict`: 同一requestId重複投入に対し`conflictHttpStatus=409`返戻を確認<br>※ すべてのシナリオで独自状態URL契約（開始202で独自URL返戻・Durable管理URL遮蔽）および機密非漏洩を確認 |
+
 
 ## 2026-10-18 カテゴリ A（追加の耐障害性・運用系検証：`V05` / `V07` / `V08` / `V09`）の Azure 実接続検証
 

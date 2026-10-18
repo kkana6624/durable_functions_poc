@@ -1,8 +1,16 @@
 # プロジェクトメモリ
 
-## 2026-10-18 EasyAuth IaCと独自API認証runner（今回の作業）
+## 2026-10-18 最新コード実機検証（14関数・新受付・独自状態API）（今回の作業）
 
-作業開始時HEADは`27b24b4`でGitはcleanでした。既定`PocFunctionKey`を維持し、明示した厳格モード向けのEasyAuth IaCとVM Managed Identity/IMDS用の`Invoke-WorkflowAuthValidation.ps1`を追加します。Function keyとowner/orgを維持し、独自開始・状態・結果APIを使います。Entra登録・App Role割当・`idtyp` optional claimは自動変更しません。Azure配置・実機試験は行っていません。
+最新コード（14関数、`admission.json` v2受付、独自状態API契約、エラー遮蔽）をAzure実環境（`poc`環境・Azure Storageバックエンド）へデプロイし、スモークテスト（3 Tasks、Sum=3）および閉域検証VM経由の主要5シナリオ（`single`, `three`, `classification`, `failure`, `conflict`）を実行しました。
+
+デプロイは `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke`（ログ: `.deploy/poc/20261018-171029-4809/`）により実施され、インフラ差分なし（0 add / 1 change / 0 destroy）、Function AppへのZIP配置、14関数全件のインデックス登録、スモークテスト合格（`requestId=deploy-47611f6d13994d43837aaf8b92b38e5d`）を確認しました。
+検証ランナー（`scripts/Invoke-PocValidation.ps1`）を改修し、`runs/poc-<requestId>/admission.json`（Version 2）を優先参照しつつ旧 `request.json` へフォールバックする後方互換を実装しました（オフライン試験 `PocValidation.Tests.ps1` Pass）。
+閉域検証VMからの `scripts/Invoke-PrivatePocValidation.ps1` 実行により、5シナリオ全件Pass（終了コード0、証跡: `artifacts/private-validation/20261018-083838-2879/summary.json`）を確認しました。独自状態URL契約（開始202で独自URL返戻・Durable管理URL遮蔽）、エラー遮蔽、公開成果物検証、409競合調停がAzure実環境で正常に機能することを実証しました。
+
+## 2026-10-18 EasyAuth IaCと独自API認証runner
+
+作業開始時HEADは`27b24b4`でGitはcleanでした。既定`PocFunctionKey`を維持し、明示した厳格モード向けのEasyAuth IaCとVM Managed Identity/IMDS用の`Invoke-WorkflowAuthValidation.ps1`を追加します。Function keyとowner/orgを維持し、独自開始・状態・結果APIを使います。Entra登録・App Role割当・`idtyp` optional claimは自動変更しません。
 
 厳格モードで`deploy.ps1 -Smoke`は初期検証で拒否します。既存のSmoke・Private/通常シナリオ・Recovery/Autoscale runnerの内部診断はBearer未対応です。新runnerの追加はこれらの移行や両Durableバックエンドの回帰完了を意味しません。診断用EasyAuth除外パスは設けず、SCMは既存のEntra/ARM token配置経路を維持します。
 
@@ -12,7 +20,7 @@
 
 runner証跡の来歴は配置記述子に記載された値を形式検証して選択したものです。`livePackageVerified=false`を維持し、稼働packageの実測や最新commitのAzure配置成功とは扱いません。
 
-## 2026-10-18 認証境界アダプター（今回の作業）
+## 2026-10-18 認証境界アダプター
 
 作業開始時HEADは`e1d04d6`でGitはcleanでした。今回は既定`PocFunctionKey`互換を保ち、`EntraEasyAuth`を明示選択した場合のprincipal解析・tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`・scope不存在を検査するアダプターとローカル拒否試験を追加します。厳格モードではowner/orgが必須で、利用者情報を主張する責任は認可済みバックエンドにあります。Function keyは引き続き必要です。
 
@@ -22,7 +30,7 @@ Azure環境変数のガードは構成の暗号学的証明ではありません
 
 認証試験追加後のsolution Releaseは全261件（Poc.Tests259件・DtsProbe2件）が成功し、失敗・スキップは0件です。Release publish（`artifacts/auth-boundary-release-publish`）も成功し、`local.settings*`の非混入を確認しました。`git diff --check`は成功しています。Azure配置・実機試験は未実施です。
 
-## 2026-10-18 受付と所有者の単一レコード化（今回の作業）
+## 2026-10-18 受付と所有者の単一レコード化
 
 新受付は `runs/poc-<requestId>/admission.json` の Version 2 に入力・instanceId・nullableな所有者/組織をまとめ、条件付き作成で確定します。所有者なし/ありも同じ競合点で調停し、所有者/組織不一致は403、所有者一致・入力不一致は409です。同一所有者・入力の再送を許し、状態・結果照会も新レコードを参照します。
 
@@ -34,17 +42,20 @@ Entra認証・App Role・信頼された利用者情報の伝播は今回対象�
 
 今回の最終検証はsolution Releaseの全221件（Poc.Tests219件・DtsProbe2件）が成功し、失敗・スキップは0件です。Release publish（`artifacts/admission-owner-release-publish`）も成功し、`local.settings*` の非混入を確認しました。`git diff --check` は成功し、変更は意図した8ファイルのみで生成物の混入はありません。Azureへの配置・実機検証は今回実施していません。
 
-## 現在の要約（2026-10-18、最新HEAD `b14b25f`、実機検証済みコード `9c96054`）
+## 現在の要約（2026-10-18、最新コード実機検証済み）
 
-最新HEAD `b14b25f`（コミット `e1d04d6`、`27b24b4`、`b14b25f`）におけるローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。
+最新コード（コミット `e1d04d6`、`27b24b4`、`b14b25f`）における実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定に加え、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、`EntraEasyAuth`選択時の認可アダプター（principal解析、tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`検査）、opt-inのEasyAuth IaC（`workflow_auth_mode`）、およびVM Managed Identity/IMDSトークンによる独自API認証runner（`Invoke-WorkflowAuthValidation.ps1`）まで完了しています。
 
-確定したローカル検証:
-- Release単体テスト: 全261件（`Poc.Tests` 259件＋`DtsProbe` 2件、失敗・スキップ0件）全件Pass。内数として新規 `WorkflowAuthorizationTests` 40件、拡充された `WorkflowAdmissionTests` 15件（277行拡充）、`ResilienceTests` 56件、`WorkflowHttpTests` 81件を含む。Release publish（`artifacts/auth-boundary-release-publish`）成功・`local.settings*` 不在。
+さらに、Azure実環境（`poc`環境・Azure Storageバックエンド）へ現行14関数コードをデプロイし、スモークテストPass（3 Tasks、Sum=3）、閉域検証VM経由の主要5シナリオ（`single` / `three` / `classification` / `failure` / `conflict`）全件Pass（証跡: `artifacts/private-validation/20261018-083838-2879/summary.json`）を確認しました。
+
+確定した検証実績:
+- Release単体テスト: 全261件（`Poc.Tests` 259件＋`DtsProbe` 2件、失敗・スキップ0件）全件Pass。
 - Terraform Mock: `modes.tftest.hcl` 37/37件全Pass、`fmt -check` / `validate` Pass。
 - PowerShellオフライン試験: 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation）。
-- 境界と前提: 既定の `PocFunctionKey` 互換を維持し、現行Functions期待数は14件です。今回の最新コードのAzure再配置・実機回帰検証は未実施で、以前のV05/V07/V08/V09成功記録（`9c96054`時点）とは区別します。EntraのApp Role割当や`idtyp` optional claim等の実テナント設定は自動変更しておらず、実EasyAuth環境での偽造ヘッダー遮断や実機トークン検証は未実証です。全ランタイムログ・全履歴の機密非露出、admission20の厳密な全世代起動一意性も未保証です。
+- Azure実環境回帰: 14関数全件インデックス、新受付スキーマ（`admission.json` v2）、独自状態URL契約（開始202で独自URL返戻・Durable管理URL遮蔽）、エラー遮蔽、公開成果物検証、409競合調停の動作を確認。
+- 境界と前提: 既定の `PocFunctionKey` 互換を維持し、現行Functions期待数は14件です。EntraのApp Role割当や`idtyp` optional claim等の実テナント設定は自動変更しておらず、実EasyAuth環境での偽造ヘッダー遮断や実機トークン検証は未実証です。全ランタイムログ・全履歴の機密非露出、admission20の厳密な全世代起動一意性も未保証です。
 
-次の作業はV11のAzure配置・実機回帰およびEntra実設定の準備（専用PoC API登録・App Role・`idtyp`設定、厳格モード専用環境での配置・実機検証、既存runnerのBearer追従検討）、またはV12利用者キャンセル連鎖の実装です。後続にV10/T09ファイル入出力、V00閉域接続も残ります。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
+次の作業はV11のEntra実設定の準備（専用PoC API登録・App Role・`idtyp`設定、厳格モード専用環境での配置・実機検証、既存runnerのBearer追従検討）、またはV12利用者キャンセル連鎖の実装です。後続にV10/T09ファイル入出力、V00閉域接続も残ります。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
 
 ## 2026-10-18 ActivityのgRPC再試行分類の限定（ローカル実装）
 

@@ -142,8 +142,8 @@ function Get-PocBlobDocument {
     $classification=if ($request.classification -eq 'auto') { 'light' } else { $request.classification }
     $root=$Outputs.blob_endpoint.TrimEnd('/')+'/'+$Outputs.blob_container_name+"/runs/poc-$($request.requestId)"
     $ids=@(0..($request.taskCount-1) | ForEach-Object { 'task-{0:00}' -f $_ })
-    if ($Path -match '/request.json$') {
-        return [pscustomobject]@{ version=1; instanceId=$jobId; request=$request; unexpected=$script:secret }
+    if ($Path -match '/(admission|request).json$') {
+        return [pscustomobject]@{ schemaVersion=2; version=1; instanceId=$jobId; request=$request; owner=$null; unexpected=$script:secret }
     }
     $document=[pscustomobject]@{ requestId=$request.requestId; jobId=$jobId; fingerprint=$fingerprint; unexpected=$script:secret }
     if ($Path -match '/tasks/(task-[0-9]+)/result.json$') {

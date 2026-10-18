@@ -283,9 +283,21 @@ function Invoke-PocScenario {
             $environment = @($task.environmentSettings | Where-Object { $_.name -eq 'POC_FINGERPRINT' })
             if ($environment.Count -ne 1 -or $environment[0].value -ne $expectedFingerprint) { Stop-PocValidation 'TaskFingerprintMismatch' }
         }
-        $storedRequest = Get-PocBlobDocument -Outputs $Outputs -Path "runs/poc-$requestId/request.json"
-        if ($storedRequest.version -ne 1 -or $storedRequest.instanceId -ne $jobId) { Stop-PocValidation 'InputIdentityMismatch' }
-        foreach ($field in $request.Keys) { if ($storedRequest.request.$field -ne $request[$field]) { Stop-PocValidation 'InputContentMismatch' } }
+        $admissionPath = "runs/poc-$requestId/admission.json"
+        $storedRecord = if (Test-PocBlobExists -Outputs $Outputs -Path $admissionPath) {
+            Get-PocBlobDocument -Outputs $Outputs -Path $admissionPath
+        } else {
+            try {
+                Get-PocBlobDocument -Outputs $Outputs -Path $admissionPath
+            } catch {
+                Get-PocBlobDocument -Outputs $Outputs -Path "runs/poc-$requestId/request.json"
+            }
+        }
+        $storedRequest = if ($storedRecord.PSObject.Properties['request'] -and $storedRecord.request) { $storedRecord.request } else { $storedRecord }
+        $storedInstance = if ($storedRecord.PSObject.Properties['instanceId'] -and $storedRecord.instanceId) { [string]$storedRecord.instanceId } else { '' }
+        $storedVersion = if ($storedRecord.PSObject.Properties['schemaVersion']) { [int]$storedRecord.schemaVersion } elseif ($storedRecord.PSObject.Properties['version']) { [int]$storedRecord.version } else { 0 }
+        if ($storedVersion -notin @(1,2) -or $storedInstance -ne $jobId) { Stop-PocValidation 'InputIdentityMismatch' }
+        foreach ($field in $request.Keys) { if ($storedRequest.$field -ne $request[$field]) { Stop-PocValidation 'InputContentMismatch' } }
         $root = "runs/poc-$requestId"
         if ($Name -in @('failure','timeout')) {
             $expectedState = if ($Name -eq 'timeout') { 'TimedOut' } else { 'Failed' }
