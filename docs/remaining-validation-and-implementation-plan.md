@@ -120,9 +120,9 @@
 ### 試験実施上の補足
 
 - 個人環境では先に VM から Function / SCM への Private DNS 解決・HTTPS 到達性と Function 公開アクセス拒否を確認します。Storage / Batch とオンプレミス接続を含む `V00` 全体の完成は前提にしません。`V01` のデプロイ・認証と基本正常系を確認してから競合・異常系試験へ進み、将来の閉域化完了後に同一のジョブ検証を再実行します。
-- 初期検証ランナーは `V02`、`V03`（非ゼロ終了）、`V04`、`V07`（正常な期限停止）、および軽重分類を対象とします。データ改ざん、ホスト強制停止復旧、RBAC権限変更、ネットワーク障害注入、停止確認失敗、0台オートスケール、実C++実行は後続の試験フェーズで実施します。なお、ローカルFakeやSDKモックによる故障注入の結果を、Azure実環境障害の実証結果へ安易に繰り上げることはしません。
+- `scripts/Invoke-PocValidation.ps1` は `V02`、`V03`（非ゼロ終了・異常系注入）、`V04`（同一入力 20 並列・別入力 `409 Conflict`）、`V07`（監視期限超過と `MaxWallClockTime` 設定・`TerminateJobAsync` 検証）、および軽重分類を検証します。また、`scripts/Invoke-PocRecoveryValidation.ps1` により `V05`（Function App 再起動復旧）と `V08`（ホスト停止中の Batch `MaxWallClockTime` 安全網）、`scripts/Invoke-PocAutoscaleValidation.ps1` により `V09`（0 台オートスケール Pool への先行投入）をそれぞれ実 Azure 環境で検証済みです。なお、ローカル Fake や SDK モックによる故障注入（改ざん・欠損・RBAC 権限剥奪等）の結果を、Azure 実環境障害の実証結果へ繰り上げることはせず、`docs/test-results.md` および `docs/feasibility-matrix.md` で厳密に区別します。
 - `V10`〜`V12` はオンプレミス連携インターフェースの契約締結および追加実装の完了後に実施します。実C++バイナリが準備できるまでの間は、固定のC++検証用スタブを用いて入出力経路を先行検証可能ですが、業務アプリ自体の動作実証とは明確に区別します。
-- `V09` の検証にあたって0台オートスケールPoolが存在しない場合は、専用の検証用fixtureを別途用意します（現行Terraformコードは新規Poolを固定1〜3台でプロビジョニングする構成のため、そのままでは0台オートスケール試験には適用できません）。
+- `V09` の 0 台オートスケール検証については、Terraform（`infra/batch.tf`）の `batch_scale_mode = "autoscale"`（0 台待機・`$PendingTasks` による Spot 最大 1 台自動拡張）と `scripts/Invoke-PocAutoscaleValidation.ps1`（Dedicated 0 / Spot 2 vCPU クォータ制約下での共有 Pool 一時 0 台退避・自動拡張検証・原状回復ガード）として実装・実機検証済みです。
 
 ---
 

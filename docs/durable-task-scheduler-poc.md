@@ -1,12 +1,12 @@
 # Durable Task Scheduler を使う PoC
 
-更新日: 2026-10-17
+更新日: 2026-10-18
 
 ## 対象と検証状況
 
 本構成では、Durable Functions の実行履歴・内部メッセージ・Durable Entity 状態の保存先（バックエンド）として、従来の **Azure Storage（`azureStorage`、既定）** または **Durable Task Scheduler（`durableTaskScheduler`、DTS）** を選択できます。
 
-DTS 用の別環境を Azure 上へ配置し、Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、および標準検証シナリオ 5 件の Pass を実機で確認済みです。`admission20`（20 並列同時受付）については、公開 API から全世代の起動履歴を網羅取得できない制限により `NotRun`（summary 終了コード `2`）としています。あわせて、SDK（`tools/DtsProbe`）から DTS 上のスモークインスタンスを直接照会し、`MainOrchestrator / Completed` へ到達していることも確認しました。なお、既存の Azure Storage バックエンド環境の Function App 設定や保存先は一切変更していません。
+DTS 用の別環境を Azure 上へ配置し、Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準検証シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、および Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網による自動停止（`V08`）の Pass を実機で確認済みです。`admission20`（20 並列同時受付）については、公開 API から全世代の起動履歴を網羅取得できない制限により `NotRun`（summary 終了コード `2`）としています。あわせて、SDK（`tools/DtsProbe`）から DTS 上の各インスタンスを直接照会し、`MainOrchestrator / Completed` へ到達していることおよび保持履歴のイベント件数集計（`--history true`）も確認しました。なお、既存の Azure Storage バックエンド環境の Function App 設定や保存先は一切変更していません。
 
 Orchestrator、Activity、受付用 Durable Entity、および Windows Batch 側の処理コードは両バックエンドで共通です。DTS を選択した場合でも、Functions ホスト自体が使用する Storage と業務用の入力・結果保存 Blob は引き続き使用します。また、**DTS はワークフローの状態管理バックエンドであり、Azure Batch の計算ノードスケジューラを置き換えるものではありません。**
 
@@ -16,12 +16,14 @@ Orchestrator、Activity、受付用 Durable Entity、および Windows Batch 側
 
 | 確認項目 | 結果・証跡（Git 管理外） |
 |---|---|
-| 配置・3 Task smoke | `Ready=true`、`Smoke=Pass`、`TaskCount=3`、`Sum=3`。証跡: `.deploy/dts-poc/20261017-224759-6853/deployment-result.json`（完了: `2026-10-17T13:56:57Z`） |
-| 標準 6 シナリオ | `single` / `three` / `classification` / `failure` / `conflict` の 5 件が Pass、`admission20` は `AdmissionObservedButExecutionHistoryUnavailable` により `NotRun`。証跡: `artifacts/dts-validation/azure-scenarios/summary.txt`、終了コード `2`（完了: `2026-10-17T14:06:03Z`） |
-| DTS データプレーン直接照会 | 証跡: `artifacts/dts-validation/live-instance.json`。スモークテストと同一のインスタンス `poc-8689eb6004faae579c3e4eae6de22e50310d4ff9` が `MainOrchestrator / Completed` であることを SDK で直接取得（配置設定値の表示とは独立したデータプレーン接続証跡） |
-| ローカル IaC 検証 | Terraform main Mock 27 件、および `fmt` / `validate` が成功。既存 Plan の参照や observer 用の Task Hub スコープ読み取り権限も検証済み |
+| 配置・3 Task smoke | `Ready=true`、`Smoke=Pass`、`TaskCount=3`、`Sum=3`。証跡: `.deploy/dts-poc/<run>/deployment-result.json`（完了: `2026-10-17T13:56:57Z`） |
+| 標準 6 シナリオ + `timeout` (`V07`) | `single` / `three` / `classification` / `failure` / `conflict` / `timeout` の 6 件が Pass、`admission20` は `AdmissionObservedButExecutionHistoryUnavailable` により `NotRun`。証跡: `artifacts/dts-validation/azure-scenarios/summary.txt` および `artifacts/reliability/dts-timeout/` |
+| Function App 再起動復旧 (`V05`) | **Pass**（`ExitCode=0`、証跡: `artifacts/reliability/dts-recovery/`）。Batch Task 実行中に Function App を再起動し、再 POST なしで同一インスタンス・同一 Task が完走して成果物が整合することを確認 |
+| ホスト停止中の Batch `MaxWallClockTime` 安全網 (`V08`) | **Pass**（`ExitCode=0`、証跡: `artifacts/reliability/dts-host-stopped-wallclock/`）。Function App を `Stopped` にした状態で Batch 側の `MaxWallClockTime` により Job が `MaxWallClockTimeExpiry` で自動終了し、`finally` で Function App が `Running` に復元されることを確認 |
+| DTS データプレーン直接照会・履歴集計 | 証跡: `artifacts/dts-validation/live-instance.json` および `artifacts/dts-validation/live-instance-history.json`。スモーク・標準シナリオ・復旧・timeout の各インスタンス状態と履歴イベント件数（`scope=ReturnedInstanceHistoryOnly`, `allGenerationsObserved=false`, `executionStartedCount=1`）を SDK で直接取得 |
+| ローカル IaC 検証 | Terraform main Mock 30 件、および `fmt` / `validate` が成功。既存 Plan の参照や observer 用の Task Hub スコープ読み取り権限も検証済み |
 
-なお、Functions ホストの再起動復旧、監視期限超過（タイムアウト）による停止、権限・通信障害注入、0 台オートスケール、Spot 回収からの復旧、実 C++ バイナリ処理、および履歴保持期限経過後の動作は未実証です。また、`admission20` の観測結果をもって全世代にわたる厳密な起動一意性の保証とは扱いません。
+なお、権限・通信障害注入、Spot 回収からの復旧、実 C++ バイナリ処理、および履歴保持期限経過後の動作は後続フェーズの残作業です。また、`admission20` の観測結果をもって全世代にわたる厳密な起動一意性の保証とは扱いません。
 
 ## 設定と作成するリソース
 
@@ -94,7 +96,7 @@ Consumption SKU の完了履歴保持上限は 30 日です。受付 Blob・Enti
 
 `src/Poc.Functions/local.settings.scheduler.json.example` を `local.settings.json` にコピーすると、ローカルの DTS エミュレーター（`localhost:8080` / Task Hub `default`）を使用できます（Functions ホスト用に Azurite も必要です）。`Authentication=None` はローカルエミュレーター専用であり、Azure 用設定には使用しないでください。Batch および結果 Blob の設定は実際の検証先に置き換え、開発者の認証・権限を準備してください。なお、エミュレーターはインメモリ動作のため、プロセス停止をまたぐ永続性の実証には使用できません。
 
-Azure 実環境では、DTS 配置・Managed Identity 接続・12 個の Functions 登録、単一 / 3 Task・分類・意図的失敗・入力競合・監視期限超過（`timeout`）の各シナリオ、および Batch Task 実行中の Functions ホスト再起動復旧を確認済みです。今後は ホスト停止中の Batch 側安全網（`MaxWallClockTime` 単独停止）や履歴保持期限の影響を別途確認します。ローカルの Mock・ビルド・publish の成功と、Azure 実機の証跡は明確に区別して管理します。
+Azure 実環境では、DTS 配置・Managed Identity 接続・12 個の Functions 登録、単一 / 3 Task・分類・意図的失敗・入力競合・監視期限超過（`timeout`、`V07`）の各シナリオ、Batch Task 実行中の Functions ホスト再起動復旧（`V05`）、およびホスト停止中の Batch 側安全網（`MaxWallClockTime` 単独停止、`V08`）を確認済みです。今後は履歴保持期限経過後の影響や障害注入試験を別途確認します。ローカルの Mock・ビルド・publish の成功と、Azure 実機の証跡は明確に区別して管理します。
 
 検証結果ファイルの `settings.durableBackend` と `settings.taskHubName` はデプロイ構成設定の記録であり、DTS サーバーへの実接続を独立に証明する欄ではありません。
 

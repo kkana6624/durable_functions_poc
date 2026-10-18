@@ -1,10 +1,10 @@
 # ワークフロー信頼性設計 — 受付制御・再試行・タイムアウト処理
 
-更新日: 2026-10-17
+更新日: 2026-10-18
 
 本書は、公式ドキュメントおよび利用中SDKのソースコード解析に基づき設計・実装した、ワークフローの同時受付排他制御・一時障害リトライ・監視期限超過（タイムアウト）処理およびデプロイ制御の設計仕様書です。
 
-> **注意:** 本書に記載された検証内容はローカル開発環境（Mock / Fake）で確認したものであり、実Azure環境での動作実証については後述の「4. 実Azureで残る検証」にて段階的に実施します。
+> **注意:** 本書に記載された設計は、ローカル開発環境（Mock / Fake）に加え、実 Azure 環境（Azure Storage バックエンドおよび Durable Task Scheduler バックエンド）にて主要シナリオ（正常系・競合 `409`・監視期限超過 `V07`・Function App 再起動復旧 `V05`・Function ホスト停止中の Batch `MaxWallClockTime` 安全網 `V08`・0 台オートスケール Pool 先行投入 `V09`）の動作実証を完了しています。実機検証の到達点と残る確認事項は「4. 実Azureでの検証到達点と残る確認事項」および [信頼性の追加検証](reliability-validation.md) を参照してください。
 
 ---
 
@@ -68,18 +68,25 @@
 ## 3. 配置制御（デプロイ・Smokeテスト）
 
 - **Terraform BackendのPlanOnly制御**: `Backend.Create=true` での `PlanOnly` 実行時は、リモートステート用 Storage の存在確認が成功して作成済みと判明すれば、bootstrap は適用せず main の計画（plan）へ進みます。未作成であれば bootstrap の計画のみを実行します。存在確認時のエラーを単なる「リソース不存在」として握りつぶすことはしません（参考: [AzureRM backend](https://developer.hashicorp.com/terraform/language/backend/azurerm)、[container exists](https://learn.microsoft.com/en-us/cli/azure/storage/container?view=azure-cli-latest)）。
-- **既存Batch Pool（0台構成）への対応**: 既存 Pool は稼働ノードが0台であってもデプロイおよび Task 投入が可能です。ノードの存在を Task 投入の前提条件とはせず、Smoke テストでは Task を投入した上でノードの起動および Task の完了を待機します。既存 Pool に設定された自動拡張（autoscale）ルールは変更しません（参考: [Batch自動拡張](https://learn.microsoft.com/en-us/azure/batch/batch-automatic-scaling)）。
-- **新規Batch Poolのノード待機**: 新規 Pool を作成する構成では、設定台数分の利用可能ノードが正常にプロビジョニングされるまで待機します。ノード一覧取得時は `odata.nextLink` を辿って全ページを集計し、別ホスト宛てや循環参照となる不正な継続 URL が返された場合は処理を拒否します（参考: [Node一覧API](https://learn.microsoft.com/en-us/rest/api/batchservice/nodes/list-nodes?view=rest-batchservice-2025-06-01)）。
+- **既存Batch Poolおよび新規0台Autoscale Poolへの対応**: 既存 Pool または `batch_scale_mode='autoscale'` の新規 Pool は、稼働ノードが 0 台であってもデプロイおよび Task 投入が可能です。ノードの存在を Task 投入の前提条件とはせず、Smoke テストや `Invoke-PocAutoscaleValidation.ps1` では Task を投入した上でノードの起動および Task の完了を待機します。既存 Pool に設定された自動拡張（autoscale）ルールは変更しません（参考: [Batch自動拡張](https://learn.microsoft.com/en-us/azure/batch/batch-automatic-scaling)）。
+- **新規固定スケールBatch Poolのノード待機**: 新規 `fixed` Pool を作成する構成では、設定台数分の利用可能ノードが正常にプロビジョニングされるまで待機します。ノード一覧取得時は `odata.nextLink` を辿って全ページを集計し、別ホスト宛てや循環参照となる不正な継続 URL が返された場合は処理を拒否します（参考: [Node一覧API](https://learn.microsoft.com/en-us/rest/api/batchservice/nodes/list-nodes?view=rest-batchservice-2025-06-01)）。
 - **Functionsの検出と状態判定**: デプロイ後に正常稼働を確認すべき Functions の検出対象は計12件です。状態照会 API（GET）における `404` は「インスタンス起動待ち」として上限付きでリトライし、`401` / `403` は「認証・権限エラー」として即座に失敗判定とします（参考: [Durable HTTP API](https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-http-api)）。
 
 ---
 
-## 4. 実Azureで残る検証
+## 4. 実Azureでの検証到達点と残る確認事項
 
-ローカル環境のテスト（Mock / Fake）では、アプリケーションの分岐ロジックや API 呼び出しのシーケンスを確認しています。実 Blob Storage に対するアトミックな条件付き書き込み、Entity バッチ確定中におけるプロセス再起動復旧、実 Batch サービスにおける Job 停止処理や RBAC 権限エラーの伝播については、以下の Azure 実環境試験にて別途実証します。
+ローカル環境のテスト（Mock / Fake）に加え、実 Azure 環境（Azure Storage バックエンドおよび Durable Task Scheduler バックエンド）にて以下の検証を完了しています（詳細は [信頼性の追加検証](reliability-validation.md) および [検証結果](test-results.md) を参照）。
 
-1. **同時受付と入力競合**: 同一入力の同時 POST および異なる入力の同時 POST を行い、Main オーケストレーションが厳密に1件のみ起動すること、および入力競合時に正しく `409 Conflict` が返却されること。
-2. **プロセス中断からの復旧**: 入力 Blob 作成後、Entity 受理前後、Entity バッチ確定前後の各タイミングで Functions ホストを強制停止し、リクエストの再送とオーケストレーションの復旧が正常に動作すること。
-3. **監視期限超過と停止処理**: Task 投入中や状態照会中に監視期限（deadline）へ到達した際、対象 Batch Job が確実に `Completed` となり、成果物（manifest.json）が公開されないこと。あわせて、停止権限不足時のフェイルセーフ挙動を確認すること。
-4. **安全網とオートスケール**: Functions ホスト停止状態において Batch の `MaxWallClockTime` による Job 終端化が正しく機能すること、および0台オートスケール Pool に対する Smoke テストが完了すること。
-5. **リトライポリシーの峻別**: 一時的な通信障害に対してのみリトライが行われ、認証・権限エラー、入力競合、データ不整合などの恒久エラーではリトライが実行されないこと。
+1. **同時受付と入力競合**:
+   - 異なる入力の同時・連続 POST に対して正しく `409 Conflict` が返却されること（`conflict` シナリオ：両バックエンドで実機 **Pass**）。
+   - 同一入力の 20 並列 POST に対して同一インスタンス ID へ集約され完了すること、および `tools/DtsProbe --history true` で返却履歴の `executionStartedCount=1` を確認済み（ただし全世代の `executionId` を網羅列挙する公開 API がないため、`admission20` シナリオは引き続き `NotRun` 扱い）。
+2. **プロセス中断からの復旧（`V05`）**:
+   - Batch Task 実行中に Function App を ARM 経由で `restart` しても、再 POST なしで同一インスタンス・同一 Task のまま完走し、成果物と `manifest.json` が整合すること（両バックエンドで実機 **Pass**）。※Entity チェックポイント確定前後のミリ秒単位の強制クラッシュ注入は未実施。
+3. **監視期限超過と停止処理（`V07`）**:
+   - 監視期限（deadline）到達時に `TimedOut` となり、対象 Batch Job の `maxWallClockTime` 制約一致と `Completed`（強制終了）遷移、および `manifest.json` 非公開を確認済み（両バックエンドで実機 **Pass**）。※停止権限不足時の異常系注入は別途。
+4. **安全網とオートスケール（`V08` / `V09`）**:
+   - Function App を `Stopped` にした状態で Batch の `MaxWallClockTime` により Job が `MaxWallClockTimeExpiry` で自動終了すること（`V08`：実機 **Pass**）。
+   - 0 台オートスケール Pool に対してノード 0 台状態から Task を先行投入し、自動拡張により Spot ノードが起動して Task が完走すること（`V09`：実機 **Pass**）。
+5. **リトライポリシーの峻別**:
+   - ローカルの Fake / Mock 単体テスト（`ResilienceTests` 42 件）で一時障害リトライと恒久エラー非再試行・キャンセルトークン伝播を確認済み。実 Azure 上での人為的な通信障害注入試験は後続課題。

@@ -1,10 +1,10 @@
 # 検証runnerの処理フロー
 
-更新日: 2026-10-17
+更新日: 2026-10-18
 
-本書では、`scripts/Invoke-PocValidation.ps1` による一括検証の処理フローと、ワークフロー開始 API から Durable Functions、Azure Batch、Blob Storage へ至る一連のシーケンスを解説します。個人検証では `Invoke-PrivatePocValidation.ps1` が検証 VM の Run Command を起動し、VM 上から Function の Private Endpoint を呼び出します。Azure CLI は VM の Managed Identity でログインし、Function key を取得します。Function の公開ネットワークアクセスは無効化します。Storage / Batch の送信経路、VPN / ExpressRoute、Web App の後続構成については [共通ネットワーク設計](network-connectivity-design.md) を参照してください。
+本書では、`scripts/Invoke-PocValidation.ps1` による一括検証の処理フローと、ワークフロー開始 API から Durable Functions、Azure Batch、Blob Storage へ至る一連のシーケンスを解説します。個人検証では `Invoke-PrivatePocValidation.ps1` が検証 VM の Run Command を起動し、VM 上から Function の Private Endpoint を呼び出します。Azure CLI は VM の Managed Identity でログインし、Function key を取得します。Function の公開ネットワークアクセスは無効化します。また、Function App の再起動復旧（`V05`）およびホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`）は `scripts/Invoke-PocRecoveryValidation.ps1` で、0 台オートスケール Pool 先行投入（`V09`）は `scripts/Invoke-PocAutoscaleValidation.ps1` でそれぞれ検証します（手順と実機結果は [信頼性の追加検証](reliability-validation.md) を参照）。Storage / Batch の送信経路、VPN / ExpressRoute、Web App の後続構成については [共通ネットワーク設計](network-connectivity-design.md) を参照してください。
 
-検証結果の `summary.settings.durableBackend` / `taskHubName` は配置設定を記録します。既存出力に値がない場合は Azure Storage / PocBatchHub として扱います。DTS 対応資材の詳細と実接続の未実証範囲は [DTS PoC](durable-task-scheduler-poc.md) を参照してください。
+検証結果の `summary.settings.durableBackend` / `taskHubName` は配置設定を記録します。既存出力に値がない場合は Azure Storage / PocBatchHub として扱います。DTS 対応資材の詳細と実機検証結果は [DTS PoC](durable-task-scheduler-poc.md) を参照してください。
 
 ## runnerの全体フロー
 

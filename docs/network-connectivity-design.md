@@ -1,8 +1,8 @@
 # 接続方式と共通ネットワークの設計
 
-更新日: 2026-10-17
+更新日: 2026-10-18
 
-個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。2026-10-17 にインフラ配置と VM 初期設定、Private SCM 配置、12 Functions の登録、3 Task の HTTP 投入・結果回収・sum=3 の集約を Azure 上で確認しました。Function の公開ネットワークアクセス Disabled と Private Endpoint 接続 Approved も確認済みです。これはユーザー承認済みの方針変更であり、公開 Function エンドポイントによる先行検証という従来の計画を置き換えます。標準6シナリオは single / three / classification / failure / conflict が Pass、admission20 が起動履歴取得の制限による NotRun で完了しました（summary 終了コード2）。外部からの HTTP 拒否試験、host 復旧、Storage / Batch の全面閉域化は別途確認します。
+個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、12 Functions の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）の Pass、および 0 台オートスケール Pool 先行投入（`V09`）の Pass を実 Azure 上で確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。Storage / Batch の全面閉域化および VPN / ExpressRoute 接続は後続フェーズで実施します。
 
 ## 1. 今回の構成
 
@@ -46,7 +46,7 @@ VM の Public IP を省略しても外部サービスへの送信は必要です
 | 主体 | 必要な権限 |
 |---|---|
 | デプロイ実行者 | リソース作成、対象スコープの RBAC 割り当てとカスタムロール定義の作成、VM Run Command の操作権限、および転送専用 `poc-vm-control` コンテナの `Storage Blob Data Contributor`（`validation_operator_principal_id` を指定した場合のみその ID へ IaC で付与し、未指定時は事前に付与） |
-| VM Managed Identity | Function スコープのカスタムロール 6 操作（`sites/read`、`functions/read`、`functions/listkeys/action`、`host/listkeys/action`［再起動復旧検証時の状態照会用、実機試験前に要反映］、`config/list/action`、`publish/action`）、Batch Account スコープの `Azure Batch Account Reader`、Storage スコープの `Storage Blob Data Reader`、および `poc-vm-control` コンテナスコープの `Storage Blob Data Contributor` |
+| VM Managed Identity | Function スコープのカスタムロール 6 操作（`sites/read`、`functions/read`、`functions/listkeys/action`、`host/listkeys/action`［再起動復旧検証時の状態照会用、実機ロールへ反映済み］、`config/list/action`、`publish/action`）、Batch Account スコープの `Azure Batch Account Reader`、Storage スコープの `Storage Blob Data Reader`、および `poc-vm-control` コンテナスコープの `Storage Blob Data Contributor` |
 | Function Managed Identity | 現行の host Storage / 結果 Blob / Batch 操作権限（DTS 選択時は対象 Task Hub の `Durable Task Data Contributor` を追加） |
 
 ローカル checkout から Git リビジョン・ソース fingerprint・package hash をバンドルに含めることで、`.git` ディレクトリを持たない検証 VM ゲスト内でも来歴情報を記録できるようにしています（これらは実行時に引き渡した来歴情報であり、ゲスト上でのソース再計算値や Azure ホスト上のロード済みバイナリの直接照合値とは区別します）。cloud-init の準備完了待機は最大 900 秒、以後のゲスト操作全体は最大 4200 秒（70 分）に制限し、Azure VM Run Command の 90 分上限内に収めます。検証ランナーの `TimeoutSeconds` はシナリオ内の待機上限（60〜3600 秒）であり、長時間を要する試験は `-Scenarios` を小分けにして実行します。Run Command は VM 上で任意のスクリプトを実行できる強い権限であるため、操作権限の付与先は管理者・検証担当者に限定してください。また、VM の Managed Identity によるログインだけで Function の HTTP トリガーが自動認証されるわけではなく、Function キーの取得権限と Private Endpoint へのネットワーク到達性が別途必要です。

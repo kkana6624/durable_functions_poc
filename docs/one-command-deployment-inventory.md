@@ -1,15 +1,16 @@
 # ワンコマンドデプロイに必要なIaC構成の整理
 
-調査・実装日: 2026-10-16（現行コード、AzureRM 5.10.0 の実 provider schema、および Microsoft / HashiCorp 公式ドキュメントに基づき構成を策定）
+更新日: 2026-10-18（現行コード、AzureRM 5.10.0 の実 provider schema、および Microsoft / HashiCorp 公式ドキュメントに基づき構成を策定・検証）
 
-以下の最小構成を実装し、Azure への配置、RHEL 9 VM の初期設定、Private SCM 配置、12 Functions の登録と3 Task smoke（sum=3）を確認しました。標準6シナリオは single / three / classification / failure / conflict が Pass、admission20 が起動履歴取得の制限による NotRun で完了しました（summary 終了コード2）。host 復旧・期限停止・Spot 回収復旧は未実証です。
-- `infra/batch.tf`（新規 `BatchService` Account と Windows Pool の作成、新規RG作成オプション、Gallery / Marketplace イメージ参照）
+以下の構成を実装し、Azure への配置（Azure Storage バックエンドおよび Durable Task Scheduler バックエンドの双方）、RHEL 9 VM の初期設定、Private SCM 配置、12 Functions の登録、3 Task smoke（`sum=3`）、標準シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）の Pass、および 0 台オートスケール Pool 先行投入・自動拡張完走・固定スケール復元（`V09`）の Pass を実機で確認済みです（`admission20` は全世代起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Spot 回収からの復旧や実 C++ バイナリ組み込みは後続フェーズの残作業です。
+- `infra/batch.tf`（新規 `BatchService` Account と Windows Pool［`fixed` または 0 台 `autoscale`］の作成、新規RG作成オプション、Gallery / Marketplace イメージ参照）
+- `infra/durable-task-scheduler.tf`（`durable_backend='durableTaskScheduler'` 時の Consumption Scheduler / Task Hub / 30 日保持ポリシー作成）
 - `infra/bootstrap/`（Terraform state backend 構築用）
 - `scripts/deploy.ps1`（ビルド → IaC適用 → ZIPデプロイの一括実行）
 - `scripts/Test-Deployment.ps1`（リソースの準備完了確認および任意のスモークテスト）
 - `environments/`（環境別の設定ファイル例）
 
-本ドキュメントの一覧表の「現状」は初期検討時の記録を含みます。2026-10-17 の方針変更では Function 受信用 Private Endpoint・Private DNS・検証 VM・NAT Gateway を追加します。VM 経由の ZIP 配置と独立検証も対象です。Storage / Batch の全面閉域化、VPN / ExpressRoute 接続、`UserSubscription`、Gallery イメージのビルド工程、CI/OIDC は後続です。詳細は [接続設計](network-connectivity-design.md) を参照してください。なお、Terraform で Batch リソースの新規作成と既存参照を切り替える変数名は `batch_mode` としています。
+本ドキュメントの一覧表の「現状」は初期検討時の記録を含みます。2026-10-17 の方針変更では Function 受信用 Private Endpoint・Private DNS・検証 VM・NAT Gateway を追加しました。VM 経由の ZIP 配置と独立検証も対象です。Storage / Batch の全面閉域化、VPN / ExpressRoute 接続、`UserSubscription`、Gallery イメージのビルド工程、CI/OIDC は後続です。詳細は [接続設計](network-connectivity-design.md) を参照してください。なお、Terraform で Batch リソースの新規作成と既存参照を切り替える変数名は `batch_mode` としています。
 
 ## 目標と管理境界
 
@@ -31,7 +32,7 @@
 |---|---|---|---|
 | 必須 | Resource Group / `azurerm_resource_group` | 既存RGのみ参照 | PoC専用RGの新規作成と既存RGの参照を選択可能にし、`location` を明示する |
 | 必須 | Batch Account / `azurerm_batch_account` | ID/endpoint変数のみ | 新規 Account 作成、割当方式、Entra認証、公開アクセス設定を構成し、endpoint/IDをFunctionsへ自動連携する |
-| 必須 | Windows Pool / `azurerm_batch_pool` | Pool ID変数のみ | VM サイズ、node-agent SKU、イメージ、専用または Spot ノード数、slots、通信方式、resize期限を管理する |
+| 必須 | Windows Pool / `azurerm_batch_pool` | Pool ID変数のみ | VM サイズ、node-agent SKU、イメージ、専用または Spot ノード数、固定スケール（`fixed`）または 0 台自動拡張（`autoscale`）、slots、通信方式、resize期限を管理する |
 | 必須 | Windowsイメージ参照 / Poolの`storage_image_reference` | Gallery IDの参照出力のみ | Poolのimage IDへ実際に接続する。Gallery版はversion固定、Marketplace版はpublisher/offer/SKU/versionを指定する |
 | 必須 | Function App / Service Plan | 実装済み | 新規または既存Batchから解決した値を App Settings へ引き渡し、設定ファイルとの二重定義をなくす |
 | 必須 | Durable・結果Storage / Container | 実装済み | host用のBlob/Queue/Tableと結果格納用 Container を維持し、実行主体の初期データアクセス権限を確認する |
@@ -46,19 +47,19 @@
 | 条件付き | Pool User Assigned Identity / AutoStorage | 未実装 | resource files、application packages、OutputFiles、または計算ノードからStorageへ直接アクセスする場合に追加する（現在のダミーTask構成では不要） |
 | 条件付き | CI/CD実行Identity / OIDC | 未実装 | GitHub Actions等から自動実行する場合に追加し、ローカルCLI実行時とは権限主体を分離する |
 
-Batch Account と Pool は AzureRM プロバイダーで管理できます。計算ノードの実体である VM・NIC・OSディスク等は Pool の設定に従って Batch サービス側が動的に払い出すため、Terraform 側で個別 VM リソースとして重複管理する必要はありません。なお、provider schema にて `storage_image_reference.id`、`fixed_scale`、`target_node_communication_mode`、`network_configuration` が利用できることを確認済みです（参照: [Batch Pool定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_pool.html.markdown)、[Batch Account定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_account.html.markdown)）。
+Batch Account と Pool は AzureRM プロバイダーで管理できます。計算ノードの実体である VM・NIC・OSディスク等は Pool の設定に従って Batch サービス側が動的に払い出すため、Terraform 側で個別 VM リソースとして重複管理する必要はありません。なお、provider schema にて `storage_image_reference.id`、`fixed_scale`、`auto_scale`、`target_node_communication_mode`、`network_configuration` が利用できることを確認済みです（参照: [Batch Pool定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_pool.html.markdown)、[Batch Account定義](https://github.com/hashicorp/terraform-provider-azurerm/blob/main/website/docs/r/batch_account.html.markdown)）。
 
 ## Batch構成で確定が必要な事項
 
-最小PoC構成では、PoC 専用の Batch Account に Windows Pool を1つ作成し、Spot ノード1台・専用ノード0台・1ノードあたり1 slot・固定スケール（fixed scale）・`Simplified` 通信モードを採用します。`batch_node_type` は `dedicated` または `spot` を受け取り、省略時は既存設定との互換性のため `dedicated` です。PoC サンプルと実設定で `spot` を明示します。`batch_node_count` は選択した種別のノード総数（1〜3台）であり、混在構成は対象外です。検証用 Linux VM は通常 VM のままです。
+最小PoC構成では、PoC 専用の Batch Account に Windows Pool を1つ作成し、Spot ノード1台・専用ノード0台・1ノードあたり1 slot・固定スケール（`batch_scale_mode='fixed'`、または 0 台待機から `$PendingTasks` に応じて拡張する `'autoscale'`）・`Simplified` 通信モードを採用します。`batch_node_type` は `dedicated` または `spot` を受け取り、省略時は既存設定との互換性のため `dedicated` です。PoC サンプルと実設定で `spot` を明示します。`batch_node_count` は選択した種別のノード総数（1〜3台）であり、混在構成は対象外です。検証用 Linux VM は通常 VM のままです。
 
 ワークフロー側では3つの Task を並行して監視しますが、1台1 slot では計算処理自体は順次実行されます。3つを同時に実行するにはノード数を3台にするか、1ノードあたり3 slots へ変更します。VM SKU については、イメージ、対象 Batch account の該当種別のコアクォータ、およびリージョン容量を確認します。`Standard_D2s_v5` の Spot 1台には Spot コア（API 名 `lowPriorityCoreQuota`）が最低2必要です。専用コアのクォータや検証 VM 用 Compute クォータとは別枠です。[Batch クォータ](https://learn.microsoft.com/en-us/azure/batch/batch-quota-limit)
 
 ### Spot の容量・中断と結果回収
 
-クォータ承認は Spot の空き容量を保証しません。確保できなければ Pool 準備待ちが期限に達し、実行中の回収でもワークフローが期限に達する場合があります。回収されたノード上で中断した Task の再キューは、Task の非ゼロ終了に対する `MaxTaskRetryCount=0` と別の動作です。現在は Task がノードローカルへ出した結果を後から Activity が取得するため、回収前にノードを失うと結果を取得できない場合があります。今回の変更は IaC・配置確認・文書のみで、C# や結果保存方式は変更しません。Task から Blob への直接永続化は後続課題です。[Batch Spot](https://learn.microsoft.com/en-us/azure/batch/batch-spot-vms)
+クォータ承認は Spot の空き容量を保証しません。確保できなければ Pool 準備待ちが期限に達し、実行中の回収でもワークフローが期限に達する場合があります。回収されたノード上で中断した Task の再キューは、Task の非ゼロ終了に対する `MaxTaskRetryCount=0` と別の動作です。現在は Task がノードローカルへ出した結果を後から Activity が取得するため、回収前にノードを失うと結果を取得できない場合があります。Task から Blob への直接永続化は後続課題です。[Batch Spot](https://learn.microsoft.com/en-us/azure/batch/batch-spot-vms)
 
-新規モードの Terraform output は `batch_node_type`、`batch_dedicated_node_count`、`batch_spot_node_count` を返し、`batch_node_count` は従来どおり総台数を維持します。既存参照モードのこれら新規作成用 output は `null` とし、既存 Pool の種別・台数は変更しません。配置確認では新規 Pool の目標台数だけでなく、準備できたノードが指定した種別であることも確認します。
+新規モードの Terraform output は `batch_scale_mode`、`batch_node_type`、`batch_dedicated_node_count`、`batch_spot_node_count` を返し、`batch_node_count` は `fixed` 時に総台数、`autoscale` 時に `0` を返します。既存参照モードのこれら新規作成用 output は `null` とし、既存 Pool の種別・台数は変更しません。配置確認では新規 `fixed` Pool の目標台数とノード種別、または新規 `autoscale` Pool の `enableAutoScale=true` 設定を確認します。
 
 ### 割当方式
 

@@ -6,9 +6,9 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> - **Azure Storage バックエンド環境**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、12 個の Functions 登録、および VM から Private Endpoint 経由で投入した 3 Task の実行・結果回収・`Sum=3` の集約が実機で成功しています（Function App の公開アクセス無効化と Private Endpoint 接続の Approved も確認済みです）。標準 6 シナリオは `single` / `three` / `classification` / `failure` / `conflict` の 5 件が Pass、`admission20`（20 並列同時受付）は全世代の起動履歴取得制限により `NotRun`（summary 終了コード `2`）で完了しています。
-> - **Durable Task Scheduler（DTS）バックエンド環境**: 別環境（`dts-poc`）にて Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 5 シナリオ Pass（`admission20` は `NotRun`）、および SDK（`tools/DtsProbe`）による DTS データプレーン直接照会（`MainOrchestrator / Completed`）まで実機で確認済みです。
-> - **未実証の範囲**: Functions ホストの再起動復旧、監視期限超過（タイムアウト）停止、および Spot ノード回収からの復旧については、ローカルの Fake / 単体試験まで完了しており、Azure 実機での検証は今後の残作業です。実環境の証跡とローカル試験の結果は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、および [信頼性の追加検証](docs/reliability-validation.md) に分離して記録しています。
+> - **Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、および専用 Pool（`batch_mode='new'`）を用いた 0 台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）の Pass まで実機で確認済みです（`admission20`［20 並列同時受付］は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
+> - **Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 別環境にて Managed Identity 接続、12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass（`admission20` は `NotRun`）、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網による自動終了（`V08`）の Pass、および SDK（`tools/DtsProbe`）による DTS データプレーン直接照会・履歴イベント集計（`--history true`）まで実機で確認済みです。
+> - **未実証の範囲**: 実 C++ バイナリ・入出力連携（`V10`）、大容量出力 `OutputFiles` 直送（`T09`）、オンプレ向け認証・認可 API（`V11`）、利用者キャンセル連鎖（`V12`）、Storage / Batch を含む全面閉域化（`V00`）、および Spot ノード回収からの復旧については後続フェーズの残作業です。実環境の証跡とローカル試験の結果は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、および [信頼性の追加検証](docs/reliability-validation.md) に分離して記録しています。
 
 ---
 
@@ -18,10 +18,10 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 | 分類 | 本資材で「できること」（実装・検証済み） | 本資材単体では「できないこと」（スコープ外・後続課題） |
 |---|---|---|
-| **ワークフロー制御** | ・HTTP API（`POST /api/workflows`）によるジョブ受付<br>・子オーケストレーションによる複数 Task の並列投入と完了待ち合わせ（Fan-out / Fan-in）<br>・Durable Timer によるサーバーレスな状態ポーリング<br>・1 Task でも失敗した場合の後続集約および `manifest.json` 公開の自動抑止 | ・ミリ秒単位のリアルタイム応答<br>・利用者からの手動キャンセル要求を実行中 Batch Job の停止へ連動させる処理（現在はタイムアウト時のみ自動停止） |
-| **受付排他・再試行** | ・同一 `requestId` の二重起動防止（不変な `request.json` Blob ＋ Durable Entity 直列化）<br>・同一 `requestId` で異なるパラメータが送られた際の `409 Conflict` 拒否<br>・一時的な通信障害に対する有界リトライ（最大 3 回）と監視期限超過時の Batch Job 強制停止 | ・履歴保持期限経過後や手動パージ後の `requestId` 再利用保証<br>・外部管理 API から全世代（全 `executionId`）の起動履歴を網羅取得して厳密な 1 回起動を証明すること |
-| **計算処理・入出力** | ・Windows Batch Pool（専用ノードまたは Spot ノード）への Job / Task 投入と終了コード判定<br>・PoC 用ダミー処理（指定秒数スリープ後に `result.txt` へ整数 `1` を出力）の回収と合計値（`sum`）集計 | ・**本番 C++ バイナリ（`.exe` / `.dll`）の同梱・配布**（現在は PowerShell ダミーコマンドを実行）<br>・**大容量の入力シナリオファイル転送（`ResourceFiles`）および計算ノードから Blob への大容量結果直接保存（`OutputFiles`）**（※現行は 4 KB 以下・整数 `1` 専用の File API 回収のため、実バイナリ試験時は差し替えが必要）<br>・Spot ノードが結果回収前に Azure へ回収（Evict）された場合のノードローカル結果の保護 |
-| **スケジューラ機能** | ・Azure Batch 標準のキューイング、空きノードへの Task 割り当て、Pool 準備完了待機 | ・LSF / HPC Pack が持つ高度なクラスタスケジューラ機能（Fair Share、Backfilling、実行中タスクの追い越し、商用ソルバーライセンス連動）<br>・新規の業務向け Web フロントエンド画面（UI）の提供 |
+| **ワークフロー制御** | ・HTTP API（`POST /api/workflows`）によるジョブ受付<br>・子オーケストレーションによる複数 Task の並列投入と完了待ち合わせ（Fan-out / Fan-in）<br>・Durable Timer によるサーバーレスな状態ポーリング<br>・Batch Task 実行中の Function App 再起動からの無停止自動復旧（`V05`）<br>・1 Task でも失敗した場合の後続集約および `manifest.json` 公開の自動抑止 | ・ミリ秒単位のリアルタイム応答<br>・利用者からの手動キャンセル要求を実行中 Batch Job の停止へ連動させる処理（現在はタイムアウト時のみ自動停止） |
+| **受付排他・再試行** | ・同一 `requestId` の二重起動防止（不変な `request.json` Blob ＋ Durable Entity 直列化）<br>・同一 `requestId` で異なるパラメータが送られた際の `409 Conflict` 拒否<br>・一時的な通信障害に対する有界リトライ（最大 3 回）と監視期限超過時の Batch Job 強制停止（`V07`）および Function ホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`） | ・履歴保持期限経過後や手動パージ後の `requestId` 再利用保証<br>・外部管理 API から全世代（全 `executionId`）の起動履歴を網羅取得して厳密な 1 回起動を証明すること |
+| **計算処理・入出力** | ・Windows Batch Pool（専用ノードまたは Spot ノード、固定台数または 0 台 Autoscale）への Job / Task 投入と終了コード判定<br>・PoC 用ダミー処理（指定秒数スリープ後に `result.txt` へ整数 `1` を出力）の回収と合計値（`sum`）集計 | ・**本番 C++ バイナリ（`.exe` / `.dll`）の同梱・配布**（現在は PowerShell ダミーコマンドを実行）<br>・**大容量の入力シナリオファイル転送（`ResourceFiles`）および計算ノードから Blob への大容量結果直接保存（`OutputFiles`）**（※現行は 4 KB 以下・整数 `1` 専用の File API 回収のため、実バイナリ試験時は差し替えが必要）<br>・Spot ノードが結果回収前に Azure へ回収（Evict）された場合のノードローカル結果の保護 |
+| **スケジューラ機能** | ・Azure Batch 標準のキューイング、空きノードへの Task 割り当て、Pool 準備完了待機、0 台待機からの `$PendingTasks` 自動スケールアウト（`V09`） | ・LSF / HPC Pack が持つ高度なクラスタスケジューラ機能（Fair Share、Backfilling、実行中タスクの追い越し、商用ソルバーライセンス連動）<br>・新規の業務向け Web フロントエンド画面（UI）の提供 |
 | **ネットワーク・認証** | ・Function App の公開アクセス無効化と Private Endpoint / Private DNS 構成<br>・Public IP なし・SSH 拒否の RHEL 9 検証 VM（Run Command 経由）からの閉域デプロイおよび HTTP 検証<br>・Managed Identity による Function ↔ Storage / Batch / DTS 接続 | ・Storage / Batch エンドポイントの全面 Private Endpoint 化および Function 送信用 VNet Integration<br>・オンプレミス ExpressRoute / VPN との実回線接続<br>・エンドユーザー単位の認証・ジョブ所有者認可 API |
 
 ---
@@ -68,7 +68,7 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 
 新規作成される Batch 環境の仕様は以下のとおりです。
 - **構成**: `BatchService` 方式、Entra 認証のみ、公開エンドポイント、`Simplified` 通信の Windows Pool（新規ノード数は 1〜3 台）
-- **計算ノードの種別**: `batch_node_type='spot'` または `'dedicated'` を指定します（省略時は従来互換の `dedicated`）。PoC サンプルは `spot`・`batch_node_count=1` とし、Spot 1 台・専用ノード 0 台を要求します。`batch_node_count` は選択した種別の総台数であり、混在構成は対象外です。RHEL 検証 VM は通常 VM のまま作成されます。
+- **計算ノードの種別とスケール方式**: `batch_node_type='spot'` または `'dedicated'` を指定します（省略時は従来互換の `dedicated`）。PoC サンプルは `spot`・`batch_node_count=1` とし、Spot 1 台・専用ノード 0 台を要求します。`batch_scale_mode` は `'fixed'`（既定、固定台数）または `'autoscale'`（0 台待機から `$PendingTasks` に応じて最大 `batch_node_count` 台へ自動拡張、評価間隔 `batch_autoscale_evaluation_interval='PT5M'`）を選択できます。RHEL 検証 VM は通常 VM のまま作成されます。
 - **並行動作**: 1 台・1 slot 構成の場合、3 つの Task の計算自体は順次実行され、Durable Functions 側の 3 本の監視オーケストレーションは並行して動作します。
 
 #### Spot 利用時の条件と再開手順
@@ -100,8 +100,8 @@ Spot ノードは空き容量が保証されず、実行中に Azure 側へ回�
 1. **処理順序**: 事前確認 → `build` / `test` / `publish` → backend 作成または参照 → Terraform `plan` 検査 / `apply` → Pool 確認 → VM Run Command による Private SCM への Entra 認証 ZIP 配置 → 12 個の Functions のインデックス登録（ロード）検出（`-PlanOnly` を指定しない限り、Terraform の `apply` もスクリプト内で自動実行されます）。
 2. **`-PlanOnly` 指定時**: `apply` とコード配置は行いません。`Backend.Create=true` の場合、backend が作成済みであれば main plan の作成まで進み、未作成であれば bootstrap plan のみを保存します。なお、backend 参照時の権限不足や通信失敗は「未作成（不存在）」とは明確に区別してエラー停止します。
 3. **Pool 確認と `-Smoke` 指定時**:
-   - **新規 Pool**: 指定した全台数が準備完了になるまで待機します（ノード一覧取得時のページネーションに対応し、全ノードの状態と種別を確認します）。
-   - **既存 Pool**: 存在と参照権限のみを確認するため、稼働ノード数が 0 台の状態でもコードを配置できます。
+   - **新規 Pool（`fixed`）**: 指定した全台数が準備完了になるまで待機します（ノード一覧取得時のページネーションに対応し、全ノードの状態と種別を確認します）。
+   - **新規 Pool（`autoscale`）または既存 Pool**: 新規 `autoscale` Pool では `enableAutoScale=true` かつ `autoScaleRun.error` がないことを確認し、既存 Pool では存在と参照権限のみを確認するため、稼働ノード数が 0 台の状態でもコードを配置できます。
    - **`-Smoke` 実行時**: 自動拡張（autoscale）設定自体は変更せず、先に Task を投入して自動拡張と完了を待機します。配置設定の `TimeoutSeconds` を用いて検証 VM 上から 3 Task HTTP workflow を検証します（単一 Task の検証には独立ランナーの `-Scenarios single` を使用します）。
 
 ### 4. 必要な権限
@@ -137,7 +137,7 @@ Function App の Managed Identity に対する権限付与は Terraform 内で�
 | **ストレージ**<br>(`infra/main.tf`, `validation-vm.tf`) | Storage Account (`poc<suffix>`) + Container `poc-results` / `poc-vm-control` | 新規作成（共有キー無効・OAuth/MI 強制・TLS 1.2） | ・`poc-results`: ワークフロー入力 `request.json`、各 Task 結果、`aggregate.json`、`manifest.json` の保存先<br>・`poc-vm-control`: 検証 VM とのバンドル・証跡受け渡し専用<br>・Functions ホスト領域（および `azureStorage` モード時の Durable History/Queue）としても使用 |
 | **ワークフロー実行**<br>(`infra/main.tf`) | App Service Plan (`B1` Linux) + Linux Function App (`.NET 10 isolated`) | Function App は新規作成。Plan は既定で新規作成、`existing_service_plan_id` 指定時は既存 Linux Plan を読み取り専用参照 | Durable Functions（HTTP 受付・Orchestrator・Activity・Entity 計 12 関数）をホスト。Always On 有効、公開アクセス無効（`public_network_access_enabled=false`） |
 | **Durable バックエンド（選択時）**<br>(`infra/durable-task-scheduler.tf`) | Durable Task Scheduler (`Microsoft.DurableTask/schedulers`) + Task Hub + 30日保持ポリシー | `durable_backend='durableTaskScheduler'` の場合のみ AzAPI で新規作成 | Durable Functions の状態・メッセージを高速 gRPC で管理するマネージドバックエンド（Consumption SKU）。既定の `azureStorage` 選択時は作成しない |
-| **計算基盤（Batch）**<br>(`infra/batch.tf`) | Batch Account (`BatchService`) + Windows Server 2022 Pool (`Standard_D2s_v5` 等) | `batch_mode='new'` で新規作成、`existing` で既存環境を読み取り専用参照 | 計算 Task のキューイングと Windows 計算ノード（`spot` または `dedicated`、1〜3 台）の割り当て。Gallery イメージまたは Marketplace イメージを参照 |
+| **計算基盤（Batch）**<br>(`infra/batch.tf`) | Batch Account (`BatchService`) + Windows Server 2022 Pool (`Standard_D2s_v5` 等) | `batch_mode='new'` で新規作成、`existing` で既存環境を読み取り専用参照 | 計算 Task のキューイングと Windows 計算ノード（`spot` または `dedicated`、1〜3 台、`fixed` または 0 台 `autoscale`）の割り当て。Gallery イメージまたは Marketplace イメージを参照 |
 | **閉域ネットワーク・検証 VM**<br>(`infra/validation-vm.tf`) | VNet + Subnets (`validation-vm`, `private-endpoints`) + NSG (`DenyAllInbound`) + Public IP + NAT Gateway + Private Endpoint (`sites`) + Private DNS Zone (`privatelink.azurewebsites.net`) + RHEL 9 VM (`Standard_F1as_v7`) | 新規作成 | 公開アクセスを遮断した Function App / Private SCM に対し、VNet 内部からデプロイと HTTP 検証を行うための RHEL 9 検証 VM（Public IP なし・SSH 受信拒否・Run Command 操作・cloud-init で CLI / PowerShell 自動導入） |
 | **監視・ログ**<br>(`infra/main.tf`) | Log Analytics Workspace + Application Insights | 新規作成 | Function App の実行トレースおよびテレメトリの収集（30 日保持） |
 | **権限（RBAC）**<br>(`infra/*.tf`) | Built-in Role Assignments + Custom Role Definition (`validation-function`) | 新規作成（最小権限スコープ） | ・Function MI → Storage（Blob Owner / Queue・Table Contributor）、Batch（Job Submitter）、DTS Hub（Data Contributor）<br>・検証 VM MI → Function（専用 6 操作）、Storage（Blob Reader + `poc-vm-control` Contributor）、Batch（Account Reader）<br>・任意指定時のみ操作者へ `poc-vm-control` Contributor / DTS Hub Reader を付与 |
@@ -154,15 +154,16 @@ Function App の Managed Identity に対する権限付与は Terraform 内で�
 | スクリプト / ツール | 主な用途・実行タイミング | 具体的な処理内容 |
 |---|---|---|
 | [`scripts/deploy.ps1`](file:///D:/durable_functions_poc/scripts/deploy.ps1) | **ワンコマンド構築・デプロイ**<br>（初回構築・構成変更時） | 事前チェック、.NET ビルド・単体テスト・publish（POSIX 形式 ZIP 作成）、Terraform bootstrap / main の `plan`・安全性検査・`apply`、Pool ノード準備待機、および検証 VM 経由での Private SCM ZIP デプロイ・12 関数の登録確認までを一括実行します（`-PlanOnly` で計画確認のみ、`-Smoke` で 3 Task 疎通確認まで実行）。 |
-| [`scripts/Test-Deployment.ps1`](file:///D:/durable_functions_poc/scripts/Test-Deployment.ps1) | **デプロイ後の準備確認・Smoke 試験**<br>（`deploy.ps1` 内部または単体呼び出し） | Function App の稼働・12 関数のロード状態、および Batch Pool の目標ノード準備完了を確認します。`-Smoke` 指定時は 3 Task のワークフローを投入し、`manifest.json` の生成と `Sum=3` を検証します。 |
+| [`scripts/Test-Deployment.ps1`](file:///D:/durable_functions_poc/scripts/Test-Deployment.ps1) | **デプロイ後の準備確認・Smoke 試験**<br>（`deploy.ps1` 内部または単体呼び出し） | Function App の稼働・12 関数のロード状態、および Batch Pool の目標ノード準備完了（または 0 台 Autoscale 設定正常性）を確認します。`-Smoke` 指定時は 3 Task のワークフローを投入し、`manifest.json` の生成と `Sum=3` を検証します。 |
 | [`scripts/Invoke-PrivatePocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PrivatePocValidation.ps1) | **閉域環境向け 独立シナリオ検証（入口）**<br>（デプロイ完了後のシナリオ試験時） | ローカル端末から呼び出す検証のメイン入口です。検証資材をバンドル化して検証 VM の Run Command を起動し、VM 内で `Invoke-PocValidation.ps1` を実行させた後、機密情報を除いた検証結果（`summary.json` / `summary.txt`）をローカルへ回収します。 |
 | [`scripts/Invoke-PocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocValidation.ps1) | **シナリオ検証ランナー本体**<br>（検証 VM 内または直接到達可能な環境で実行） | インフラの再配置を行わず、HTTP API 経由で各検証シナリオ（`single`, `three`, `classification`, `failure`［exit 42］, `admission20`［20並列受付］, `conflict`［409競合］, `timeout`［監視期限停止・`MaxWallClockTime` 照合］）を実行し、Durable・Batch・Blob の三者を突合して合否（終了コード `0`/`1`/`2`）を判定します。 |
-| [`scripts/Invoke-PocRecoveryValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocRecoveryValidation.ps1) | **Function App 再起動復旧の検証**<br>（耐障害性試験時） | 長時間待機する 1 Task を開始し、VM から `Running` 状態を確認したうえで対象 Function App を `az functionapp restart` で再起動します。リクエストを再送せずに同一インスタンスと Task が完走し、成果物が整合することを検証します（`finally` で `start` 復元を実行）。 |
+| [`scripts/Invoke-PocRecoveryValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocRecoveryValidation.ps1) | **Function App 再起動復旧 / ホスト停止安全網の検証**<br>（耐障害性試験 `V05` / `V08` 時） | 既定（`-ValidationMode Restart`）では長時間待機 Task の `Running` 確認後に Function App を `restart` し、再送なしで同一インスタンス・Task が完走し成果物が整合することを検証します。`-ValidationMode HostStoppedBatchWallClock` 指定時は Function App を `stop` した状態で Batch 側の `MaxWallClockTime` により Job が自動終了することを検証します（いずれも `finally` で `start` 復元を実行）。 |
+| [`scripts/Invoke-PocAutoscaleValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocAutoscaleValidation.ps1) | **0 台オートスケール Pool 先行投入の検証**<br>（自動拡張試験 `V09` 時） | 専用 Pool（`batch_mode='new'`）を 0 台 `steady` へ縮小して `$PendingTasks` ベースの Autoscale 式（`PT5M`）を有効化し、ノード 0 台状態から `single` シナリオを投入して 1 台への自動スケールアウトと Task 完走を確認後、`finally` で元の固定スケール構成へ復元します（`existing` 共有 Pool は拒否）。 |
 | [`scripts/Invoke-PrivateVmOperation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PrivateVmOperation.ps1)<br>[`scripts/PrivateVm.Worker.ps1`](file:///D:/durable_functions_poc/scripts/PrivateVm.Worker.ps1) | **検証 VM 転送・ゲスト実行基盤**<br>（各スクリプトから内部呼び出し） | ローカル端末と RHEL 9 検証 VM の間で、`poc-vm-control` Blob コンテナと Azure VM Run Command を用いてバンドル転送・cloud-init 待機・ゲスト内処理実行・証跡回収を安全に仲介する共通機構です。 |
 | [`scripts/Deployment.Common.ps1`](file:///D:/durable_functions_poc/scripts/Deployment.Common.ps1)<br>[`scripts/Validation.Assertions.ps1`](file:///D:/durable_functions_poc/scripts/Validation.Assertions.ps1)<br>[`scripts/Recovery.Context.ps1`](file:///D:/durable_functions_poc/scripts/Recovery.Context.ps1) | **共通関数ライブラリ**<br>（内部モジュール） | 設定ファイル（`.psd1`）の検証、POSIX 互換 ZIP の生成、Terraform plan の破壊的変更検査、シークレット秘匿フィルタリング、および状態照合アサーションを提供する内部モジュール群です。 |
 | [`tools/DtsProbe`](file:///D:/durable_functions_poc/tools/DtsProbe/Program.cs) | **DTS データプレーン直接照会ツール**<br>（DTS 環境の独立証跡確認時） | Durable Task Scheduler のエンドポイントへ読み取り専用で接続し、対象インスタンスの状態（`runtimeStatus`）や保持履歴のイベント件数集計（`--history true`）をペイロード非表示で安全に出力する .NET CLI ツールです。 |
 | [`tools/BatchSmoke`](file:///D:/durable_functions_poc/tools/BatchSmoke/Program.cs) | **Batch 単体疎通の補助診断ツール**<br>（開発端末からの直接診断用） | Functions を介さずに開発端末から Batch エンドポイントへ直接ダミー Task を 1 件投入して動作を切り分けるための補助 CLI ツールです（通常の検証では上記の `Invoke-PrivatePocValidation.ps1` を使用します）。 |
-| `scripts/tests/*.Tests.ps1` | **スクリプトのオフライン単体試験**<br>（ローカル CI / 回帰テスト用） | Azure へ一切接続せずに、Fake / Mock を用いてデプロイ制御、シナリオ判定、VM 転送、再起動復旧スクリプトのロジックとエラーハンドリングを検証するテストスイート（5 組）です。 |
+| `scripts/tests/*.Tests.ps1` | **スクリプトのオフライン単体試験**<br>（ローカル CI / 回帰テスト用） | Azure へ一切接続せずに、Fake / Mock を用いてデプロイ制御、シナリオ判定、VM 転送、再起動復旧、0 台オートスケール検証スクリプトのロジックとエラーハンドリングを検証するテストスイート（7 組）です。 |
 
 ---
 
@@ -197,6 +198,7 @@ dotnet test --project tests/DtsProbe.Tests/DtsProbe.Tests.csproj --no-restore
 ./scripts/tests/PocValidation.Tests.ps1
 ./scripts/tests/PrivateVm.Tests.ps1
 ./scripts/tests/RecoveryValidation.Tests.ps1
+./scripts/tests/AutoscaleValidation.Tests.ps1
 
 # Terraform mock_provider試験（providerの取得後、Azureへ接続しない）
 terraform -chdir=infra test
@@ -382,7 +384,7 @@ az storage blob download --account-name $storageName --container-name poc-result
 
 ## 6. Step C: 故障と再開の試験
 
-再起動復旧ランナー、タイムアウト停止、DTS 履歴集計の追加手順は [信頼性の追加検証](docs/reliability-validation.md) を参照してください。これらの追加実装はローカル試験済みで、Azure 再起動・障害試験は未実行です。
+再起動復旧ランナー（`V05`）、タイムアウト停止（`V07`）、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）、0 台オートスケール Pool 先行投入（`V09`）、および DTS 履歴集計の実行手順と実機検証結果は [信頼性の追加検証](docs/reliability-validation.md) を参照してください（これらはローカル試験および実 Azure 環境の双方で Pass を確認済みです）。
 
 各異常系・再開シナリオの検証手順は以下のとおりです。
 
