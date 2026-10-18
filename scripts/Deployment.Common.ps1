@@ -28,6 +28,11 @@ function Resolve-DeploymentTool {
     if ($command) { return $command.Source }
     $bundled = Join-Path $RepositoryRoot ".tools/$Name/$Name.exe"
     if (Test-Path -LiteralPath $bundled -PathType Leaf) { return $bundled }
+    if ($Name -eq 'az') {
+        foreach ($candidate in @('C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd', 'C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\az.cmd')) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
+    }
     throw "$Name is required. Install it or provide its executable path in Config.Tools."
 }
 

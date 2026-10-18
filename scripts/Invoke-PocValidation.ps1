@@ -77,9 +77,16 @@ function Invoke-PocConcurrentAdmission {
     }
 }
 
-function Get-PocValidationKey([hashtable]$Outputs) {
+function Get-PocValidationKey([hashtable]$Outputs, [string]$FunctionName = 'StartWorkflow') {
+    try {
+        $keys = Invoke-AzJson -Sensitive -Arguments @('functionapp','keys','list','--name',$Outputs.function_app_name,
+            '--resource-group',$Outputs.resource_group_name)
+        if ($keys -and $keys.PSObject.Properties['functionKeys'] -and $keys.functionKeys -and $keys.functionKeys.PSObject.Properties['default'] -and $keys.functionKeys.default) {
+            return [string]$keys.functionKeys.default
+        }
+    } catch {}
     $keys = Invoke-AzJson -Sensitive -Arguments @('functionapp','function','keys','list','--name',$Outputs.function_app_name,
-        '--resource-group',$Outputs.resource_group_name,'--function-name','StartWorkflow')
+        '--resource-group',$Outputs.resource_group_name,'--function-name',$FunctionName)
     if (-not $keys -or -not $keys.PSObject.Properties['default'] -or -not $keys.default) { Stop-PocValidation 'FunctionKeyUnavailable' }
     return [string]$keys.default
 }
@@ -235,8 +242,14 @@ function Invoke-PocScenario {
         foreach ($response in $responses) { $statusUri = Assert-PocAccepted -Response $response -Outputs $Outputs -InstanceId $jobId -RequestId $requestId }
         $run.admissionHttpStatuses = @($responses | ForEach-Object { 202 })
         $cancelUri = $Outputs.function_app_url.TrimEnd('/') + "/api/workflows/$requestId/cancel"
+        $cancelHeaders = $headers.Clone()
         if ($Name -eq 'cancellation') {
-            $cancel = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $headers -Body (@{ reason='PoC cancellation validation' } | ConvertTo-Json -Compress)
+            $cancel = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $cancelHeaders -Body (@{ reason='PoC cancellation validation' } | ConvertTo-Json -Compress)
+            if ($cancel.StatusCode -eq 401) {
+                $cancelKey = Get-PocValidationKey -Outputs $Outputs -FunctionName 'CancelWorkflow'
+                $cancelHeaders['x-functions-key'] = $cancelKey
+                $cancel = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $cancelHeaders -Body (@{ reason='PoC cancellation validation' } | ConvertTo-Json -Compress)
+            }
             if ($cancel.StatusCode -notin @(200,202)) { Stop-PocValidation 'ExpectedCancel202Or200' }
             $run.cancelHttpStatus = [int]$cancel.StatusCode
         }
@@ -315,14 +328,26 @@ function Invoke-PocScenario {
                 if ($batch.Tasks.Count -ne 1 -or $batch.Tasks[0].state -ne 'completed' -or $batch.Tasks[0].executionInfo.exitCode -ne 42) { Stop-PocValidation 'ExpectedExit42Missing' }
                 $run.exitCodes=@(42)
             }
-            elseif ($Name -eq 'cancellation') {
-                if ($batch.Job.state -ne 'completed' -or -not $status.customStatus.termination.completed -or $status.customStatus.terminationError) { Stop-PocValidation 'JobTerminationUnconfirmed' }
-                if (-not (Test-PocBlobExists -Outputs $Outputs -Path "$root/cancel.json")) { Stop-PocValidation 'CancelRecordMissing' }
-                $cancelAgain = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $headers -Body (@{ reason='Idempotent cancel check' } | ConvertTo-Json -Compress)
-                if ($cancelAgain.StatusCode -ne 200) { Stop-PocValidation 'ExpectedIdempotentCancel200' }
-                $run.idempotentCancelHttpStatus = 200
+            elseif ($Name -in @('timeout','cancellation')) {
+                $custom = $status.customStatus
+                $termCompleted = $false
+                if ($custom -and $custom.PSObject.Properties['termination'] -and $custom.termination -and
+                    $custom.termination.PSObject.Properties['completed'] -and $custom.termination.completed) {
+                    $termCompleted = $true
+                }
+                $termFailed = $false
+                if ($custom -and (($custom.PSObject.Properties['terminationError'] -and $custom.terminationError) -or
+                    ($custom.PSObject.Properties['terminationErrorCode'] -and $custom.terminationErrorCode))) {
+                    $termFailed = $true
+                }
+                if ($batch.Job.state -ne 'completed' -or -not $termCompleted -or $termFailed) { Stop-PocValidation 'JobTerminationUnconfirmed' }
+                if ($Name -eq 'cancellation') {
+                    if (-not (Test-PocBlobExists -Outputs $Outputs -Path "$root/cancel.json")) { Stop-PocValidation 'CancelRecordMissing' }
+                    $cancelAgain = Invoke-PocValidationHttp -Uri $cancelUri -Method Post -Headers $cancelHeaders -Body (@{ reason='Idempotent cancel check' } | ConvertTo-Json -Compress)
+                    if ($cancelAgain.StatusCode -ne 200) { Stop-PocValidation 'ExpectedIdempotentCancel200' }
+                    $run.idempotentCancelHttpStatus = 200
+                }
             }
-            elseif ($batch.Job.state -ne 'completed' -or -not $status.customStatus.termination.completed -or $status.customStatus.terminationError) { Stop-PocValidation 'JobTerminationUnconfirmed' }
             continue
         }
         if ($status.runtimeStatus -ne 'Completed' -or $status.output.state -ne 'Succeeded' -or $status.output.requestId -ne $requestId -or $status.output.jobId -ne $jobId) { Stop-PocValidation 'UnexpectedWorkflowOutcome' }

@@ -13,6 +13,7 @@ try {
     $deployment=Get-Content -LiteralPath $DeploymentResultPath -Raw | ConvertFrom-Json
     $outputs=ConvertTo-DeploymentHashtable $deployment.outputs
     $script:AzPath=Resolve-DeploymentTool -Name az -RepositoryRoot (Split-Path $PSScriptRoot -Parent)
+    $env:Path = (Split-Path $script:AzPath -Parent) + [IO.Path]::PathSeparator + $env:Path
     if (-not $EvidenceDirectory) { $EvidenceDirectory=Join-Path (Split-Path $PSScriptRoot -Parent) ('artifacts/private-validation/'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-ffff')) }
     $packageHash=if ($deployment.PSObject.Properties['package_sha256']) { [string]$deployment.package_sha256 } else { '' }
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -EvidenceDirectory $EvidenceDirectory -Scenarios $Scenarios -TimeoutSeconds $TimeoutSeconds -PackageSha256 $packageHash -DedicatedEnvironment:$DedicatedEnvironment

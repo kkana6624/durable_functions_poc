@@ -432,9 +432,9 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             }
 
             string? reason = null;
-            if (request.Body.Length > 0)
+            try
             {
-                try
+                if (!request.Body.CanSeek || request.Body.Length > 0)
                 {
                     using var doc = await JsonDocument.ParseAsync(request.Body, cancellationToken: cancellationToken);
                     if (doc.RootElement.ValueKind == JsonValueKind.Object &&
@@ -444,8 +444,8 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                         reason = reasonProp.GetString();
                     }
                 }
-                catch (JsonException) { }
             }
+            catch (JsonException) { }
 
             var cancelRecord = await admission.CancelAsync(requestId, caller, reason, cancellationToken);
 
