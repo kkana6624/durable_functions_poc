@@ -487,8 +487,27 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     public static async Task<T> RetryableActivity<T>(Func<Task<T>> operation, CancellationToken cancellationToken = default)
     {
         try { return await operation(); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Retain host/caller cancellation semantics without retaining SDK
+            // messages, inner failures, or a linked timeout token.
+            throw new OperationCanceledException("Workflow activity was canceled.", cancellationToken);
+        }
         catch (Exception ex) when (IsTransientFailure(ex, cancellationToken))
-        { throw new TransientWorkflowException(ex.Message, ex); }
+        {
+            // Classify before discarding the source exception. Durable serializes
+            // exception messages and inner failures across the Activity boundary.
+            throw new TransientWorkflowException("Workflow activity temporarily failed.");
+        }
+        catch (TimeoutException)
+        {
+            // MonitorBatchTaskOrchestrator recognizes this top-level type.
+            throw new TimeoutException("Workflow activity timed out.");
+        }
+        catch (Exception)
+        {
+            throw new PermanentWorkflowException();
+        }
     }
     public static bool IsTransientFailure(Exception error, CancellationToken cancellationToken = default) => !cancellationToken.IsCancellationRequested && error switch
     {

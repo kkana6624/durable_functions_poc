@@ -20,28 +20,40 @@ public class ResilienceTests
     [InlineData(503)]
     public async Task TransientAzureFailureIsMarkedForDurableRetry(int status)
     {
-        await Assert.ThrowsAsync<TransientWorkflowException>(() => WorkflowFunctions.RetryableActivity<int>(
-            () => Task.FromException<int>(new RequestFailedException(status, "temporary")), TestContext.Current.CancellationToken));
+        var failure = await Assert.ThrowsAsync<TransientWorkflowException>(() => WorkflowFunctions.RetryableActivity<int>(
+            () => Task.FromException<int>(new RequestFailedException(status, "SECRET_SENTINEL")), TestContext.Current.CancellationToken));
+
+        Assert.Equal("Workflow activity temporarily failed.", failure.Message);
+        Assert.Null(failure.InnerException);
+        var details = TaskFailureDetails.FromException(failure);
+        Assert.True(details.IsCausedBy<TransientWorkflowException>());
+        Assert.Equal(failure.Message, details.ErrorMessage);
+        Assert.Null(details.InnerFailure);
+        Assert.DoesNotContain("SECRET_SENTINEL", details.ErrorMessage);
     }
 
     [Fact]
-    public async Task ConflictAndCorruptDataAreNeverMarkedTransient()
+    public async Task PermanentActivityFailuresUseSafeFailureDetailsAndAreNeverMarkedTransient()
     {
-        await Assert.ThrowsAsync<RequestFailedException>(() => WorkflowFunctions.RetryableActivity<int>(
-            () => Task.FromException<int>(new RequestFailedException(409, "conflict")), TestContext.Current.CancellationToken));
-        await Assert.ThrowsAsync<WorkflowConflictException>(() => WorkflowFunctions.RetryableActivity<int>(
-            () => Task.FromException<int>(new WorkflowConflictException("identity")), TestContext.Current.CancellationToken));
-        await Assert.ThrowsAsync<InvalidDataException>(() => WorkflowFunctions.RetryableActivity<int>(
-            () => Task.FromException<int>(new InvalidDataException("corrupt")), TestContext.Current.CancellationToken));
+        await AssertSafePermanentFailureAsync(new RequestFailedException(409, "SECRET_SENTINEL"));
+        await AssertSafePermanentFailureAsync(new WorkflowConflictException("SECRET_SENTINEL"));
+        await AssertSafePermanentFailureAsync(new InvalidDataException("SECRET_SENTINEL"));
     }
 
     [Fact]
     public async Task ExhaustedSdkTransportRetriesAreMarkedTransientOnlyWhenEveryFailureIsTransient()
     {
-        var temporary = new AggregateException(new HttpRequestException("network one"), new AggregateException(new RequestFailedException(503, "network two")));
-        await Assert.ThrowsAsync<TransientWorkflowException>(() => WorkflowFunctions.RetryableActivity<int>(() => Task.FromException<int>(temporary), TestContext.Current.CancellationToken));
-        var mixed = new AggregateException(new HttpRequestException("network"), new InvalidDataException("corrupt"));
-        await Assert.ThrowsAsync<AggregateException>(() => WorkflowFunctions.RetryableActivity<int>(() => Task.FromException<int>(mixed), TestContext.Current.CancellationToken));
+        var temporary = new AggregateException(new HttpRequestException("SECRET_SENTINEL"), new AggregateException(new RequestFailedException(503, "SECRET_SENTINEL")));
+        var transient = await Assert.ThrowsAsync<TransientWorkflowException>(() => WorkflowFunctions.RetryableActivity<int>(() => Task.FromException<int>(temporary), TestContext.Current.CancellationToken));
+        Assert.Equal("Workflow activity temporarily failed.", transient.Message);
+        Assert.Null(transient.InnerException);
+        var transientDetails = TaskFailureDetails.FromException(transient);
+        Assert.True(transientDetails.IsCausedBy<TransientWorkflowException>());
+        Assert.Null(transientDetails.InnerFailure);
+        Assert.DoesNotContain("SECRET_SENTINEL", transientDetails.ErrorMessage);
+
+        var mixed = new AggregateException(new HttpRequestException("SECRET_SENTINEL"), new InvalidDataException("SECRET_SENTINEL"));
+        await AssertSafePermanentFailureAsync(mixed);
         Assert.True(WorkflowFunctions.IsTransientFailure(new OperationCanceledException(), TestContext.Current.CancellationToken));
         Assert.False(WorkflowFunctions.IsTransientFailure(new HttpRequestException("bad input", null, System.Net.HttpStatusCode.BadRequest), TestContext.Current.CancellationToken));
     }
@@ -56,8 +68,28 @@ public class ResilienceTests
         using var caller = new CancellationTokenSource();
         caller.Cancel();
         Assert.False(WorkflowFunctions.IsTransientFailure(new OperationCanceledException(), caller.Token));
-        await Assert.ThrowsAsync<OperationCanceledException>(() => WorkflowFunctions.RetryableActivity<int>(
-            () => Task.FromException<int>(new OperationCanceledException(caller.Token)), caller.Token));
+        var canceled = await Assert.ThrowsAsync<OperationCanceledException>(() => WorkflowFunctions.RetryableActivity<int>(
+            () => Task.FromException<int>(new OperationCanceledException("SECRET_SENTINEL", caller.Token)), caller.Token));
+        Assert.Equal("Workflow activity was canceled.", canceled.Message);
+        Assert.Equal(caller.Token, canceled.CancellationToken);
+        Assert.Null(canceled.InnerException);
+        var cancellationDetails = TaskFailureDetails.FromException(canceled);
+        Assert.Null(cancellationDetails.InnerFailure);
+        Assert.DoesNotContain("SECRET_SENTINEL", cancellationDetails.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ActivityTimeoutKeepsTimeoutTypeWithoutPersistingRawDetails()
+    {
+        var timeout = await Assert.ThrowsAsync<TimeoutException>(() => WorkflowFunctions.RetryableActivity<int>(
+            () => Task.FromException<int>(new TimeoutException("SECRET_SENTINEL")), TestContext.Current.CancellationToken));
+
+        Assert.Equal("Workflow activity timed out.", timeout.Message);
+        Assert.Null(timeout.InnerException);
+        var details = TaskFailureDetails.FromException(timeout);
+        Assert.True(details.IsCausedBy<TimeoutException>());
+        Assert.Null(details.InnerFailure);
+        Assert.DoesNotContain("SECRET_SENTINEL", details.ErrorMessage);
     }
 
     [Fact]
@@ -68,15 +100,32 @@ public class ResilienceTests
         context.SetupGet(c => c.CurrentUtcDateTime).Returns(() => now);
         context.Setup(c => c.CreateTimer(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .Returns((DateTime date, CancellationToken _) => { now = date; return Task.CompletedTask; });
-        var failure = new TaskFailureDetails(typeof(TransientWorkflowException).FullName!, "temporary", null, null, null);
+        var safeTransient = new TransientWorkflowException("Workflow activity temporarily failed.");
+        var failure = TaskFailureDetails.FromException(safeTransient);
+        Assert.Null(failure.InnerFailure);
         var handler = WorkflowFunctions.RetryOptions(now.AddMinutes(1)).Retry!.Handler!;
         Assert.True(await handler(new RetryContext(context.Object, 1, failure, TimeSpan.Zero, CancellationToken.None)));
         context.Verify(c => c.CreateTimer(It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
         Assert.False(await handler(new RetryContext(context.Object, 3, failure, TimeSpan.Zero, CancellationToken.None)));
         var expires = WorkflowFunctions.RetryOptions(now.AddSeconds(4)).Retry!.Handler!;
         Assert.False(await expires(new RetryContext(context.Object, 1, failure, TimeSpan.Zero, CancellationToken.None)));
-        var permanent = new TaskFailureDetails(typeof(InvalidDataException).FullName!, "corrupt", null, null, null);
+        var permanent = TaskFailureDetails.FromException(new PermanentWorkflowException());
         Assert.False(await handler(new RetryContext(context.Object, 1, permanent, TimeSpan.Zero, CancellationToken.None)));
+    }
+
+    private static async Task AssertSafePermanentFailureAsync(Exception original)
+    {
+        var failure = await Assert.ThrowsAsync<PermanentWorkflowException>(() => WorkflowFunctions.RetryableActivity<int>(
+            () => Task.FromException<int>(original), TestContext.Current.CancellationToken));
+
+        Assert.Equal("Workflow activity failed.", failure.Message);
+        Assert.Null(failure.InnerException);
+        var details = TaskFailureDetails.FromException(failure);
+        Assert.True(details.IsCausedBy<PermanentWorkflowException>());
+        Assert.False(details.IsCausedBy<TransientWorkflowException>());
+        Assert.Equal(failure.Message, details.ErrorMessage);
+        Assert.Null(details.InnerFailure);
+        Assert.DoesNotContain("SECRET_SENTINEL", details.ErrorMessage);
     }
 
     [Theory]

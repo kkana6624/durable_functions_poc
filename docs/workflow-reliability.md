@@ -49,10 +49,11 @@
 
 ### 再試行（Retry）の設計
 
-- **Durableレイヤーの再試行**: Activity 関数は一時障害（ネットワーク瞬断、503、スロットリング等）のみを検知して `TransientWorkflowException` へ変換し、Durable の再試行ハンドラーが「最大3回の試行」かつ「ワークフロー共有の deadline（監視期限）内であること」を確認した上でリトライします。待機時間は Durable Timer により5秒、10秒と設定されます。一方で、入力バリデーション不正、認証・権限エラー（401/403）、リクエスト競合（409）、結果データ不整合などの恒久エラーは一切再試行しません。
+- **Durableレイヤーの再試行**: Activity 関数は既存の一時障害分類（ネットワーク瞬断、503、スロットリング等）を `TransientWorkflowException` へ変換し、Durable の再試行ハンドラーが「最大3回の試行」かつ「ワークフロー共有の deadline（監視期限）内であること」を確認した上でリトライします。待機時間は Durable Timer により5秒、10秒と設定されます。入力バリデーション不正、HTTP/Azure SDKの401/403、リクエスト競合（409）、結果データ不整合などは恒久エラーとして再試行しません。ただし、Activity側の既存分類は全 `Grpc.Core.RpcException` を一時障害とします。この分類の見直しは別の残課題であり、独自HTTP API側の限定されたgRPC再試行分類とは異なります。
 - **SDKレイヤーの再試行とタイムアウト**: Azure SDK 側のクライアント再試行は1回、1回の通信試行あたりの `NetworkTimeout` は10秒に設定します。SDK レイヤーでの再試行と Durable レイヤーでの再試行が階層的に実行されるため、総通信試行数が単純に3回とはならない点に留意します。
 - **例外型の判定とキャンセルトークンの伝播**:
   - .NET Isolated Worker の `TaskFailedException` から基底の例外型を判定する際は、`FailureDetails.IsCausedBy<T>()` を使用します（参考: [公式エラー処理](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-error-handling)）。
+  - 利用SDK 1.24.1では、この判定は `ErrorType` の型解決に基づき、messageやinnerの内容を使いません。Activity wrapperは既存条件で分類後、固定message・innerなしの `TransientWorkflowException` / `TimeoutException` / `PermanentWorkflowException` へ変換します。caller取消はcaller tokenを維持した安全な `OperationCanceledException` を渡します。元のSDK例外・Data・独自プロパティをコピーしません（参考: [利用版TaskFailureDetails](https://github.com/microsoft/durabletask-dotnet/blob/v1.24.1/src/Abstractions/TaskFailureDetails.cs)）。この範囲はwrapperから外へ渡す例外であり、全ランタイムログ、Activity入出力や別のDurable経路の非露出保証ではありません。
   - `Azure.Core` は通信リトライを使い切った際に `AggregateException` をラップして返す場合があるため、含まれる内部例外の全件が一時障害に該当する場合にのみ再試行対象と判定します。
   - `NetworkTimeout` はリンクされたトークンによる `OperationCanceledException` として発生します。呼び出し元の `CancellationToken` を HTTP 受付から Activity、SDK 操作まで正しく引き渡し、呼び出し元自身がキャンセルされた場合は再試行を中止し、それ以外の SDK 通信タイムアウトによるキャンセルのみを一時障害として扱います。エラーメッセージの文字列マッチングによる判定は使用しません（参考: [SDK RetryPolicy](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Core_1.54.0/sdk/core/Azure.Core/src/Pipeline/RetryPolicy.cs)、[利用系列のResponseBodyPolicy](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Core_1.54.0/sdk/core/Azure.Core/src/Pipeline/Internal/ResponseBodyPolicy.cs)）。
 

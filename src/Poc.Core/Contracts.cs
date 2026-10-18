@@ -29,7 +29,12 @@ public sealed record TaskSpec(WorkflowPlan Plan, int Index, DateTime? DeadlineUt
     public bool InjectFailure => Plan.Request.FailTaskIndex == Index;
 }
 public sealed record BatchJobTerminationStatus(string State, bool Completed);
-public sealed class TransientWorkflowException(string message, Exception innerException) : Exception(message, innerException);
+public sealed class TransientWorkflowException : Exception
+{
+    public TransientWorkflowException(string message) : base(message) { }
+    public TransientWorkflowException(string message, Exception innerException) : base(message, innerException) { }
+}
+public sealed class PermanentWorkflowException() : Exception("Workflow activity failed.");
 public sealed record BatchTaskStatus(string TaskId, string State, bool Completed, bool Succeeded, int? ExitCode, string? Failure);
 public sealed record ResultReference(string RequestId, string TaskId, string Uri);
 public sealed record AggregateReference(string RequestId, string Uri, int Sum, int TaskCount);

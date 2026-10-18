@@ -25,7 +25,7 @@ V05/V07/V08/V09 の Azure 成功は既存の検証記録による到達点であ
 
 開始URL契約の変更では、開始202の本文 `statusQueryGetUri` と `Location` を独自 `/api/workflows/{requestId}` に統一し、`Retry-After: 10` を維持します。内部runnerはこの契約を検証後、system keyから管理URIをメモリ内で生成して詳細診断を継続します。独自状態APIへの全面移行は各Functionの認証設計と併せて進めます。今回のURL変更だけでは、順序1の他応答・例外の安全化もV11全体も完了しません。最新コードのAzure実証は別途必要です。
 
-続くローカル実装ではHTTP/旧custom statusのエラー遮蔽、明示ログのコード化、状態・結果API共通の公開成果物検証を進めます。SDK例外とinner exceptionのDurable履歴・ランタイムログへの永続化対策は、再試行分類とtimeout判定を維持する別の実装単位として残します。成果物検証は照会時点の整合性であり、複数Blobのトランザクションや後続取得成功を保証しません。
+続くローカル実装でHTTP/旧custom statusのエラー遮蔽、明示ログのコード化、状態・結果API共通の公開成果物検証を追加しました。さらにActivity wrapperでは、再試行分類とtimeout型を維持し、固定message・innerなしの例外を外へ渡します。これは全ランタイムログ・全履歴の安全性保証ではありません。Activity側の全gRPC例外を一時障害とする分類の見直し、他のデータ経路の機密情報対策、Azure検証を残します。HTTP側のgRPC限定分類は実装済みで、Activity分類とは別です。成果物検証は照会時点の整合性であり、複数Blobのトランザクションや後続取得成功を保証しません。
 
 最初の変更は順序1を単独でレビュー可能な範囲にします。主対象は `WorkflowFunctions.cs`、`WorkflowOperations.cs`、HTTP試験、検証runnerです。開始202の独自URL、管理URL非露出、例外の安全なエラーコード化、manifest欠損・不整合時の状態を試験します。既存runnerがDurable管理応答に依存する箇所を洗い出し、内部診断用途と利用者API用途の契約を明示します。
 

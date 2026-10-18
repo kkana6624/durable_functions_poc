@@ -363,7 +363,7 @@ Invoke-RestMethod -Uri $started.statusQueryGetUri -Headers $headers
 
 独自状態照会の `resultAvailable` は、公開manifest・aggregate・全Task結果の存在と現行PoC契約の整合性を確認した時点の値です。DurableがCompletedでも成果物欠損時はfalseとなり、結果取得は409を返します。不整合時は固定メッセージの500、一時障害時は503と `Retry-After: 10` を返します。結果取得時にも再検証するため、状態照会後の削除を含め取得成功を保証する値ではありません。
 
-独自HTTP応答、custom statusのエラー表示、明示的な失敗ログには固定の説明またはコードを使用します。SDK例外・inner exceptionがDurable履歴やランタイムログへ保存される境界の安全化は別の残課題であり、全ログ・全履歴での機密情報非露出を保証するものではありません。
+独自HTTP応答、custom statusのエラー表示、明示的な失敗ログには固定の説明またはコードを使用します。Activity wrapperも分類後に固定message・innerなしの例外を渡し、再試行・timeout・caller取消の分類を維持します。対象はwrapperから外へ渡す例外情報であり、Activity入出力や別経路を含む全ログ・全履歴での機密情報非露出を保証するものではありません。
 
 #### パラメータと受付制御（冪等性・重複抑止）の仕様
 - **入力パラメータ**: `taskCount` は `1`〜`3`、`classification` は `light` / `heavy` / `auto` を指定できます。

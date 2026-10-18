@@ -1,5 +1,12 @@
 # プロジェクトメモリ
 
+## 2026-10-18 Activity例外のDurable境界での安全化（ローカル実装）
+
+- 全8 Activityが通る `RetryableActivity` で、元例外を既存の条件で分類した後、固定message・innerなしの例外へ変換します。一時障害は `TransientWorkflowException`、timeoutは `TimeoutException`、恒久失敗は `PermanentWorkflowException` とし、caller取消はcaller tokenを持つ安全な `OperationCanceledException` とします。
+- 利用SDK 1.24.1の `FailureDetails.IsCausedBy<T>()` はErrorTypeによる型判定であるため、一時障害型とtimeout型を維持します。最大3回・5/10秒待機・共有deadlineとCore gateway内部の例外契約は変更していません。
+- 達成範囲はActivity wrapperが外へ渡す例外情報です。Activityの入力・出力、Entity等の別経路、全ランタイムログ・履歴の秘密非露出を保証しません。Activity側で全gRPC例外を一時障害とする既存分類の見直しは、HTTP側の限定分類と区別した次の小単位です。認証境界・所有者競合・Azure検証も残作業です。
+- 確定したローカル検証: ReleaseのPoc.Tests 192/192件・DtsProbe 2/2件（計194件）が成功しました。Release publish（`artifacts/activity-boundary-release-publish`）が成功し、`local.settings*` が含まれないことを確認しました。`git diff --check` も成功し、生成物の混入はありません。Azure配置・実機検証は今回実施していません。
+
 ## 2026-10-18 V11のHTTPエラー・結果可用性の整合（ローカル実装）
 
 - 独自HTTPのエラー応答と、旧custom statusから読み出すエラーを固定の説明へ統一しました。orchestratorが書くcustom status・監視結果・明示的な失敗ログから生の例外messageを除去しました。
