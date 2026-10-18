@@ -1,26 +1,29 @@
 # 残りの検証・実装計画
 
-更新日: 2026-10-18。最新コード: 15関数コード（CancelWorkflow含む）のデプロイおよび全6シナリオ閉域実機回帰完了（A案完了、V12利用者キャンセル実機実証合格）。実機検証済みコード基準: `.deploy/poc/20261018-211336-1471`（15関数全件インデックス登録確認・スモークテスト合格: `deploy-27855cc869764f62abf22e94d3e7c2f1`）、閉域検証VM実機回帰: `artifacts/private-validation/20261018-124022-0449/summary.json`（終了コード 0、全6シナリオPass: `single`, `three`, `classification`, `failure`, `conflict`, `cancellation`）。
-- **最新コードの実機到達点**: 独自開始・状態・結果・取消（`CancelWorkflow`）API、開始応答の管理URL除去、固定HTTPエラー、Activity例外の固定message・innerなし変換、公開成果物の完全性検証、受付・所有者一体化（`admission.json` v2）、opt-in EasyAuth 認可アダプター・IaC・認証 runner（`Invoke-WorkflowAuthValidation.ps1`）、ならびに **V12 利用者キャンセル（Job Cancellation）**（Blob 取消永続化、Durable 外部イベント通知、Batch 有界停止、成果物公開排他調停、所有者認可、runner への `cancellation` シナリオ追加）が実装され、Azure 実機環境（`poc` 環境・Azure Storage バックエンド）へのデプロイおよび閉域検証 VM からの全 6 シナリオ実機回帰試験において終了コード 0 で全件合格しました。
+更新日: 2026-10-19。最新コード: 15関数コード（CancelWorkflow含む）のデプロイおよび全6シナリオ閉域実機回帰完了（A案完了、V12利用者キャンセル実機実証合格）、ならびに **B案: Microsoft Entra ID によるサービス間認証および認可の Azure 実機プロトタイプ検証完了（Pass）**。実機検証済みコード基準: `.deploy/poc/20261018-211336-1471`（15関数全件インデックス登録確認・スモークテスト合格: `deploy-27855cc869764f62abf22e94d3e7c2f1`、閉域検証VM実機回帰: `artifacts/private-validation/20261018-124022-0449/summary.json`、全6シナリオPass: `single`, `three`, `classification`, `failure`, `conflict`, `cancellation`）、および `.deploy/poc/20261019-001001-3480`（EasyAuth v2 有効化、閉域検証VM認証検証: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`、終了コード 0、Pass）。
+- **最新コードの実機到達点**: 独自開始・状態・結果・取消（`CancelWorkflow`）API、開始応答の管理URL除去、固定HTTPエラー、Activity例外の固定message・innerなし変換、公開成果物の完全性検証、受付・所有者一体化（`admission.json` v2）、opt-in EasyAuth 認可アダプター・IaC・認証 runner（`Invoke-WorkflowAuthValidation.ps1`）、**V12 利用者キャンセル（Job Cancellation）**（Blob 取消永続化、Durable 外部イベント通知、Batch 有界停止、成果物公開排他調停、所有者認可、runner への `cancellation` シナリオ追加）、ならびに **B案（Entra ID サービス間認証・認可）**（App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 付与、EasyAuth v2 による 401 遮断、所有者伝播 403 遮断、正当トークン通過）が実装・検証され、Azure 実機環境（`poc` 環境・Azure Storage バックエンド）へのデプロイおよび閉域検証 VM からの各実機検証において終了コード 0 で合格しました。
 - **実機検証に伴う不具合修正と堅牢化**:
   - `CancelWorkflow` において HttpRequestData の非シーク可能ストリーム（`CanSeek == false`）に対する `request.Body.Length` 呼び出しによる 500 エラーを修正（`CanSeek` ガードおよび `JsonException` 安全ハンドリング）。
   - `Invoke-PocValidation.ps1` における `Set-StrictMode -Version Latest` 下での `customStatus.termination` / `terminationErrorCode` の安全なプロパティアクセスへの改修、および CancelWorkflow 専用キー取得フォールバックの追加。
   - `Invoke-PrivatePocValidation.ps1` および `Deployment.Common.ps1` における Azure CLI（`az.cmd`）標準インストールパスへのフォールバック対応。
+  - `Deployment.Common.ps1` の `ConvertTo-DeploymentHashtable` における文字列配列が `[pscustomobject]` 判定により `@{ Length = ... }` ハッシュテーブル化する問題の修正（プリミティブ／文字列ガード追加）。
+  - `Invoke-WorkflowAuthValidation.ps1` のポーリング許容ステータスへの `Preparing` / `Publishing` 追加とアサーション詳細化。
 - **確定した実機検証済み境界**:
   - `V01`（15関数パッケージデプロイ・Managed ID接続・スモークテスト合格: `deploy-27855cc869764f62abf22e94d3e7c2f1`）
   - `V02`（単一Task投入および3 Tasks並列集約・マニフェスト整合性Pass）
   - `V03`（非ゼロ終了42・Failed確定・成果物マニフェスト非公開Pass）
   - `V04`（別入力409 Conflictおよび同一入力同一所有者の冪等受付・再送Pass）
   - `V12`（利用者キャンセル: 202受理、cancel.json先行永続化、Batch completed有界停止、manifest非公開、冪等200応答の実機完全実証Pass）
+  - `V11`（Entra ID サービス間認証・認可プロトタイプ実機検証Pass: EasyAuth v2 401プローブ遮断、認可済みトークン下での所有者/組織不整合403遮断、正当なVM Managed Identityトークンによる202/200完走確認。※App Role不足トークン等の実機拒否試験、および稼働パッケージ同定は未検証）
   - カテゴリ A（追加の耐障害性・運用系検証: `V05` Function App 再起動復旧、`V07` タイムアウト監視停止、`V08` ホスト停止中 Batch MaxWallClockTime 安全網、`V09` 0台オートスケール先行投入）についても過去に実機Pass済み。
 - **残る未完了項目（カテゴリ B・C）**:
-  - **V11（Entra 実テナント認証）**: 専用 PoC API 登録・App Role・`idtyp` optional claim 設定等の実テナント設定、実機での偽造ヘッダー遮断および Bearer トークン認証実証（B案）。
+  - **V11 認可境界の追加検証**: 有効だが App Role（`Workflow.Execute`）を持たない Entra トークンや未許可 Client ID による実機 403 拒否試験、稼働パッケージの暗号学的同定（`livePackageVerified: false` の解消）。
   - **V10（実 C++ バイナリ連携）**: 固定 C++ 計算バイナリの実行、Blob 確定入力（SHA-256/ETag）、計算出力のハッシュ照合・業務アプリ側許容誤差検証（C案）。
   - **T09（大容量出力の Blob 直送）**: Azure Batch `OutputFiles` による Blob Storage 直接アップロード、転送完了とハッシュ整合性確認後のマニフェスト公開（C案）。
   - **V00（全面閉域化・オンプレミス接続）**: Storage / Batch を含む全面閉域化、ExpressRoute/VPN オンプレミス接続。
-  - **DTS（Durable Task Scheduler）環境**: 最新 15 関数コードおよび cancellation シナリオの DTS 環境での実機回帰（過去の DTS 検証は 12 関数時点）。
+  - **DTS（Durable Task Scheduler）環境**: 最新 15 関数コード、cancellation、および認証設定の DTS 環境での実機回帰（過去の DTS 検証は 12 関数時点）。
 
-> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。Functionの受信閉域化・検証VM・15関数コード・利用者キャンセルは実機到達点です。Entra/App Role実テナント設定、Storage / Batchの全面閉域化、実C++ファイル入出力は後続作業です。
+> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。Functionの受信閉域化・検証VM・15関数コード・利用者キャンセル・Entraサービス間認証プロトタイプは実機到達点です。App Role不足等の追加拒否試験、Storage / Batchの全面閉域化、実C++ファイル入出力は後続作業です。
 
 ---
 
@@ -50,10 +53,10 @@
 | 既存の到達点 | 検証runner、Function受信閉域化・検証VM、主要耐障害性検証 | 過去のAzure実証はV05/V07/V08/V09等。全世代の起動履歴を網羅できないadmission20はNotRunを維持 |
 | 15関数実機合格 | 独自API契約（全15 Functions）、エラー遮蔽、受付・所有者一体化（admission v2）、V12利用者キャンセル実機実証、閉域全6シナリオ実機回帰 | **【Azure 実機検証完了（Pass）】** 15関数コードデプロイ（`.deploy/poc/20261018-211336-1471`、スモーク合格）および閉域検証VM回帰試験（`artifacts/private-validation/20261018-124022-0449/summary.json`、全6シナリオPass）により完全合格 |
 | 1 | V11: 所有者と受付を単一の不変レコードへ統合 | **【ローカル完了・実機回帰Pass】** 条件付き作成で入力・所有者を同時確定し、所有者なし旧受付との並行競合を防止。実機回帰（conflictシナリオ）にて409競合調停・再送を確認 |
-| 2 | V11: Entra/App Role認証境界 | **【ローカル完了】** 信頼されたバックエンド主体と利用者・組織の伝播契約を検証。未認証・権限不足・他所有者・他組織を拒否（opt-in EasyAuth IaC・認証runner実装済み）。実テナント設定と実機偽造ヘッダー遮断は後続 |
+| 2 | V11: Entra/App Role認証境界（B案） | **【Azure 実機プロトタイプ検証完了（Pass）】** 信頼されたバックエンド主体（VM Managed Identity）と利用者・組織の伝播契約、EasyAuth v2 による未認証 401 遮断、所有者不整合 403 遮断、正当トークン通過を実機実証（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`）。※App Role 不足トークン実機拒否試験および稼働パッケージ同定は未検証 |
 | 4 | V12: 利用者取消 | **【Azure 実機検証完了（Pass）】** 要求永続化、投入停止、Batch停止確認、取消とmanifest公開の排他調停、所有者認可、runner cancellationシナリオがAzure実機で完全実証 |
 | 3 | V11/V12: 15関数コードのAzure配置・閉域VM実機回帰（A案） | **【Azure 実機検証完了（Pass）】** 15関数コードのAzure配置、全6シナリオ閉域回帰（single/three/classification/failure/conflict/cancellation）が終了コード0で合格 |
-| 次の焦点 | 発展的検証（B案 / C案）または PoC 完了報告 | **【次なる作業候補】**<br>・**B案**: Entra ID 実テナント設定（専用 API 登録・App Role・`idtyp` claim 設定）・実機 EasyAuth 偽造ヘッダー遮断／Bearer 認証実証（`Invoke-WorkflowAuthValidation.ps1` による VM MI 連携）<br>・**C案**: 実 C++ バイナリ連携（`V10`）および Batch `OutputFiles` 大容量出力直送（`T09`）の実機検証<br>・あるいは、これまでの実機検証成果（V01〜V09, V12）を総括する **PoC 完了報告書・技術評価報告書** の作成 |
+| 次の焦点 | 発展的検証（C案 / 認証厳格化）または PoC 完了報告 | **【次なる作業候補】**<br>・**C案**: 実 C++ バイナリ連携（`V10`）および Batch `OutputFiles` 大容量出力直送（`T09`）の実機検証<br>・**V11 認可厳格化**: App Role 不足トークンによる実機 403 拒否試験、稼働パッケージ暗号学的同定<br>・**DTS 環境回帰**: 15 関数コードおよびキャンセル・認証の DTS 実機回帰<br>・あるいは、これまでの実機検証成果（V01〜V09, V11, V12）を総括する **PoC 完了報告書・技術評価報告書** の作成 |
 | 5 | V10/T09: C++入出力・出力直送 | 固定バイナリと入力version/ETag/size/SHA-256を契約化。ResourceFiles/OutputFilesを用い、転送と整合性確認後だけmanifest公開 |
 | 6 | V00・運用検証 | Storage/Batch全面閉域化、DNS・SCM・オンプレ接続を段階検証。その後Spot回収・一時障害注入・保持/清掃を拡充 |
 
@@ -131,7 +134,7 @@
 | V08 | ホスト停止中のBatch側安全網 | Functionsホストが停止した状態でも、Batch側のMaxWallClockTimeによりJobが終端化されること。作成時刻、制約パラメータ、停止結果の証跡を記録 |
 | V09 | 0台オートスケールPoolへの投入 | 稼働ノード0台の状態からTaskを先行投入し、自動拡張（autoscale）によりノードが起動してTaskが正常完了すること。既存共有Poolの設定は一切変更しないこと |
 | V10 | オンプレミス連携・実C++実行・結果照合 | 小規模シナリオ入力1件をBlob Storageへ確定保存し、バージョン固定されたC++計算バイナリを実行してBlob出力すること。通信切断、ボタン二重クリック、画面再読込が発生しても同一ジョブとして処理され、ファイルハッシュ照合および業務アプリ側の期待値・許容誤差を満たすこと |
-| V11 | 利用者認可・シークレット隠蔽 | 他のユーザーによるジョブ照会・結果ダウンロード・取消要求を確実に拒否すること。ブラウザ応答やアプリケーションログにFunctionキー等の管理用シークレットが露出しないこと |
+| V11 | 利用者認可・シークレット隠蔽（Entra サービス間認証・認可） | **【Azure 実機プロトタイプ検証完了（Pass）】** EasyAuth v2 有効化、閉域検証 VM（`poc-df40481149-validation`）からの `Invoke-PrivateWorkflowAuthValidation.ps1` 実行（`artifacts/private-auth-validation/20261018-160545-4455/summary.json`）により、未認証 401 遮断、所有者不整合 403 遮断、正当トークン通過（202/200）を確認。※App Role 不足トークンの実機 403 拒否試験および稼働パッケージ同定は未検証 |
 | V12 | 利用者取消 | **【Azure 実機検証完了（Pass）】** 15関数コード（CancelWorkflow含む）のデプロイおよび閉域検証VM経由のcancellationシナリオ実機検証（artifacts/private-validation/20261018-124022-0449/summary.json）において、独自取消API（202 Accepted受理）、cancel.json（Version 1）先行永続化、Durable外部イベントによるオーケストレーション取消検知、Batchジョブ有界停止（completed遷移）、manifest.json公開抑止、Cancelled確定、同一所有者からの再送200 OK冪等応答をAzure実機環境で完全実証しPass |
 
 | T09 | 大容量出力のBlob直送 | OutputFiles等の転送完了と成果物の存在・サイズ・ハッシュを確認した後だけmanifestを公開。結果取得の再試行で計算を再実行しないこと |

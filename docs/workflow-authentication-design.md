@@ -1,8 +1,8 @@
 # ワークフローAPIの認証境界
 
-確認日: 2026-10-18。認証アダプターに続き、既定offのEasyAuth IaCとapp-only検証runnerを追加する段階です。既定`PocFunctionKey`を維持します。Entra登録・App Role割当・optional claimの変更は自動実行せず、Azure配置・実機試験も未実施です。ローカル成功をEntra運用完成とは扱いません。
+確認日: 2026-10-19。認証アダプター、EasyAuth IaC、app-only検証runnerに加え、実テナントでの App 登録（`poc-workflow-api`）、App Role（`Workflow.Execute`）、optional claim（`idtyp: app`）、VM Managed Identity への App Role 割り当て、Function App への EasyAuth v2 デプロイ、および閉域検証 VM からの `Invoke-PrivateWorkflowAuthValidation.ps1` 実行（Pass）を実施しました。
 
-Releaseの新規`WorkflowAuthorizationTests`40/40件と既存`WorkflowHttpTests`81/81件が成功しました。Fake HTTP・Mock Durable・メモリ内repositoryによる検証であり、EasyAuthのトークン検証・ヘッダー除去や実Azureの両Durableバックエンドを実証した結果ではありません。設定値を追加するだけで安全なEntra公開を完成させることはできず、後述の登録・IaC・runner・実機確認が必要です。
+実機検証では、EasyAuth v2 による未認証 401 遮断、トークン未提示時の偽装ヘッダー 401 遮断、認可済みトークン存在下での所有者/組織不整合 403 遮断、および正当な VM Managed Identity トークン＋Function Key による 202/200 完走を確認しました。ただし、有効だが App Role を持たないトークンや未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`）は実機未検証（単体テスト `WorkflowAuthorizationTests` のみで検証済み）です。設定値の存在やトークン取得のみを Entra 運用の完全証明とは扱いません。
 
 ## 呼出元と利用者の責任
 
