@@ -1,6 +1,6 @@
 # PoC 検証結果
 
-## 現在の到達点（2026-10-18、`9c96054`）
+## 現在の到達点（2026-10-18、`5a45b17`）
 
 最新のローカル実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、およびgRPC再試行対象3コードへの限定までです。V11のEntra認証・App Role、所有者/組織の信頼境界、所有者なし旧受付との競合対策は未完です。
 
@@ -160,9 +160,9 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 > [!NOTE]
 > 当時はAzure実環境への接続値・資格情報が未提供のため、この時点の検証はすべてローカル環境（単体テスト・Fake/Mock・オフライン試験）で実施しました。後続のAzure成功記録と最新コードの未検証範囲はページ上部を参照してください。
 
-## .NET 単体テストの構成と検証項目（全 91 件・7 テストクラス）
+## .NET 単体テストの構成と検証項目（過去チェックポイント：全 91 件・7 テストクラス）
 
-信頼性改善および HTTP レイヤー／Gateway 検証の追加を経て、.NET 単体テストは 30 件（初版）→ 54 件（信頼性改善時）→ **91 件（現行、全 7 テストクラス）** へと拡充されました。全テストが Fake / Mock を用いてオフラインで実行され、100% 合格しています。
+信頼性改善および HTTP レイヤー／Gateway 検証の追加を経て、.NET 単体テストは 30 件（初版）→ 54 件（信頼性改善時）→ 91 件へと拡充された当時の記録です（全テストが Fake / Mock を用いてオフラインで実行され合格）。**現行コードの最新状態は、後続の改修（独自API契約、エラー遮蔽、公開成果物検証、Activity安全例外化、gRPC再試行限定）を経て計 211 件（`Poc.Tests` 209 件 + `DtsProbe` 2 件、内 `ResilienceTests` 56 件）全件 Pass** となっており、下表の内訳は当時の歴史的チェックポイントとしての記録となります。
 
 | テストクラス | テスト数 | 主な検証内容 |
 |---|---|---|
@@ -173,7 +173,7 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 | `WorkflowAdmissionTests` | 6 | 同一 `requestId` の同時受付、Durable Entity による起動直列化・重複起動抑止、異なる入力パラメータ時の 409 Conflict 競合検出、Entity 状態再読み込み後の重複排除 |
 | `WorkflowHttpTests` | 13 | HTTP トリガー API の挙動検証（不正 JSON や不正パラメータへの 400 Bad Request、RPC 一時障害時の 503 + Retry-After 応答、正常受付時の 202 Accepted と Location / statusQueryGetUri 返却） |
 | `WorkflowOperationsTests` | 8 | 3 Task 正常実行と集約（sum=3）、分類と待機時間の保持、Task 失敗時の成果物非公開、Activity リプレイ時の既存リソース再利用、集約破損時の Manifest 公開抑止 |
-| **合計** | **91** | **91 Pass / 0 Fail / 0 Skip** |
+| **合計（当時）** | **91** | **91 Pass / 0 Fail / 0 Skip（現行: 211 Pass / 0 Fail / 0 Skip［Poc.Tests 209 + DtsProbe 2］）** |
 
 ### 単体テスト（Fake / Mock）での検証カテゴリ
 
@@ -208,7 +208,7 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 - backend 不存在と参照エラーの区別
 - 既存の 0 台 Pool に対するコード配置
 - 新規 Pool 作成時の全台準備完了待ちと node 一覧の pagination 処理
-- 12 個の Functions 検出確認
+- 14 個の Functions 検出確認
 - インスタンス状態 GET 時の 404 待機と 401/403 エラー時の即時失敗
 
 ### Azure 実環境で未検証の項目
@@ -233,7 +233,7 @@ Azure 実環境での cloud-init、Private DNS / HTTPS、SCM ZIP 配置、VM Ide
 | .NET SDK | 10.0.402 を作業フォルダー内に導入 |
 | .NET package restore | Function project / solution restore 成功 |
 | .NET build / publish | solution build 0 警告・0 エラー、Release publish 成功。`artifacts/build.log` / `artifacts/publish.log` |
-| .NET unit test | 初版: 30 Pass / 0 Fail / 0 Skip（現行: 91 Pass / 0 Fail / 0 Skip） |
+| .NET unit test | 初版: 30 Pass / 0 Fail / 0 Skip（現行: 211 Pass / 0 Fail / 0 Skip［Poc.Tests 209 + DtsProbe 2］） |
 | Terraform fmt / validate | Terraform 1.14.0 / AzureRM 5.10.0、2026-10-16 実測 Pass |
 | Terraform plan / apply | Not tested: Azure 接続値なし |
 | Azure 実行 instance / Job / Task ID | 未発行 |
@@ -272,7 +272,7 @@ SDK 互換性の確認では、当初指定していた `Azure.Identity 1.17.1` 
 |---|---|---|---|---|
 | Build | `dotnet build DurableBatchPoc.slnx --no-restore` | コンパイル成功 | 0 警告・0 エラー。`artifacts/build.log` | Pass |
 | Publish | `dotnet publish src/Poc.Functions/Poc.Functions.csproj -c Release --no-restore -o artifacts/publish` | デプロイ用成果物生成 | 成功。`artifacts/publish.log` / `artifacts/publish/` | Pass |
-| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 初版: 30 Pass、現行: 91 Pass / 0 Fail / 0 Skip（全 7 テストクラス合格） | Pass |
+| Unit | `dotnet test --project tests/Poc.Tests/Poc.Tests.csproj --no-restore` | Fake の正常、異常、冪等性が合格 | 初版: 30 Pass、現行: 211 Pass / 0 Fail / 0 Skip［Poc.Tests 209 + DtsProbe 2］ | Pass |
 | Windows command | ローカル Windows で `cmd` → `powershell.exe` を実行 | 正常 exit 0 / result 1、故意失敗 exit 42 | 正常 exit 0・result.txt=1、失敗 exit 42・result ファイルなし。`artifacts/test-summary.txt` | Pass（ローカルのみ） |
 | Terraform init | `terraform -chdir=infra init -backend=false` | provider の取得成功 | AzureRM v5.10.0 (signed by HashiCorp)、`.terraform.lock.hcl` 生成 | Pass |
 | Terraform fmt | `terraform -chdir=infra fmt -check` | 差分なし、exit 0 | 2026-10-16 実行、標準出力なし、exit 0 | Pass |

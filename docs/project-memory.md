@@ -1,6 +1,6 @@
 # プロジェクトメモリ
 
-## 現在の要約（2026-10-18、`9c96054`）
+## 現在の要約（2026-10-18、`5a45b17`）
 
 最新HEADのローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定までです。ReleaseはPoc.Tests209件＋DtsProbe2件の計211件成功、`artifacts/grpc-retry-release-publish` 成功・`local.settings*` 不在。現行Functions期待数は14件です。今回のAzure配置・実機検証は未実施で、以前のV05/V07/V08/V09成功とは区別します。
 

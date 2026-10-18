@@ -2,7 +2,8 @@
 
 更新日: 2026-10-18
 
-本ドキュメントに記載する追加機能（Function App 再起動復旧ランナー `V05`、タイムアウト時の Batch 制約照合 `V07`、Function ホスト停止中の Batch `MaxWallClockTime` 安全網 `V08`、0 台オートスケール Pool への先行投入検証 `V09`、および DTS 保持履歴のイベント集計）は、ローカルの Fake・単体試験に加え、実 Azure 環境（`dts-poc`［Durable Task Scheduler バックエンド］および `poc`［Azure Storage バックエンド］）で実機検証を完了し、すべて合格（Pass）を確認しています。なお、特定ワーカープロセスの強制クラッシュや Durable Entity チェックポイント確定前後の瞬間的中断試験とは明確に区別して管理します。
+本ドキュメントに記載する追加機能（Function App 再起動復旧ランナー `V05`、タイムアウト時の Batch 制約照合 `V07`、Function ホスト停止中の Batch `MaxWallClockTime` 安全網 `V08`、0 台オートスケール Pool への先行投入検証 `V09`、および DTS 保持履歴のイベント集計）は、ローカルの Fake・単体試験に加え、当時の 12 関数を配置した過去の実 Azure 環境（`dts-poc`［Durable Task Scheduler バックエンド］および `poc`［Azure Storage バックエンド］）で実機検証を完了し、すべて合格（Pass）を確認しています。
+なお、現行コード（コミット `5a45b17`、計 14 関数構成、Release 単体テスト計 211 件合格、独自状態照会 URL 契約、エラー遮蔽、公開成果物検証、Activity 安全例外化、gRPC 3 コード限定再試行）に対する Azure 実機回帰検証は未実施であり、過去の 12 関数配置環境での実機記録と明確に区別して管理します。また、特定ワーカープロセスの強制クラッシュや Durable Entity チェックポイント確定前後の瞬間的中断試験とは明確に区別して管理します。
 
 ---
 

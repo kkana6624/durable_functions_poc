@@ -1,6 +1,6 @@
 # 残りの検証・実装計画
 
-更新日: 2026-10-18。確認したコード: `main` / `9c96054`。
+更新日: 2026-10-18。確認したコード: `main` / `5a45b17`。
 - **最新コードのローカル到達点**: 独自開始・状態・結果API、開始応答の管理URL除去、固定HTTPエラー、Activity例外の固定message・innerなし変換、公開成果物の完全性検証を実装済みです。HTTP/ActivityのgRPC再試行対象は3コードへ限定しました。ReleaseのPoc.Tests 209件・DtsProbe 2件（計211件、失敗・スキップ0件）とpublish（`artifacts/grpc-retry-release-publish`）が成功し、`local.settings*` の非混入を確認しました。最新変更はAzure未配置・実機未検証です。以下のAzure成功記録は過去のコード・配置に対する証跡です。
 
 - **カテゴリ A（追加の耐障害性・運用系検証：`V05` / `V07` / `V08` / `V09`）の実装・Azure 実機検証完了**: 検証 VM の Function スコープ用カスタムロールへ `Microsoft.Web/sites/host/listkeys/action` 権限を反映したうえで、`dts-poc`（Durable Task Scheduler バックエンド）および `poc`（Azure Storage バックエンド）の両環境にて Function App 再起動復旧検証（`scripts/Invoke-PocRecoveryValidation.ps1`、`V05`）および `timeout` シナリオにおける監視期限停止と Batch Job の `MaxWallClockTime` 制約照合（`V07`）を実機で完了しました。さらに、Function ホスト停止中の Batch `MaxWallClockTime` 安全網による自動停止（`Invoke-PocRecoveryValidation.ps1 -ValidationMode HostStoppedBatchWallClock`、`V08`）、0 台オートスケール Pool への先行投入・自動拡張完走・固定スケール復元（`scripts/Invoke-PocAutoscaleValidation.ps1`、`V09`）、および `tools/DtsProbe --history true` による DTS 返却履歴のイベント件数集計をすべて実機で実行し、合格（Pass）を確認しました（詳細は [信頼性の追加検証](reliability-validation.md) および [検証結果](test-results.md) を参照）。なお、DTS 履歴集計でも過去の全世代にわたる起動一意性は証明できないため、`admission20` シナリオの `NotRun` 扱いは継続します。

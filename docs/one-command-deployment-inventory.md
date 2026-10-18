@@ -2,13 +2,15 @@
 
 更新日: 2026-10-18（現行コード、AzureRM 5.10.0 の実 provider schema、および Microsoft / HashiCorp 公式ドキュメントに基づき構成を策定・検証）
 
-以下の構成を実装し、Azure への配置（Azure Storage バックエンドおよび Durable Task Scheduler バックエンドの双方）、RHEL 9 VM の初期設定、Private SCM 配置、12 Functions の登録、3 Task smoke（`sum=3`）、標準シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）の Pass、および 0 台オートスケール Pool 先行投入・自動拡張完走・固定スケール復元（`V09`）の Pass を実機で確認済みです（`admission20` は全世代起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Spot 回収からの復旧や実 C++ バイナリ組み込みは後続フェーズの残作業です。
+以下の構成を実装し、過去のデプロイ実績（当時の 12 Functions 配置環境）において Azure への配置（Azure Storage バックエンドおよび Durable Task Scheduler バックエンドの双方）、RHEL 9 VM の初期設定、Private SCM 配置、12 Functions の登録、3 Task smoke（`sum=3`）、標準シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）の Pass、および 0 台オートスケール Pool 先行投入・自動拡張完走・固定スケール復元（`V09`）の Pass を実機で確認済みです（`admission20` は全世代起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。現行コード（コミット `5a45b17`、計 14 Functions、独自 URL 契約、エラー遮蔽、Activity 安全例外化、gRPC 3 コード限定再試行）に対する Azure 実機回帰検証は未実施です。Spot 回収からの復旧や実 C++ バイナリ組み込みは後続フェーズの残作業です。
 - `infra/batch.tf`（新規 `BatchService` Account と Windows Pool［`fixed` または 0 台 `autoscale`］の作成、新規RG作成オプション、Gallery / Marketplace イメージ参照）
 - `infra/durable-task-scheduler.tf`（`durable_backend='durableTaskScheduler'` 時の Consumption Scheduler / Task Hub / 30 日保持ポリシー作成）
 - `infra/bootstrap/`（Terraform state backend 構築用）
 - `scripts/deploy.ps1`（ビルド → IaC適用 → ZIPデプロイの一括実行）
 - `scripts/Test-Deployment.ps1`（リソースの準備完了確認および任意のスモークテスト）
 - `environments/`（環境別の設定ファイル例）
+
+各スクリプトの詳細仕様や連携フローは [PowerShell スクリプト一覧・役割整理](powershell-scripts-inventory.md) を参照してください。
 
 本ドキュメントの一覧表の「現状」は初期検討時の記録を含みます。2026-10-17 の方針変更では Function 受信用 Private Endpoint・Private DNS・検証 VM・NAT Gateway を追加しました。VM 経由の ZIP 配置と独立検証も対象です。Storage / Batch の全面閉域化、VPN / ExpressRoute 接続、`UserSubscription`、Gallery イメージのビルド工程、CI/OIDC は後続です。詳細は [接続設計](network-connectivity-design.md) を参照してください。なお、Terraform で Batch リソースの新規作成と既存参照を切り替える変数名は `batch_mode` としています。
 

@@ -6,7 +6,7 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> - **最新リポジトリ（HEAD `9c96054`）**: 14 個の Functions を登録する現行コードで、Release の `Poc.Tests` 209/209 件と `DtsProbe` 2/2 件が成功し、Release publish も成功しています。最新コードの Azure 配置・実機検証は未実施です。以下の Azure 実証は当時12個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
+> - **最新リポジトリ（HEAD `5a45b17`）**: 14 個の Functions を登録する現行コードで、Release の `Poc.Tests` 209/209 件と `DtsProbe` 2/2 件が成功し、Release publish も成功しています。最新コードの Azure 配置・実機検証は未実施です。以下の Azure 実証は当時12個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
 > - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での0台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
 > - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
 > - **未実証・未完了の範囲**: Entra 認証・App Role と信頼できる owner/org の伝播、owner 情報と受付記録の原子的な統合、現行コードの Azure 検証、実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、利用者キャンセル連鎖（`V12`）、全面閉域化（`V00`）、Spot 回収復旧が残っています。V11は、owner/admission統合、Entra/App Role導入、最新コードのAzure配置・認証/認可検証の順に進めます。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
@@ -150,12 +150,12 @@ Function App の Managed Identity に対する権限付与は Terraform 内で�
 
 ## スクリプト・補助ツールの役割一覧
 
-リポジトリ内の PowerShell スクリプト（`scripts/`）および .NET 補助ツール（`tools/`）の役割は以下のとおりです。
+リポジトリ内の PowerShell スクリプト（`scripts/`）および .NET 補助ツール（`tools/`）の役割は以下のとおりです（各スクリプトの詳細な入出力・引数仕様・依存関係は [PowerShell スクリプト一覧・役割整理](docs/powershell-scripts-inventory.md) を参照してください）。
 
 | スクリプト / ツール | 主な用途・実行タイミング | 具体的な処理内容 |
 |---|---|---|
-| [`scripts/deploy.ps1`](file:///D:/durable_functions_poc/scripts/deploy.ps1) | **ワンコマンド構築・デプロイ**<br>（初回構築・構成変更時） | 事前チェック、.NET ビルド・単体テスト・publish（POSIX 形式 ZIP 作成）、Terraform bootstrap / main の `plan`・安全性検査・`apply`、Pool ノード準備待機、および検証 VM 経由での Private SCM ZIP デプロイ・12 関数の登録確認までを一括実行します（`-PlanOnly` で計画確認のみ、`-Smoke` で 3 Task 疎通確認まで実行）。 |
-| [`scripts/Test-Deployment.ps1`](file:///D:/durable_functions_poc/scripts/Test-Deployment.ps1) | **デプロイ後の準備確認・Smoke 試験**<br>（`deploy.ps1` 内部または単体呼び出し） | Function App の稼働・12 関数のロード状態、および Batch Pool の目標ノード準備完了（または 0 台 Autoscale 設定正常性）を確認します。`-Smoke` 指定時は 3 Task のワークフローを投入し、`manifest.json` の生成と `Sum=3` を検証します。 |
+| [`scripts/deploy.ps1`](file:///D:/durable_functions_poc/scripts/deploy.ps1) | **ワンコマンド構築・デプロイ**<br>（初回構築・構成変更時） | 事前チェック、.NET ビルド・単体テスト・publish（POSIX 形式 ZIP 作成）、Terraform bootstrap / main の `plan`・安全性検査・`apply`、Pool ノード準備待機、および検証 VM 経由での Private SCM ZIP デプロイ・14 関数の登録確認までを一括実行します（`-PlanOnly` で計画確認のみ、`-Smoke` で 3 Task 疎通確認まで実行）。 |
+| [`scripts/Test-Deployment.ps1`](file:///D:/durable_functions_poc/scripts/Test-Deployment.ps1) | **デプロイ後の準備確認・Smoke 試験**<br>（`deploy.ps1` 内部または単体呼び出し） | Function App の稼働・14 関数のロード状態、および Batch Pool の目標ノード準備完了（または 0 台 Autoscale 設定正常性）を確認します。`-Smoke` 指定時は 3 Task のワークフローを投入し、`manifest.json` の生成と `Sum=3` を検証します。 |
 | [`scripts/Invoke-PrivatePocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PrivatePocValidation.ps1) | **閉域環境向け 独立シナリオ検証（入口）**<br>（デプロイ完了後のシナリオ試験時） | ローカル端末から呼び出す検証のメイン入口です。検証資材をバンドル化して検証 VM の Run Command を起動し、VM 内で `Invoke-PocValidation.ps1` を実行させた後、機密情報を除いた検証結果（`summary.json` / `summary.txt`）をローカルへ回収します。 |
 | [`scripts/Invoke-PocValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocValidation.ps1) | **シナリオ検証ランナー本体**<br>（検証 VM 内または直接到達可能な環境で実行） | インフラの再配置を行わず、HTTP API 経由で各検証シナリオ（`single`, `three`, `classification`, `failure`［exit 42］, `admission20`［20並列受付］, `conflict`［409競合］, `timeout`［監視期限停止・`MaxWallClockTime` 照合］）を実行し、Durable・Batch・Blob の三者を突合して合否（終了コード `0`/`1`/`2`）を判定します。 |
 | [`scripts/Invoke-PocRecoveryValidation.ps1`](file:///D:/durable_functions_poc/scripts/Invoke-PocRecoveryValidation.ps1) | **Function App 再起動復旧 / ホスト停止安全網の検証**<br>（耐障害性試験 `V05` / `V08` 時） | 既定（`-ValidationMode Restart`）では長時間待機 Task の `Running` 確認後に Function App を `restart` し、再送なしで同一インスタンス・Task が完走し成果物が整合することを検証します。`-ValidationMode HostStoppedBatchWallClock` 指定時は Function App を `stop` した状態で Batch 側の `MaxWallClockTime` により Job が自動終了することを検証します（いずれも `finally` で `start` 復元を実行）。 |
@@ -242,7 +242,7 @@ terraform -chdir=infra/bootstrap test
 
 - **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
 - **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
-- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。最新 HEAD `9c96054` の Release 検証では `Poc.Tests` 209/209 件、`DtsProbe` 2/2 件が成功し、Release publish も成功しました。これはローカル検証であり、最新コードのAzure実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
+- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。最新 HEAD `5a45b17` の Release 検証では `Poc.Tests` 209/209 件、`DtsProbe` 2/2 件が成功し、Release publish も成功しました。これはローカル検証であり、最新コードのAzure実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
 
 ---
 
@@ -364,7 +364,7 @@ Invoke-RestMethod -Uri $started.statusQueryGetUri -Headers $headers
 
 独自状態照会の `resultAvailable` は、公開manifest・aggregate・全Task結果の存在と現行PoC契約の整合性を確認した時点の値です。DurableがCompletedでも成果物欠損時はfalseとなり、結果取得は409を返します。不整合時は固定メッセージの500、一時障害時は503と `Retry-After: 10` を返します。結果取得時にも再検証するため、状態照会後の削除を含め取得成功を保証する値ではありません。
 
-独自HTTP応答、custom statusのエラー表示、明示的な失敗ログには固定の説明またはコードを使用します。Activity wrapperも分類後に固定message・innerなしの例外を渡し、再試行・timeout・caller取消の分類を維持します。対象はwrapperから外へ渡す例外情報であり、Activity入出力や別経路を含む全ログ・全履歴での機密情報非露出を保証するものではありません。
+独自HTTP応答、custom statusのエラー表示、明示的な失敗ログには固定の説明またはコードを使用します。Activity wrapperも分類後に固定message・innerなしの安全な例外（SafeActivityException）を渡し、再試行・timeout・caller取消の分類を維持します。また、gRPC通信の一時障害再試行対象は Unavailable, DeadlineExceeded, ResourceExhausted の3ステータスコードに限定しています。対象はwrapperから外へ渡す例外情報であり、Activity入出力や別経路を含む全ログ・全履歴での機密情報非露出を保証するものではありません。
 
 #### パラメータと受付制御（冪等性・重複抑止）の仕様
 - **入力パラメータ**: `taskCount` は `1`〜`3`、`classification` は `light` / `heavy` / `auto` を指定できます。

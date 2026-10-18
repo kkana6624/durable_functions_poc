@@ -21,7 +21,7 @@ flowchart TD
     C --> D[Gitリビジョン・変更状態・ソースハッシュを取得]
     D --> E{入力とエンドポイントは有効か}
     E -- いいえ --> F[Setup失敗を記録]
-    E -- はい --> G[対象サブスクリプションでFunction Key取得]
+    E -- はい --> G[対象サブスクリプションでFunction Key・System Key取得]
     G --> H{Key取得成功か}
     H -- いいえ --> F
     H -- はい --> I[選択されたシナリオを順次処理]
@@ -29,9 +29,10 @@ flowchart TD
     J -- いいえ --> K[NotRunと理由を記録]
     J -- はい --> L[requestIdと入力を生成]
     L --> M[開始APIへPOST送信]
-    M --> N{HTTP 202・instanceId・状態URLが妥当か}
+    M --> N{202応答の独自statusQueryGetUri・Location・instanceId検証}
     N -- いいえ --> O[Failと理由を記録]
-    N -- はい --> P[状態URLを定期ポーリング]
+    N -- はい --> N2[メモリ内でDurable管理URIを生成]
+    N2 --> P[Durable管理URIを定期ポーリング]
     P --> Q{ステータス照会結果}
     Q -- 404 --> P
     Q -- Running等 --> P
@@ -50,7 +51,7 @@ flowchart TD
     W --> X[終了コードを返却]
 ```
 
-状態照会用 URL については、HTTPS プロトコル、同一 Function App のホスト（Authority）、および想定されるインスタンスパス形式を満たしているかを検証します。起動直後の HTTP 404 は、WorkflowAdmissionEntity の受付後に Main オーケストレーションインスタンスが登録されるまでの過渡的な状態として扱い、ポーリングを継続します（設定された待機上限を超過した場合は Fail となります）。なお、セキュリティ確保のため、HTTP エラーレスポンスの本文やシークレットを含む URL はログや証跡ファイルへ出力しません。
+開始 202 応答の本文 `statusQueryGetUri` および `Location` ヘッダーは、キーを含む Durable 管理 URL ではなく独自の `/api/workflows/{requestId}` を返す契約となっています（`Retry-After: 10s`）。runner はこの開始 URL 契約（HTTPS、同一ホスト、`/api/workflows/{requestId}` 形式、およびシークレットが含まれていないこと）を第 1 段階として厳格に検証します。その後、runner は詳細診断のため、デプロイ結果から別途取得した system key を用いて Durable 管理 URI（`/runtime/webhooks/durabletask/instances/{instanceId}`）をメモリ内でのみ組み立て、詳細な実行履歴・ステータス（`runtimeStatus`、`customStatus`、`output`）のポーリングを継続する 2 段階フローを採用しています。起動直後の HTTP 404 は、WorkflowAdmissionEntity の受付後に Main オーケストレーションインスタンスが登録されるまでの過渡的な状態として扱い、ポーリングを継続します（設定された待機上限を超過した場合は Fail となります）。なお、セキュリティ確保のため、HTTP エラーレスポンスの本文、Function key、system key、Durable 管理 URL はログや証跡ファイルへ一切出力しません。
 
 ## 1件のワークフローのシーケンス
 
@@ -64,6 +65,7 @@ sequenceDiagram
     participant BLOB as Blob Storage
     participant E as WorkflowAdmissionEntity
     participant D as Durable Orchestrator
+    participant M as Durable管理API (Webhooks)
     participant BA as Azure Batch
     participant N as Windows Batch node
 
@@ -73,8 +75,9 @@ sequenceDiagram
         API-->>R: 409 Conflict
     else 新規または同じ入力
         API->>E: Start signal
-        API-->>R: 202 Accepted (instanceId, status URL)
-        Note over R: URLはメモリ内での照会のみに使用しログ保存を抑止
+        API-->>R: 202 Accepted (instanceId, statusQueryGetUri: /api/workflows/{requestId}, Retry-After: 10s)
+        Note over R: 独自statusQueryGetUri・Location契約を検証（管理URL非露出を確認）
+        Note over R: system keyからメモリ内でDurable管理URIを生成（ログ保存抑止）
         E->>D: 初回だけMain orchestrationを起動
         D->>D: 入力分類、Job ID・fingerprint・deadlineを決定
         D->>BA: fingerprint付きBatch Jobを作成／照合
@@ -92,17 +95,17 @@ sequenceDiagram
             D->>BLOB: tasks/task-NN/result.jsonを保存
             D->>BLOB: aggregate.jsonを保存
             D->>BLOB: manifest.jsonを公開
-            D-->>R: Completed / Succeeded
+            D-->>M: Completed / Succeeded
         else Task失敗
-            D-->>R: Failed、成功Manifestなし
+            D-->>M: Failed、成功Manifestなし
         else 監視期限超過
             D->>BA: 対象Jobを照合してTerminate
             D->>BA: Job Completedを確認
-            D-->>R: Failed runtime、business state TimedOut
+            D-->>M: Failed runtime、business state TimedOut
         end
     end
-    R->>API: 状態URLをGET（未登録中の404は再試行）
-    API-->>R: Durable runtimeStatus/customStatus/output
+    R->>M: Durable管理URIをGET（未登録中の404は再試行）
+    M-->>R: Durable runtimeStatus/customStatus/output
     R->>BA: Job・全Task状態をEntra認証で取得
     R->>BLOB: request・aggregate・manifest・Task結果を取得
     R->>R: ID・状態・値・件数・fingerprint・URIを照合

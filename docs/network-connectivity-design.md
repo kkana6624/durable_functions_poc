@@ -2,7 +2,7 @@
 
 更新日: 2026-10-18
 
-個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、12 Functions の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）の Pass、および 0 台オートスケール Pool 先行投入（`V09`）の Pass を実 Azure 上で確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。Storage / Batch の全面閉域化および VPN / ExpressRoute 接続は後続フェーズで実施します。
+個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、当時の 12 Functions の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオ 6 件（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）の Pass、Function App 再起動復旧（`V05`）の Pass、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）の Pass、および 0 台オートスケール Pool 先行投入（`V09`）の Pass は過去の実 Azure 実機検証（12 関数配置環境）で確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。現行コード（コミット `5a45b17`、計 14 Functions、独自 URL 契約、エラー遮蔽、Activity 安全例外化、gRPC 3 コード限定再試行）の Azure 実機回帰検証は未実施です。Storage / Batch の全面閉域化および VPN / ExpressRoute 接続は後続フェーズで実施します。
 
 ## 1. 今回の構成
 
@@ -58,7 +58,7 @@ VM の Public IP を省略しても外部サービスへの送信は必要です
 1. VM に Public IP がなく SSH 受信拒否であること、cloud-init と CLI / PowerShell の準備完了を確認する。
 2. VM から Function と SCM の通常 FQDN が想定 Private IP に解決され、HTTPS が到達することを確認する。
 3. Function の public network access が無効であることと、VNet 外の公開経路からのアクセス拒否を確認する。
-4. VM Identity での認証・RBAC 反映、Private SCM への ZIP 配置、12 個の Functions 登録を確認する。
+4. VM Identity での認証・RBAC 反映、Private SCM への ZIP 配置、Functions 登録を確認する（過去の実機検証記録は 12 個、現行最新コードでは `GetWorkflowStatus` / `GetWorkflowResult` を含む計 14 個の登録確認を完了条件とする）。
 5. VM から単一 Task・3 Task・分類・exit 42・再送・409 を検証する。期限停止は専用環境で実施する。20 並列の起動履歴を完全に証明できない制限は引き続き NotRun とする。
 6. 証跡を回収し、キー・管理 URL・トークンを含まないことを確認する。転送 Blob と VM 作業領域の保持・清掃状態も記録する。
 

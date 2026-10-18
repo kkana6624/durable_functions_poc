@@ -7,7 +7,7 @@
 - 計算形態: 原則 **1 Task = 単一ノード内完結**
 - フェーズ: 実装前設計（本設計書をもとに Codex へ実装を委譲する）
 
-> **2026-10-17追記:** 本文は初版時点の設計書です。同時受付時の排他制御、一時障害に対するリトライ、およびタイムアウト時の Batch リソース停止処理については、追加承認された [信頼性改善の設計](workflow-reliability.md) を現行仕様とします。
+> **2026-10-17追記:** 本文は初版時点の設計書です。同時受付時の排他制御、一時障害に対するリトライ、およびタイムアウト時の Batch リソース停止処理については、追加承認された [信頼性改善の設計](workflow-reliability.md) を現行仕様とします。さらに現行コード（コミット `5a45b17`）では、初版の10関数から計14関数（`GetWorkflowStatus`、`GetWorkflowResult`、`WorkflowAdmissionEntity`、`TerminateBatchJobActivity` を含む）へ拡張され、開始応答（202 Accepted）が Durable 標準の管理 API から独自 API 契約（`/api/workflows/{requestId}`、`Retry-After: 10`）へ変更されているとともに、エラー遮蔽・公開成果物検証・Activity 安全例外化・gRPC 3コード限定再試行が組み込まれています。
 
 > **Spot 対応追記:** 現行の新規 Batch 構築と Spot 選択は [IaC 設計](one-command-deployment-inventory.md)、VM からの閉域トリガーは [接続設計](network-connectivity-design.md) を参照してください。Spot 利用時も本文のローカル結果回収方式を継続するため、Activity が回収する前にノードが失われると結果を取得できない場合があります。Task から Blob への直接永続化は未実装です。
 
@@ -88,7 +88,7 @@ flowchart TD
 ## 3. P0 処理フロー
 
 1. `POST /api/workflows` で `requestId`、`taskCount`（標準は3）、`classification`（`light`、`heavy`、`auto`）、および任意の `failTaskIndex` を受け取ります。
-2. リクエスト内容を検証し、Durable オーケストレーションの `InstanceId` を決定して起動します。クライアントへは `202 Accepted` と状態照会用 URL（Durable 標準の管理 API）を返します。
+2. リクエスト内容を検証し、Durable オーケストレーションの `InstanceId` を決定して起動します。クライアントへは `202 Accepted` と状態照会用 URL を返します（※初版設計では Durable 標準管理 API を返していましたが、現行仕様ではシークレットや内部管理エンドポイントを隠蔽する独自状態照会 API `/api/workflows/{requestId}` を返し、`Retry-After: 10` ヘッダーを付与します）。
 3. `ClassifyActivity` でワークロードの分類（`light` または `heavy`）を判定します。本PoCでは Stub 実装とし、明示指定された場合はその値を採用、`auto` の場合は固定ルールで判定して、判定理由を出力に含めます。
 4. `EnsureBatchJobActivity` が **既存 Pool を参照する** PoC 専用 ID の Batch Job を作成します（すでに同一 Job が存在する場合は構成の整合性を照合します）。
 5. 3つの `MonitorBatchTaskOrchestrator`（サブオーケストレーション）を並列に起動します。各サブオーケストレーターは `EnsureBatchTaskActivity` で Task を投入し、`GetBatchTaskStatusActivity` による状態確認と `CreateTimer` による待機を Task が完了（成功または失敗）するまで繰り返します。
@@ -126,6 +126,13 @@ cmd /c powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 
 | `FetchAndPersistActivity` | Activity | Task File APIから小結果取得→Blobへの書込 |
 | `AggregateActivity` | Activity | 3つの結果から合計を計算しBlob保存 |
 | `PublishManifestActivity` | Activity | 条件付きManifest発行 |
+
+> **現行コードとの差分注記（計14関数構成）:**
+> 上記の表は初版設計時の10関数を示しています。現行コード（コミット `5a45b17`）では、信頼性向上および API 契約の改善により以下の4関数が追加され、計14関数構成となっています。
+> 1. `WorkflowAdmissionEntity`（Entity trigger）: 同一 `requestId` に対する同時受付の排他制御・重複起動抑止
+> 2. `TerminateBatchJobActivity`（Activity trigger）: タイムアウト時や異常終了時の Azure Batch Job 明示的停止
+> 3. `GetWorkflowStatus`（HTTP trigger）: Durable 管理 API を隠蔽し、業務ステータス・進捗・成果物安全情報を返す独自状態照会 API（`GET /api/workflows/{requestId}`）
+> 4. `GetWorkflowResult`（HTTP trigger）: 完了したワークフローの集約結果およびマニフェストを安全に取得する独自結果照会 API（`GET /api/workflows/{requestId}/result`）
 
 実装時は外部依存を切り離せるよう、`IBatchGateway`、`IResultRepository`、`IWorkloadClassifier` の各インターフェースを定義します。ただし、`IBatchGateway` の Mock / Fake 実装は**ローカルの単体テスト専用**とし、クラウド環境での F01 検証は必ず実際の Azure Batch に接続して判定します。
 
