@@ -1,8 +1,8 @@
 # プロジェクトメモリ
 
-## 現在の要約（2026-10-18、`5a45b17`）
+## 現在の要約（2026-10-18、検証済みコード `9c96054`、現文書HEAD `e3d3734`）
 
-最新HEADのローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定までです。ReleaseはPoc.Tests209件＋DtsProbe2件の計211件成功、`artifacts/grpc-retry-release-publish` 成功・`local.settings*` 不在。現行Functions期待数は14件です。今回のAzure配置・実機検証は未実施で、以前のV05/V07/V08/V09成功とは区別します。
+検証済みコード `9c96054` のローカル実装は、独自開始URL、HTTP/custom status/明示ログのエラー遮蔽、状態・結果API共通の公開成果物検証、Activity wrapperの安全例外化、gRPC3コード限定までです。現HEAD `e3d3734` は文書とPowerShellスクリプト棚卸しのみの変更です。ReleaseはPoc.Tests209件＋DtsProbe2件の計211件成功、`artifacts/grpc-retry-release-publish` 成功・`local.settings*` 不在。現行Functions期待数は14件です。今回のAzure配置・実機検証は未実施で、以前のV05/V07/V08/V09成功とは区別します。
 
 次の作業はV11の認証・App Role、信頼された所有者/組織の伝播と受付競合対策です。V12キャンセル、V10/T09ファイル入出力、V00閉域接続も残ります。全ランタイムログ・全履歴の安全性、admission20の厳密な全世代起動一意性は保証しません。以下は日付別の履歴で、過去の試験件数や未実施記述は当時の状態を示します。
 

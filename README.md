@@ -6,7 +6,7 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 > [!IMPORTANT]
 > **検証ステータスに関する注記**
-> - **最新リポジトリ（HEAD `5a45b17`）**: 14 個の Functions を登録する現行コードで、Release の `Poc.Tests` 209/209 件と `DtsProbe` 2/2 件が成功し、Release publish も成功しています。最新コードの Azure 配置・実機検証は未実施です。以下の Azure 実証は当時12個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
+> - **最新コード（`9c96054`、現文書HEAD `e3d3734`）**: 14 個の Functions を登録するコードで、Release の `Poc.Tests` 209/209 件と `DtsProbe` 2/2 件が成功し、Release publish も成功しています。`e3d3734` は文書とスクリプト棚卸しのみの変更です。最新コードの Azure 配置・実機検証は未実施です。以下の Azure 実証は当時12個の Functions を配置した過去の記録であり、現行コードの検証結果ではありません。
 > - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `timeout`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での0台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
 > - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の12個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準6シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
 > - **未実証・未完了の範囲**: Entra 認証・App Role と信頼できる owner/org の伝播、owner 情報と受付記録の原子的な統合、現行コードの Azure 検証、実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、利用者キャンセル連鎖（`V12`）、全面閉域化（`V00`）、Spot 回収復旧が残っています。V11は、owner/admission統合、Entra/App Role導入、最新コードのAzure配置・認証/認可検証の順に進めます。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
@@ -242,7 +242,7 @@ terraform -chdir=infra/bootstrap test
 
 - **リストア順序**: 現行の `Azure.Functions.Sdk` の生成ターゲットを準備するため、先に Function プロジェクト（`Poc.Functions.csproj`）を直接 restore してからソリューション全体を restore します。
 - **テスト実行**: `global.json` で `Microsoft.Testing.Platform` runner を指定しているため、`dotnet test` 実行時は `--project` オプションを使用します。
-- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。最新 HEAD `5a45b17` の Release 検証では `Poc.Tests` 209/209 件、`DtsProbe` 2/2 件が成功し、Release publish も成功しました。これはローカル検証であり、最新コードのAzure実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
+- **モック構成**: 単体テストは `FakeGateway` とインメモリの結果保存を使用し、Azure への通信は発生しません。コード基準 `9c96054` の Release 検証では `Poc.Tests` 209/209 件、`DtsProbe` 2/2 件が成功し、Release publish も成功しました。現文書HEAD `e3d3734` は文書・スクリプト棚卸しのみの変更です。これはローカル検証であり、最新コードのAzure実機検証ではありません。詳細は [検証結果](docs/test-results.md) を参照してください。
 
 ---
 
