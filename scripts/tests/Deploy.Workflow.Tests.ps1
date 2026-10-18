@@ -1,6 +1,10 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 function Assert-True([bool]$Value,[string]$Message) { if (-not $Value) { throw "ASSERT: $Message" } }
+function Assert-Fails([scriptblock]$Action,[string]$Expected) {
+    try { & $Action | Out-Null } catch { Assert-True ($_.Exception.Message -match $Expected) "Expected $Expected"; return }
+    throw "ASSERT: expected $Expected"
+}
 $temporary=Join-Path ([IO.Path]::GetTempPath()) ('poc-workflow-tests-'+[Guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path (Join-Path $temporary 'scripts') -Force
 $oldTrace=$env:POC_FAKE_TRACE
@@ -188,6 +192,14 @@ exit 0
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'scheduler' -ConfigFile $configPath -PlanOnly
     Assert-True ((Get-Content -LiteralPath $env:POC_FAKE_TRACE -Raw) -match 'provider show --namespace Microsoft.DurableTask') 'Scheduler deployment must check its resource provider registration'
+    $strictConfig=$config.Replace("batch_mode='existing'", "batch_mode='existing'; workflow_auth_mode='EntraEasyAuth'; workflow_auth_tenant_id='11111111-1111-1111-1111-111111111111'; workflow_auth_api_client_id='22222222-2222-2222-2222-222222222222'; workflow_auth_audience='api://workflow'; workflow_auth_required_app_role='Workflow.Invoke'; workflow_auth_allowed_backend_app_ids=@('33333333-3333-3333-3333-333333333333')")
+    Set-Content -LiteralPath $configPath -Value $strictConfig -Encoding UTF8
+    Clear-Content -LiteralPath $env:POC_FAKE_TRACE
+    Assert-Fails { & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'strict' -ConfigFile $configPath -Smoke } 'does not support deploy -Smoke'
+    Assert-True ([string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $env:POC_FAKE_TRACE -Raw))) 'Strict legacy smoke must fail before tools, Azure or mutation'
+    & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'strict' -ConfigFile $configPath -PlanOnly
+    $strictVars=Get-ChildItem -LiteralPath (Join-Path $temporary '.deploy/strict') -Filter deployment.tfvars.json -Recurse | Select-Object -First 1 | Get-Content -Raw | ConvertFrom-Json
+    Assert-True ($strictVars.workflow_auth_mode -ceq 'EntraEasyAuth' -and $strictVars.workflow_auth_audience -ceq 'api://workflow' -and $strictVars.workflow_auth_allowed_backend_app_ids.Count -eq 1) 'Strict PSD1 settings must reach generated Terraform variables without changing the audience'
     $changed=$config.Replace("name_suffix='test01'","name_suffix='changed'")
     Set-Content -LiteralPath $configPath -Value $changed -Encoding UTF8
     $failed=$false

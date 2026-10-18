@@ -4,7 +4,9 @@
 
 ## 現在の到達点
 
-今回の認証単位では、既定`PocFunctionKey`の互換を保ち、`EntraEasyAuth`を明示選択した場合のバックエンドclient ID・tenant/issuer/audience・App Role・app-only判定と、必須owner/orgを検査するローカルアダプターを追加します。Function keyは維持します。[認証境界](workflow-authentication-design.md) に設定・代理主張の責任・環境ガードの限界を記載します。Entra登録、EasyAuth IaC、runnerのBearer対応、Azure配置・実principal/偽造ヘッダー試験は次段階で、V11全体は未完です。
+今回の認証単位では、既定`PocFunctionKey`の互換を保ち、`EntraEasyAuth`を明示選択した場合の認証アダプターに、既定offのEasyAuth IaCとVM Managed Identity用の独自API認証runnerを追加します。Function keyと必須owner/orgを維持します。[認証境界](workflow-authentication-design.md) に設定・代理主張の責任・環境ガードの限界を記載します。Entra登録・App Role割当・`idtyp` optional claimの実設定は自動変更せず、Azure配置・実principal/偽造ヘッダー試験は未実施です。V11全体は未完です。
+
+厳格モードの`deploy.ps1 -Smoke`は初期検証で拒否します。新しい`Invoke-WorkflowAuthValidation.ps1`の対象は独自開始・状態・結果APIです。既存Smoke/Private/通常シナリオ/Recovery/Autoscaleの内部診断はBearer未対応で、厳格モードの回帰検証には使えません。診断パスをEasyAuthから除外せず、既存runnerの追従を後続作業として残します。SCM配置は既存のEntra/ARM token認証を維持します。
 
 今回のローカル変更では受付・所有者を `admission.json`（Version 2）へ一体化します。所有者なしも不変の属性とし、同一所有者・入力の再送のみ許可します。旧入力/所有者が整合する受付は再送時に正規化し、旧匿名受付への所有者追加、孤立所有者、新旧矛盾は拒否します。旧Starter停止後の切替が前提で、別Blobの読取りと作成、Durable通知との原子性は保証しません。認証境界・Azure配置と実機試験は未実施です。以下の `9c96054` と211件の試験結果は今回の変更前の検証基準です。
 

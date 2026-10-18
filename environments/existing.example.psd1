@@ -1,5 +1,14 @@
 @{
     Terraform = @{
+        # Opt-in EasyAuth; registrations, Application App Role assignment and idtyp claim are external prerequisites.
+        workflow_auth_mode = 'PocFunctionKey'
+        # For EntraEasyAuth, set all five values; backend IDs must be a unique nonempty GUID array.
+        # workflow_auth_tenant_id = '<tenant-guid>'
+        # workflow_auth_api_client_id = '<api-application-client-guid>'
+        # workflow_auth_audience = 'api://<api-application-client-guid>'
+        # workflow_auth_allowed_backend_app_ids = @('<backend-application-client-guid>')
+        # workflow_auth_required_app_role = 'Workflow.Invoke'
+        # Function keys remain required. Use Invoke-WorkflowAuthValidation.ps1 instead of deploy -Smoke.
         subscription_id = '00000000-0000-0000-0000-000000000000'
         resource_group_name = 'existing-poc-rg'
         create_resource_group = $false

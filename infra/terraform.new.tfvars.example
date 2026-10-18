@@ -1,3 +1,11 @@
+# Authentication is opt-in; Entra registrations/App Role assignments/idtyp remain external prerequisites.
+workflow_auth_mode = "PocFunctionKey"
+# To enable EntraEasyAuth, supply all five values below. Function keys remain required.
+# workflow_auth_tenant_id = "<tenant-guid>"
+# workflow_auth_api_client_id = "<api-application-client-guid>"
+# workflow_auth_audience = "api://<api-application-client-guid>"
+# workflow_auth_allowed_backend_app_ids = ["<backend-application-client-guid>"]
+# workflow_auth_required_app_role = "Workflow.Invoke"
 subscription_id       = "00000000-0000-0000-0000-000000000000"
 resource_group_name   = "your-poc-resource-group"
 create_resource_group = true

@@ -310,6 +310,10 @@ terraform -chdir=infra output
 
 通常の単一 Task 検証は `Invoke-PrivatePocValidation.ps1 -Scenarios single` で VM から HTTP workflow を起動します。以下の BatchSmoke は、Batch エンドポイントへ直接接続できる開発端末で使う補助診断ツールです。ワンコマンド配置の `-Smoke` からは呼び出しません。
 
+ワークフロー認証は既定`PocFunctionKey`を維持し、明示的な`EntraEasyAuth`設定時だけEasyAuthとアプリ内App Role検証を有効にします。各独自APIにはBearerとFunction key、owner/orgが必要です。設定契約・Entra登録の手順と制約は[認証境界](docs/workflow-authentication-design.md)を参照してください。Entra登録、App Role割当、`idtyp` optional claimは自動変更しません。Azure配置・両Durableバックエンドの認証実証は未完です。
+
+厳格モードの`deploy.ps1 -Smoke`は事前検証で拒否します。既存のSmoke・Private/通常シナリオ・Recovery/Autoscale runnerは、内部Durable診断を含めBearer未対応です。新しい`scripts/Invoke-WorkflowAuthValidation.ps1`はVM Managed IdentityのIMDSを用い、独自開始・状態・結果APIを検証する限定runnerです。SCM配置の既存Entra/ARM token認証とは別経路で、診断用EasyAuth除外パスは追加しません。
+
 ```powershell
 $env:BATCH_ENDPOINT = 'https://<account>.<region>.batch.azure.com'
 $env:BATCH_POOL_ID = '<existing-windows-pool>'

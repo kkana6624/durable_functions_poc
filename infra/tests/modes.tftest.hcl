@@ -99,6 +99,94 @@ variables {
   batch_pool_id                = "shared-windows"
 }
 
+run "workflow_auth_default_is_opt_in" {
+  command = plan
+  assert {
+    condition     = length(azurerm_linux_function_app.poc.auth_settings_v2) == 0 && azurerm_linux_function_app.poc.app_settings.WORKFLOW_AUTH_MODE == "PocFunctionKey" && !contains(keys(azurerm_linux_function_app.poc.app_settings), "WEBSITE_AUTH_ENABLED")
+    error_message = "Default must preserve Function key mode without spoofing platform authentication guards."
+  }
+}
+
+run "workflow_auth_strict" {
+  command = plan
+  variables {
+    workflow_auth_mode                    = "EntraEasyAuth"
+    workflow_auth_tenant_id               = "11111111-1111-1111-1111-111111111111"
+    workflow_auth_api_client_id           = "22222222-2222-2222-2222-222222222222"
+    workflow_auth_audience                = "api://workflow"
+    workflow_auth_allowed_backend_app_ids = ["33333333-3333-3333-3333-333333333333"]
+    workflow_auth_required_app_role       = "Workflow.Invoke"
+  }
+  assert {
+    condition = alltrue([
+      azurerm_linux_function_app.poc.auth_settings_v2[0].auth_enabled,
+      azurerm_linux_function_app.poc.auth_settings_v2[0].require_authentication,
+      azurerm_linux_function_app.poc.auth_settings_v2[0].require_https,
+      azurerm_linux_function_app.poc.auth_settings_v2[0].unauthenticated_action == "Return401",
+      azurerm_linux_function_app.poc.auth_settings_v2[0].active_directory_v2[0].tenant_auth_endpoint == "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0",
+      azurerm_linux_function_app.poc.auth_settings_v2[0].active_directory_v2[0].client_id == var.workflow_auth_api_client_id,
+      azurerm_linux_function_app.poc.auth_settings_v2[0].active_directory_v2[0].allowed_audiences == tolist([azurerm_linux_function_app.poc.app_settings.WORKFLOW_AUTH_AUDIENCE]),
+      join(",", azurerm_linux_function_app.poc.auth_settings_v2[0].active_directory_v2[0].allowed_applications) == azurerm_linux_function_app.poc.app_settings.WORKFLOW_AUTH_ALLOWED_BACKEND_APP_IDS,
+      azurerm_linux_function_app.poc.app_settings.WORKFLOW_AUTH_TENANT_ID == var.workflow_auth_tenant_id,
+      azurerm_linux_function_app.poc.app_settings.WORKFLOW_AUTH_REQUIRED_APP_ROLE == var.workflow_auth_required_app_role,
+      !azurerm_linux_function_app.poc.auth_settings_v2[0].login[0].token_store_enabled,
+      !contains(keys(azurerm_linux_function_app.poc.app_settings), "WEBSITE_AUTH_ENABLED")
+    ])
+    error_message = "Strict EasyAuth and application policy must use the same explicit tenant, single audience, backend clients and role."
+  }
+}
+
+run "workflow_auth_missing_configuration_rejected" {
+  command = plan
+  variables { workflow_auth_mode = "EntraEasyAuth" }
+  expect_failures = [azurerm_linux_function_app.poc]
+}
+
+run "workflow_auth_invalid_backend_rejected" {
+  command = plan
+  variables {
+    workflow_auth_mode                    = "EntraEasyAuth"
+    workflow_auth_tenant_id               = "11111111-1111-1111-1111-111111111111"
+    workflow_auth_api_client_id           = "22222222-2222-2222-2222-222222222222"
+    workflow_auth_audience                = "api://workflow"
+    workflow_auth_allowed_backend_app_ids = ["33333333-3333-3333-3333-333333333333", "33333333-3333-3333-3333-333333333333"]
+    workflow_auth_required_app_role       = "Workflow.Invoke"
+  }
+  expect_failures = [azurerm_linux_function_app.poc]
+}
+
+run "workflow_auth_bad_guid_rejected" {
+  command = plan
+  variables {
+    workflow_auth_mode                    = "EntraEasyAuth"
+    workflow_auth_tenant_id               = "00000000-0000-0000-0000-000000000000"
+    workflow_auth_api_client_id           = "not-a-guid"
+    workflow_auth_audience                = "api://workflow"
+    workflow_auth_allowed_backend_app_ids = ["33333333-3333-3333-3333-333333333333"]
+    workflow_auth_required_app_role       = "Workflow.Invoke"
+  }
+  expect_failures = [azurerm_linux_function_app.poc]
+}
+
+run "workflow_auth_empty_policy_rejected" {
+  command = plan
+  variables {
+    workflow_auth_mode                    = "EntraEasyAuth"
+    workflow_auth_tenant_id               = "11111111-1111-1111-1111-111111111111"
+    workflow_auth_api_client_id           = "22222222-2222-2222-2222-222222222222"
+    workflow_auth_audience                = " "
+    workflow_auth_allowed_backend_app_ids = []
+    workflow_auth_required_app_role       = " "
+  }
+  expect_failures = [azurerm_linux_function_app.poc]
+}
+
+run "workflow_auth_invalid_mode_rejected" {
+  command = plan
+  variables { workflow_auth_mode = "entraeasyauth" }
+  expect_failures = [var.workflow_auth_mode]
+}
+
 run "existing_preserves_shared_resources" {
   command = apply
   assert {
@@ -222,7 +310,7 @@ run "explicit_durable_observer_is_hub_reader_only" {
   command = apply
   variables {
     durable_backend               = "durableTaskScheduler"
-    durable_task_hub_name          = "testhub"
+    durable_task_hub_name         = "testhub"
     durable_observer_principal_id = "66666666-6666-6666-6666-666666666666"
   }
   override_resource {

@@ -107,6 +107,10 @@ resource "azurerm_linux_function_app" "poc" {
 
   lifecycle {
     precondition {
+      condition     = !local.workflow_auth_strict || local.workflow_auth_valid
+      error_message = "EntraEasyAuth requires nonempty tenant/API client GUIDs, a unique nonempty backend client GUID list, one audience and an App Role. Entra registrations and assignments must already exist."
+    }
+    precondition {
       condition = var.existing_service_plan_id == null ? true : (
         lower(data.azurerm_service_plan.existing[0].id) == lower(var.existing_service_plan_id) &&
         data.azurerm_service_plan.existing[0].os_type == "Linux" &&
@@ -117,6 +121,23 @@ resource "azurerm_linux_function_app" "poc" {
   }
 
   identity { type = "SystemAssigned" }
+
+  dynamic "auth_settings_v2" {
+    for_each = local.workflow_auth_strict ? [1] : []
+    content {
+      auth_enabled           = true
+      require_authentication = true
+      require_https          = true
+      unauthenticated_action = "Return401"
+      active_directory_v2 {
+        client_id            = coalesce(var.workflow_auth_api_client_id, "00000000-0000-0000-0000-000000000000")
+        tenant_auth_endpoint = "https://login.microsoftonline.com/${coalesce(var.workflow_auth_tenant_id, "invalid")}/v2.0"
+        allowed_applications = var.workflow_auth_allowed_backend_app_ids
+        allowed_audiences    = compact([var.workflow_auth_audience == null ? "" : trimspace(var.workflow_auth_audience)])
+      }
+      login { token_store_enabled = false }
+    }
+  }
 
   site_config {
     always_on                              = true
@@ -139,7 +160,7 @@ resource "azurerm_linux_function_app" "poc" {
     BATCH_POLL_SECONDS              = tostring(var.batch_poll_seconds)
     WORKFLOW_TIMEOUT_MIN            = tostring(var.workflow_timeout_minutes)
     WEBSITE_RUN_FROM_PACKAGE        = "1"
-  }, local.durable_app_settings)
+  }, local.durable_app_settings, local.workflow_auth_app_settings)
 }
 
 # The host requires Blob Data Owner; Durable additionally uses queues and tables.

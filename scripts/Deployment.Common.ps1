@@ -68,6 +68,35 @@ function Write-DeploymentJson {
     [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
 }
 
+function Get-DeploymentWorkflowAuthSettings {
+    param([Parameter(Mandatory)][hashtable]$Variables, [switch]$Smoke)
+    $mode = if ($Variables.ContainsKey('workflow_auth_mode')) { [string]$Variables.workflow_auth_mode } else { 'PocFunctionKey' }
+    if ($mode -ceq 'PocFunctionKey') { return @{ workflow_auth_mode=$mode } }
+    if ($mode -cne 'EntraEasyAuth') { throw 'Invalid workflow_auth_mode.' }
+    $result = @{ workflow_auth_mode=$mode }
+    foreach ($key in @('workflow_auth_tenant_id','workflow_auth_api_client_id','workflow_auth_audience','workflow_auth_required_app_role')) {
+        if (-not $Variables.ContainsKey($key) -or $Variables[$key] -isnot [string] -or [string]::IsNullOrWhiteSpace($Variables[$key])) { throw "EntraEasyAuth requires $key." }
+        $result[$key] = $Variables[$key].Trim()
+    }
+    foreach ($key in @('workflow_auth_tenant_id','workflow_auth_api_client_id')) {
+        $id = [Guid]::Empty
+        if ($result[$key] -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or -not [Guid]::TryParse($result[$key], [ref]$id) -or $id -eq [Guid]::Empty) { throw "EntraEasyAuth requires a nonempty GUID for $key." }
+        $result[$key] = $id.ToString()
+    }
+    $key = 'workflow_auth_allowed_backend_app_ids'
+    if (-not $Variables.ContainsKey($key) -or $Variables[$key] -isnot [array] -or $Variables[$key].Count -eq 0) { throw "EntraEasyAuth requires a nonempty GUID array for $key." }
+    $ids = @()
+    foreach ($value in $Variables[$key]) {
+        $id = [Guid]::Empty
+        if ($value -isnot [string] -or $value -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or -not [Guid]::TryParse($value, [ref]$id) -or $id -eq [Guid]::Empty) { throw "EntraEasyAuth requires nonempty backend GUID identifiers." }
+        if ($ids -contains $id.ToString()) { throw 'EntraEasyAuth backend GUID identifiers must be unique.' }
+        $ids += $id.ToString()
+    }
+    $result[$key] = $ids
+    if ($Smoke) { throw 'EntraEasyAuth does not support deploy -Smoke. Use Invoke-WorkflowAuthValidation.ps1 with the separately authorized validation VM Managed Identity.' }
+    return $result
+}
+
 function Get-DeploymentDurableSettings {
     param([Parameter(Mandatory)][hashtable]$Variables, [switch]$FromOutputs)
     $backend = if ($Variables.ContainsKey('durable_backend')) { [string]$Variables.durable_backend } else { 'azureStorage' }

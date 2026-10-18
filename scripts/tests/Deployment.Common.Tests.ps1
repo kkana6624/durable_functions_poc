@@ -21,6 +21,30 @@ Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=
 $converted=ConvertTo-DeploymentHashtable ([pscustomobject]@{ outer=[pscustomobject]@{ values=@('a','b') } })
 Assert-True ($converted -is [hashtable] -and $converted.outer -is [hashtable] -and $converted.outer.values.Count -eq 2) 'JSON conversion should preserve nested arrays'
 $defaults=Get-DeploymentDurableSettings -Variables @{}
+Assert-True ((Get-DeploymentWorkflowAuthSettings -Variables @{}).workflow_auth_mode -ceq 'PocFunctionKey') 'Auth must remain opt-in'
+$auth=@{ workflow_auth_mode='EntraEasyAuth'; workflow_auth_tenant_id='11111111-1111-1111-1111-111111111111'; workflow_auth_api_client_id='22222222-2222-2222-2222-222222222222'; workflow_auth_audience='api://workflow'; workflow_auth_required_app_role='Workflow.Invoke'; workflow_auth_allowed_backend_app_ids=@('33333333-3333-3333-3333-333333333333') }
+$normalized=Get-DeploymentWorkflowAuthSettings -Variables $auth
+Assert-True ($normalized.workflow_auth_audience -ceq 'api://workflow' -and $normalized.workflow_auth_allowed_backend_app_ids.Count -eq 1) 'Strict auth must preserve one audience and backend list'
+Assert-Fails { Get-DeploymentWorkflowAuthSettings -Variables $auth -Smoke } 'does not support deploy -Smoke'
+foreach ($key in @('workflow_auth_tenant_id','workflow_auth_api_client_id','workflow_auth_audience','workflow_auth_required_app_role','workflow_auth_allowed_backend_app_ids')) {
+    $invalid=$auth.Clone(); $invalid.Remove($key)
+    Assert-Fails { Get-DeploymentWorkflowAuthSettings -Variables $invalid } 'requires'
+}
+foreach ($invalidApps in @(@(), @('bad'), @('00000000-0000-0000-0000-000000000000'), @('33333333-3333-3333-3333-333333333333','33333333-3333-3333-3333-333333333333'))) {
+    $invalid=$auth.Clone(); $invalid.workflow_auth_allowed_backend_app_ids=$invalidApps
+    Assert-Fails { Get-DeploymentWorkflowAuthSettings -Variables $invalid } 'requires|unique'
+}
+Assert-Fails { Get-DeploymentWorkflowAuthSettings -Variables @{ workflow_auth_mode='entraeasyauth' } } 'Invalid workflow_auth_mode'
+foreach ($key in @('workflow_auth_tenant_id','workflow_auth_api_client_id')) {
+    foreach ($value in @('bad','00000000-0000-0000-0000-000000000000')) {
+        $invalid=$auth.Clone(); $invalid[$key]=$value
+        Assert-Fails { Get-DeploymentWorkflowAuthSettings -Variables $invalid } 'requires a nonempty GUID'
+    }
+}
+foreach ($key in @('workflow_auth_audience','workflow_auth_required_app_role')) {
+    $invalid=$auth.Clone(); $invalid[$key]=' '
+    Assert-Fails { Get-DeploymentWorkflowAuthSettings -Variables $invalid } 'requires'
+}
 Assert-True ($defaults.durable_backend -ceq 'azureStorage' -and $defaults.durable_task_hub_name -ceq 'PocBatchHub') 'Legacy settings must preserve Azure Storage and original hub'
 $scheduler=Get-DeploymentDurableSettings -Variables @{ durable_backend='durableTaskScheduler'; task_hub_name='SchedulerHub' } -FromOutputs
 Assert-True ($scheduler.durable_backend -ceq 'durableTaskScheduler' -and $scheduler.durable_task_hub_name -ceq 'SchedulerHub') 'Scheduler output metadata must normalize to environment identity'

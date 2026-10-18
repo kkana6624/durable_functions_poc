@@ -1,5 +1,17 @@
 # プロジェクトメモリ
 
+## 2026-10-18 EasyAuth IaCと独自API認証runner（今回の作業）
+
+作業開始時HEADは`27b24b4`でGitはcleanでした。既定`PocFunctionKey`を維持し、明示した厳格モード向けのEasyAuth IaCとVM Managed Identity/IMDS用の`Invoke-WorkflowAuthValidation.ps1`を追加します。Function keyとowner/orgを維持し、独自開始・状態・結果APIを使います。Entra登録・App Role割当・`idtyp` optional claimは自動変更しません。Azure配置・実機試験は行っていません。
+
+厳格モードで`deploy.ps1 -Smoke`は初期検証で拒否します。既存のSmoke・Private/通常シナリオ・Recovery/Autoscale runnerの内部診断はBearer未対応です。新runnerの追加はこれらの移行や両Durableバックエンドの回帰完了を意味しません。診断用EasyAuth除外パスは設けず、SCMは既存のEntra/ARM token配置経路を維持します。
+
+ロックAzureRM 5.10.0の実provider schemaを確認しました。tenant endpoint説明例の順序はMicrosoft公式資料と相違するため、公式の`/<tenant-id>/v2.0`を採用します。`WEBSITE_AUTH_ENABLED`は自動注入のread-only値で、IaCへ手動設定しません。必要claimが実EasyAuth principalに揃うか、偽造ヘッダー除去、認証無効化時の拒否は未実証です。公式根拠と事前設定は[認証境界](workflow-authentication-design.md)を参照してください。
+
+今回のTerraform Mockは37/37件、`fmt -check`と`validate`が成功しました。PowerShellオフライン試験はDeployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidationの計8組が成功しています。新runnerは来歴のscalar型ガード追加後にも再実行して成功し、秘密を含む配列を来歴fieldへ与えてもnullへ落とし証跡へ転記しないことを確認しました。runnerのHTTP・token・keyはFakeであり、EntraやAzureの実証ではありません。C#認証アダプターの変更はなく、以前のRelease261件は今回再実行した試験数ではありません。`git diff --check`も成功しています。
+
+runner証跡の来歴は配置記述子に記載された値を形式検証して選択したものです。`livePackageVerified=false`を維持し、稼働packageの実測や最新commitのAzure配置成功とは扱いません。
+
 ## 2026-10-18 認証境界アダプター（今回の作業）
 
 作業開始時HEADは`e1d04d6`でGitはcleanでした。今回は既定`PocFunctionKey`互換を保ち、`EntraEasyAuth`を明示選択した場合のprincipal解析・tenant/issuer/audience・許可backend client ID・App Role・`idtyp=app`・scope不存在を検査するアダプターとローカル拒否試験を追加します。厳格モードではowner/orgが必須で、利用者情報を主張する責任は認可済みバックエンドにあります。Function keyは引き続き必要です。

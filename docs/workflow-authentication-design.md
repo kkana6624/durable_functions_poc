@@ -1,6 +1,6 @@
 # ワークフローAPIの認証境界
 
-確認日: 2026-10-18。今回の対象は、信頼されたオンプレミスWebバックエンドを呼出元とする認証アダプターとローカル拒否試験です。Entra登録、EasyAuthのIaC、runnerのBearer対応、Azure配置・実機試験は後続です。ローカル成功をEntra運用完成とは扱いません。
+確認日: 2026-10-18。認証アダプターに続き、既定offのEasyAuth IaCとapp-only検証runnerを追加する段階です。既定`PocFunctionKey`を維持します。Entra登録・App Role割当・optional claimの変更は自動実行せず、Azure配置・実機試験も未実施です。ローカル成功をEntra運用完成とは扱いません。
 
 Releaseの新規`WorkflowAuthorizationTests`40/40件と既存`WorkflowHttpTests`81/81件が成功しました。Fake HTTP・Mock Durable・メモリ内repositoryによる検証であり、EasyAuthのトークン検証・ヘッダー除去や実Azureの両Durableバックエンドを実証した結果ではありません。設定値を追加するだけで安全なEntra公開を完成させることはできず、後述の登録・IaC・runner・実機確認が必要です。
 
@@ -39,9 +39,42 @@ Azureの環境変数によるガードは、通常のローカル起動や認証
 
 ## 後続の構成と実証
 
-tenant ID、API app/client ID、許可するバックエンドclient ID、audience、issuer、App Role、利用者ID形式は環境ごとに確定させます。未確定値を既存Azureリソースやサンプル値から推定しません。今回のIaC既定値やrunnerの通信方式は変更しません。
+tenant ID、API app/client ID、許可するバックエンドclient ID、audience、issuer、App Role、利用者ID形式は環境ごとに確定させます。未確定値を既存Azureリソースやサンプル値から推定しません。厳格モードは明示設定した場合だけ有効にし、不完全な設定は配置前に拒否します。
 
-ロック済みAzureRM 5.10.0のローカルprovider schemaで、`azurerm_linux_function_app.auth_settings_v2`の`auth_enabled`、`require_authentication`、`require_https`、`unauthenticated_action="Return401"`、`active_directory_v2`の`client_id`、`tenant_auth_endpoint`、`allowed_applications`、`allowed_audiences`を確認しました。これは実装準備の情報であり、今回のIaC実装・Azure反映ではありません。tenant endpointはAzure公式資料に従い`https://login.microsoftonline.com/<tenant-id>/v2.0`とします。provider schema説明の例にはtenant/v2.0の順序が異なるものがあるため、その例を採用しません。
+環境`.psd1`の`Terraform`テーブル（またはTerraform変数）では次を指定します。API client IDとバックエンドclient IDは別の役割です。
+
+| IaC変数 | 値 |
+|---|---|
+| `workflow_auth_mode` | `EntraEasyAuth`（既定`PocFunctionKey`） |
+| `workflow_auth_tenant_id` | APIを公開する単一tenant GUID |
+| `workflow_auth_api_client_id` | API app registrationのclient ID GUID |
+| `workflow_auth_audience` | 実access tokenの`aud`と完全一致する値 |
+| `workflow_auth_allowed_backend_app_ids` | 許可するbackend/検証MIのclient ID GUID配列 |
+| `workflow_auth_required_app_role` | 必須App Roleのvalue |
+
+配置は新しいplanを確認してから行い、Entra側の登録・割当の準備を別途完了させます。既定offは既存環境への強制的な認証移行を意味しません。厳格モードの無効化やロールバックも、実planとAzureでの拒否動作の確認が必要です。
+
+ロック済みAzureRM 5.10.0のローカルprovider schemaで、`azurerm_linux_function_app.auth_settings_v2`の`auth_enabled`、`require_authentication`、`require_https`、`unauthenticated_action="Return401"`、`active_directory_v2`の`client_id`、`tenant_auth_endpoint`、`allowed_applications`、`allowed_audiences`を確認しました。IaCはこれらでmain-site全体を保護し、診断用の除外パスを設けません。tenant endpointはAzure公式資料に従い`https://login.microsoftonline.com/<tenant-id>/v2.0`とします。provider schema説明の例にはtenant/v2.0の順序が異なるものがあるため、その例を採用しません。`WEBSITE_AUTH_ENABLED`はプラットフォームが注入するread-only変数であり、IaCのapp settingに手動設定しません。[環境変数](https://learn.microsoft.com/en-us/azure/app-service/reference-app-settings)、[issuer設定](https://learn.microsoft.com/en-us/azure/app-service/configure-authentication-provider-aad)。
+
+厳格モードでの`deploy.ps1 -Smoke`は、既存のkeyのみの診断経路がBearer未対応のため、初期検証で明示的に拒否します。既存の`Test-Deployment.ps1 -Smoke`、`Invoke-PocValidation.ps1`、Private VMラッパー、Recovery/Autoscale runnerは厳格モードの実証には使用できません。新しい`Invoke-WorkflowAuthValidation.ps1`はVM Managed IdentityのIMDSトークンを用い、独自開始・状態・結果APIと各Function専用keyを使う限定runnerです。既存内部診断のBearer移行や回帰完了を意味しません。
+
+SCM配置は独自API向けBearerとは別に、既存のEntra/ARM token認証とRBACを使います。主サイトのEasyAuth audienceをSCMへ流用しません。主サイトのDurable管理HTTPにもEasyAuthが前段で働くため、system keyだけの既存診断は厳格モードでは不足します。[SCMのtoken配置](https://learn.microsoft.com/en-us/azure/app-service/deploy-zip)、[認証モジュール](https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization)。
+
+実行前にAPI登録でApplicationを許可するApp Roleとaccess token optional claim `idtyp`を設定し、runnerのManaged Identityサービス主体へAPIのApp Roleを割り当てます。MIのclient IDは呼出元allowlist、principal/object IDはGraphの割当対象に使い、APIのservice principal object IDとapp/client IDを混同しません。Azure RBACだけではApp Roleは付与されません。IMDSではAPIのresource識別子を指定し、複数user-assigned identityがある場合は対象client ID等を選択します。API audienceとトークン取得resourceが同じ表記になる保証はなく、登録・トークンversionと合わせて確定します。[MIへのApp Role割当](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/assign-app-role-managed-identity-azure-cli)、[VMトークン取得](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token)。
+
+検証VMでprivate Functionへ到達でき、Function key参照のRBACとCLIログインを準備したうえで実行します。API用tokenはCLIの利用者tokenではなくIMDSから取得します。必要な場合は`-ManagedIdentityClientId '<MI-client-id>'`で対象を選択します。
+
+```powershell
+./scripts/Invoke-WorkflowAuthValidation.ps1 `
+  -DeploymentResultPath '<deployment-result.json>' `
+  -Resource '<APIのresource識別子>' `
+  -OwnerId '<認可済み検証利用者ID>' -OrgId '<認可済み検証組織ID>' `
+  -EvidenceDirectory '<実行ごとの証跡ディレクトリ>'
+```
+
+runnerは3APIそれぞれで未認証・keyのみ・偽造principal・Bearerのみの拒否、owner/org欠落と他owner/orgの拒否を確認し、同一再送202・入力競合409・状態と結果の整合を検査します。偽造principal試験は前段による除去・置換があり得るため、偽造値のアプリ到達そのものを証明せず、認証回避が成立しないことを観測します。別tenant/client/audience、delegated token、App Role不足、EasyAuth無効化時の拒否は別途実機確認が必要です。
+
+`summary.json`は固定check名・応答codeと構成上のbackend/hubを記録します。来歴は配置記述子から形式を検証したgit revision・dirty flag・source/package SHA-256だけを選択し、欠落・不正値はnullです。`provenance.source=deploymentDescriptor`、`livePackageVerified=false`として、稼働中コードの実測ではないことを明示します。未知field、Bearer、key、principal全文、応答本文・管理URLは転記しません。
 
 EasyAuthの`allowedApplications`はclient IDを`appid` / `azp`で検査します。必要に応じて`allowedPrincipals.identities`でサービス主体の`oid`も制限できます。両方設定した条件はANDです。API向けの未認証応答はredirectではなく401とし、許可tenantも限定します。API内App Role検証と所有者認可は引き続き必要です。[EasyAuth構成と組込み認可](https://learn.microsoft.com/en-us/azure/app-service/configure-authentication-provider-aad)。
 
