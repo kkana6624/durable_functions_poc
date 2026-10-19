@@ -24,6 +24,9 @@ public class WorkflowConfigurationIntegrationTests : IClassFixture<WebApplicatio
         using var configuredFactory = factory.WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
+            builder.UseSetting("APP_SERVICE_AUTH_MODE", "ClaimsPrincipal");
+            builder.UseSetting("APP_SERVICE_AUTH_AUTHORITY", "https://login.microsoftonline.com/test/v2.0");
+            builder.UseSetting("APP_SERVICE_AUTH_AUDIENCE", "api://test");
             builder.UseSetting(setting, reference);
         });
 
@@ -43,6 +46,9 @@ public class WorkflowConfigurationIntegrationTests : IClassFixture<WebApplicatio
         using var configuredFactory = factory.WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
+            builder.UseSetting("APP_SERVICE_AUTH_MODE", "ClaimsPrincipal");
+            builder.UseSetting("APP_SERVICE_AUTH_AUTHORITY", "https://login.microsoftonline.com/test/v2.0");
+            builder.UseSetting("APP_SERVICE_AUTH_AUDIENCE", "api://test");
             if (key is not null)
                 builder.UseSetting("WORKFLOW_FUNCTION_KEY", key);
         });
@@ -51,5 +57,31 @@ public class WorkflowConfigurationIntegrationTests : IClassFixture<WebApplicatio
         var response = await client.GetAsync("/");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public void StubAuthMode_InProduction_ThrowsInvalidOperationException()
+    {
+        using var configuredFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.UseSetting("APP_SERVICE_AUTH_MODE", "Stub");
+        });
+
+        var ex = Assert.Throws<InvalidOperationException>(() => configuredFactory.CreateClient());
+        Assert.Contains("Stub authentication mode is strictly forbidden in non-Development environments", ex.Message);
+    }
+
+    [Fact]
+    public void EasyAuthMode_InProduction_ThrowsInvalidOperationException()
+    {
+        using var configuredFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.UseSetting("APP_SERVICE_AUTH_MODE", "EasyAuth");
+        });
+
+        var ex = Assert.Throws<InvalidOperationException>(() => configuredFactory.CreateClient());
+        Assert.Contains("EasyAuth authentication mode is currently unsupported on App Service because auth_settings_v2 is not yet configured", ex.Message);
     }
 }

@@ -18,6 +18,7 @@ $config = Import-PowerShellDataFile -LiteralPath (Resolve-Path -LiteralPath $Con
 if (-not $config.ContainsKey('Terraform') -or -not $config.ContainsKey('Backend')) { throw 'Config must contain Terraform and Backend tables.' }
 $variables = $config.Terraform
 Assert-DeploymentSecretReferences -Variables $variables
+Assert-DeploymentAppServiceAuth -Variables $variables
 $workflowAuth = Get-DeploymentWorkflowAuthSettings -Variables $variables -Smoke:$Smoke
 foreach ($key in $workflowAuth.Keys) { $variables[$key] = $workflowAuth[$key] }
 foreach ($key in @('subscription_id', 'resource_group_name', 'name_suffix')) {
@@ -112,6 +113,17 @@ try {
     New-FunctionZip $publish $zip
     $packageSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 
+    $appServiceZip = $null
+    $appServicePackageSha = $null
+    if ($variables.ContainsKey('enable_app_service') -and $variables.enable_app_service) {
+        Write-Host 'Building and packaging business App Service...'
+        $publishAppService = Join-Path $run 'publish-appservice'
+        $null = Invoke-Tool $dotnet @('publish', 'src/Poc.AppService/Poc.AppService.csproj', '-c', 'Release', '--no-restore', '-o', $publishAppService) -LogPath (Join-Path $run 'publish-appservice.log')
+        $appServiceZip = Join-Path $run 'appservice.zip'
+        New-AppServiceZip $publishAppService $appServiceZip
+        $appServicePackageSha = (Get-FileHash -LiteralPath $appServiceZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+
     if ($backend.ContainsKey('Create') -and $backend.Create) {
         $bootstrapWork = Join-Path $work 'bootstrap'
         New-Item -ItemType Directory -Force -Path $bootstrapWork | Out-Null
@@ -186,15 +198,38 @@ try {
         $null = Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $timeout
     }
 
-    Write-Host 'Deploying the private Function package from the validation VM...'
-    $null = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -PackageSha256 $packageSha -AssemblySha256 $assemblySha -PackageContentSha256 $packageContentSha -EvidenceDirectory (Join-Path $run 'private-vm-deploy') -TimeoutSeconds $timeout
+    Write-Host 'Deploying private packages from the validation VM...'
+    $deployParams = @{
+        Outputs = $outputs
+        Operation = 'Deploy'
+        PackagePath = $zip
+        PackageSha256 = $packageSha
+        AssemblySha256 = $assemblySha
+        PackageContentSha256 = $packageContentSha
+        EvidenceDirectory = (Join-Path $run 'private-vm-deploy')
+        TimeoutSeconds = $timeout
+    }
+    if ($outputs.ContainsKey('enable_app_service') -and $outputs.enable_app_service -and $appServiceZip) {
+        $deployParams['AppServicePackagePath'] = $appServiceZip
+        $deployParams['AppServicePackageSha256'] = $appServicePackageSha
+    }
+    $null = Invoke-PrivateVmOperation @deployParams
     Write-Host "Restarting Function App to ensure newly published assembly is loaded..."
     $null = Invoke-AzJson @('functionapp', 'restart', '--name', $outputs.function_app_name, '--resource-group', $outputs.resource_group_name)
+    if ($outputs.ContainsKey('enable_app_service') -and $outputs.enable_app_service) {
+        Write-Host "Restarting App Service to ensure newly published assembly is loaded..."
+        $null = Invoke-AzJson @('webapp', 'restart', '--name', $outputs.app_service_name, '--resource-group', $outputs.resource_group_name)
+    }
     Start-Sleep -Seconds 10
     Write-Host 'Verifying Function registration and connectivity after restart from the validation VM...'
     $postRestartResult = Invoke-PrivateVmOperation -Outputs $outputs -Operation FunctionValidation -PackageSha256 $packageSha -AssemblySha256 $assemblySha -PackageContentSha256 $packageContentSha -EvidenceDirectory (Join-Path $run 'private-vm-validation') -TimeoutSeconds $timeout -Smoke:$Smoke
     $validation = $postRestartResult.validation
+    if ($outputs.ContainsKey('enable_app_service') -and $outputs.enable_app_service) {
+        Write-Host 'Verifying App Service connectivity after restart from the validation VM...'
+        $null = Invoke-PrivateVmOperation -Outputs $outputs -Operation AppServiceValidation -EvidenceDirectory (Join-Path $run 'private-vm-appservice-validation') -TimeoutSeconds $timeout
+    }
     $summary = @{ environment = $Environment; completed_utc = [DateTime]::UtcNow.ToString('o'); package_sha256 = $packageSha; assembly_sha256 = $assemblySha; package_content_sha256 = $packageContentSha; outputs = $outputs; validation = $validation; smoke_requested = [bool]$Smoke }
+    if ($appServicePackageSha) { $summary['app_service_package_sha256'] = $appServicePackageSha }
     Write-DeploymentJson (Join-Path $run 'deployment-result.json') $summary
     Write-Host "Deployment completed: $($outputs.function_app_name). Logs: $run"
 }

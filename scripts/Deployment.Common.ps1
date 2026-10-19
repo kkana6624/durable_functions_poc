@@ -90,6 +90,33 @@ function Assert-DeploymentSecretReferences {
     }
 }
 
+function Assert-DeploymentAppServiceAuth {
+    param([Parameter(Mandatory)][hashtable]$Variables)
+    if (-not ($Variables.ContainsKey('enable_app_service') -and $Variables.enable_app_service)) { return }
+    $authMode = if ($Variables.ContainsKey('app_service_auth_mode')) { [string]$Variables.app_service_auth_mode } else { 'ClaimsPrincipal' }
+    if ($authMode -ceq 'EasyAuth') {
+        throw "app_service_auth_mode 'EasyAuth' is currently unsupported on App Service because auth_settings_v2 is not yet configured. Use 'ClaimsPrincipal'."
+    }
+    if ($authMode -ceq 'Stub') {
+        throw "app_service_auth_mode 'Stub' is prohibited for Azure deployment. Allowed value is 'ClaimsPrincipal'."
+    }
+    if ($authMode -cne 'ClaimsPrincipal') {
+        throw "Invalid app_service_auth_mode '$authMode'. Allowed value for Azure deployment is 'ClaimsPrincipal'."
+    }
+    if ($authMode -ceq 'ClaimsPrincipal') {
+        if (-not $Variables.ContainsKey('app_service_auth_authority') -or [string]::IsNullOrWhiteSpace([string]$Variables.app_service_auth_authority)) {
+            throw "app_service_auth_mode 'ClaimsPrincipal' requires app_service_auth_authority (e.g. 'https://login.microsoftonline.com/<tenant-id>/v2.0')."
+        }
+        $authority = [string]$Variables.app_service_auth_authority
+        if ($authority -notmatch '^https://[A-Za-z0-9.-]+') {
+            throw "app_service_auth_authority must be a valid HTTPS URL."
+        }
+        if (-not $Variables.ContainsKey('app_service_auth_audience') -or [string]::IsNullOrWhiteSpace([string]$Variables.app_service_auth_audience)) {
+            throw "app_service_auth_mode 'ClaimsPrincipal' requires app_service_auth_audience."
+        }
+    }
+}
+
 function Get-DeploymentWorkflowAuthSettings {
     param([Parameter(Mandatory)][hashtable]$Variables, [switch]$Smoke)
     $mode = if ($Variables.ContainsKey('workflow_auth_mode')) { [string]$Variables.workflow_auth_mode } else { 'PocFunctionKey' }
@@ -174,6 +201,31 @@ function New-FunctionZip {
     # .NET Framework's CreateFromDirectory writes Windows separators into ZIP
     # entries. Linux treats those as literal filename characters, hiding the
     # .azurefunctions payload from the host. Build portable entry names explicitly.
+    $root=[IO.Path]::GetFullPath($PublishDirectory).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar
+    $stream=[IO.File]::Open([IO.Path]::GetFullPath($Destination),[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    try {
+        $archive=[IO.Compression.ZipArchive]::new($stream,[IO.Compression.ZipArchiveMode]::Create,$true)
+        try {
+            foreach ($file in [IO.Directory]::EnumerateFiles($root,'*',[IO.SearchOption]::AllDirectories)) {
+                $name=$file.Substring($root.Length).Replace('\','/')
+                $entry=$archive.CreateEntry($name,[IO.Compression.CompressionLevel]::Optimal)
+                $source=[IO.File]::OpenRead($file)
+                try {
+                    $target=$entry.Open()
+                    try { $source.CopyTo($target) } finally { $target.Dispose() }
+                } finally { $source.Dispose() }
+            }
+        } finally { $archive.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
+function New-AppServiceZip {
+    param([Parameter(Mandatory)][string] $PublishDirectory, [Parameter(Mandatory)][string] $Destination)
+    foreach ($required in @('Poc.AppService.dll', 'appsettings.json')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $PublishDirectory $required))) { throw "App Service publish output is incomplete: $required" }
+    }
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $root=[IO.Path]::GetFullPath($PublishDirectory).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar
     $stream=[IO.File]::Open([IO.Path]::GetFullPath($Destination),[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     try {

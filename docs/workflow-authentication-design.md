@@ -49,6 +49,14 @@ App Service の IaC にはキー実値を渡さず、`app_service_workflow_funct
 
 ClaimsPrincipal の JWT 検証は実行環境にかかわらず署名必須です。旧署名バイパス設定が `true` の場合は起動拒否し、認証テストはテスト fixture 内だけで署名鍵を供給します。
 
+### App Service の認証モードと将来の課題
+
+App Service 上流 API の認証モード（`app_service_auth_mode`）は、現行の Azure デプロイでは `ClaimsPrincipal`（JWT Bearer 署名検証必須）のみを許可しています。プラットフォーム側の `auth_settings_v2` が未構成の状態で `EasyAuth` を許可すると、呼出元が偽造した `X-MS-CLIENT-PRINCIPAL` ヘッダーにより任意の所有者として API に到達可能となるため、未対応の選択肢としてデプロイ前ガードおよびアプリケーション起動時に拒否します（`Stub` も本番環境では同様に起動拒否されます）。
+
+将来 App Service で EasyAuth（`auth_settings_v2`）を有効化する際の課題：
+1. **プラットフォーム認証構成**: App Service 側に `azurerm_linux_web_app` の `auth_settings_v2` を追加し、未認証要求の拒否（`unauthenticated_action = "Return401"`）またはリダイレクトを構成すること。
+2. **配置後ヘルスチェック・疎通確認**: 現行のデプロイ後疎通確認（`scripts/PrivateVm.Worker.ps1` の `AppServiceValidation`）は匿名の `GET /` に 200 を要求しているため、EasyAuth で未認証アクセスを遮断すると 401 または 302 となりタイムアウトします。認証不要な専用ヘルスエンドポイント（例: `/healthz`）を新設して EasyAuth の除外パスに設定するか、閉域検証 VM からマネージド ID による Bearer トークンを付与した認証付きプローブを実施する必要があります。
+
 tenant ID、API app/client ID、許可するバックエンドclient ID、audience、issuer、App Role、利用者ID形式は環境ごとに確定させます。未確定値を既存Azureリソースやサンプル値から推定しません。厳格モードは明示設定した場合だけ有効にし、不完全な設定は配置前に拒否します。
 
 環境`.psd1`の`Terraform`テーブル（またはTerraform変数）では次を指定します。API client IDとバックエンドclient IDは別の役割です。

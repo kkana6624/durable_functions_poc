@@ -44,6 +44,18 @@ if (builder.Configuration.GetValue<bool>("APP_SERVICE_AUTH_BYPASS_SIGNATURE_VALI
     throw new InvalidOperationException("JWT signature validation bypass is not supported. Remove the bypass setting; tests must supply their own signing key through dependency injection.");
 }
 
+// Prohibit Stub authentication in production / Azure deployments
+if (string.Equals(authMode, "Stub", StringComparison.OrdinalIgnoreCase) && !builder.Environment.IsDevelopment())
+{
+    throw new InvalidOperationException("Stub authentication mode is strictly forbidden in non-Development environments. Configure 'ClaimsPrincipal' (Entra ID Bearer).");
+}
+
+// Prohibit EasyAuth in non-Development environments until platform auth_settings_v2 is configured
+if (string.Equals(authMode, "EasyAuth", StringComparison.OrdinalIgnoreCase) && !builder.Environment.IsDevelopment())
+{
+    throw new InvalidOperationException("EasyAuth authentication mode is currently unsupported on App Service because auth_settings_v2 is not yet configured. Configure 'ClaimsPrincipal' (Entra ID Bearer).");
+}
+
 builder.Services.AddAuthorization();
 
 if (string.Equals(authMode, "ClaimsPrincipal", StringComparison.OrdinalIgnoreCase))

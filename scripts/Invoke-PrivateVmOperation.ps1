@@ -19,10 +19,12 @@ function Invoke-PrivateVmOperation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Outputs,
-        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','FunctionValidation','PoolValidation','AutoscaleValidation')][string]$Operation,
+        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','FunctionValidation','PoolValidation','AutoscaleValidation','AppServiceValidation')][string]$Operation,
         [Parameter(Mandatory)][string]$EvidenceDirectory,
         [string]$PackagePath,
         [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$PackageSha256='',
+        [string]$AppServicePackagePath='',
+        [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$AppServicePackageSha256='',
         [ValidateRange(60,5400)][int]$TimeoutSeconds=900,
         [ValidateSet('single','three','classification','failure','admission20','conflict','timeout','cancellation')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
         [switch]$Smoke,
@@ -105,6 +107,10 @@ function Invoke-PrivateVmOperation {
         if ($Operation -eq 'Deploy') {
             Copy-Item -LiteralPath $PackagePath -Destination (Join-Path $bundle 'functions.zip')
             $request.package_sha256=(Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
+            if ($AppServicePackagePath -and (Test-Path -LiteralPath $AppServicePackagePath -PathType Leaf)) {
+                Copy-Item -LiteralPath $AppServicePackagePath -Destination (Join-Path $bundle 'appservice.zip')
+                $request.app_service_package_sha256 = if ($AppServicePackageSha256) { $AppServicePackageSha256 } else { (Get-FileHash -LiteralPath $AppServicePackagePath -Algorithm SHA256).Hash }
+            }
         }
         Write-DeploymentJson (Join-Path $bundle 'request.json') $request
         Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -190,7 +196,7 @@ echo 'Private VM operation completed; sanitized results are in the control conta
         if ($result.operation_id -ne $id -or $result.operation -ne $Operation -or [int]$result.exit_code -notin @(0,1,2)) { throw 'Private VM returned an invalid operation result.' }
         $failureStage=$null
         if ($result.PSObject.Properties['failure_stage'] -and $null -ne $result.failure_stage) {
-            if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','function_connectivity','function_validation','pool_validation','autoscale_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
+            if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','app_service_package_integrity','app_service_scm_publish','function_connectivity','function_validation','app_service_connectivity','pool_validation','autoscale_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
             $failureStage=[string]$result.failure_stage
         }
         if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','AutoscaleValidation') -and $result.summary_available) {
@@ -232,7 +238,7 @@ echo 'Private VM operation completed; sanitized results are in the control conta
                 throw "Private VM operation $id completed (exit_code=$($result.exit_code)), but failed to retrieve evidence summary file(s) ($($retrievalErrors -join ', ')) from the control container."
             }
         }
-        if ($commandFailed -or ($Operation -in @('Deploy','FunctionValidation','PoolValidation','AutoscaleValidation') -and [int]$result.exit_code -ne 0)) { throw "Private VM operation $id failed ($($result.error_code)); stage=$failureStage; raw output suppressed." }
+        if ($commandFailed -or ($Operation -in @('Deploy','FunctionValidation','PoolValidation','AutoscaleValidation','AppServiceValidation') -and [int]$result.exit_code -ne 0)) { throw "Private VM operation $id failed ($($result.error_code)); stage=$failureStage; raw output suppressed." }
         return $result
     }
     finally {

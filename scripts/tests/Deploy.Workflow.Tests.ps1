@@ -32,8 +32,11 @@ function Invoke-ValidationHttp {
     @'
 # The isolated workflow tests exercise orchestration; transport is tested separately.
 function Invoke-PrivateVmOperation {
-    param([hashtable]$Outputs,[string]$Operation,[string]$PackagePath,[string]$EvidenceDirectory,[int]$TimeoutSeconds,[switch]$Smoke,[string]$PackageSha256,[string]$AssemblySha256,[string]$PackageContentSha256)
+    param([hashtable]$Outputs,[string]$Operation,[string]$PackagePath,[string]$EvidenceDirectory,[int]$TimeoutSeconds,[switch]$Smoke,[string]$PackageSha256,[string]$AssemblySha256,[string]$PackageContentSha256,[string]$AppServicePackagePath,[string]$AppServicePackageSha256)
     if ($Operation -eq 'Deploy' -and (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf))) { throw 'Missing Function package' }
+    if ($Operation -eq 'Deploy' -and $Outputs.ContainsKey('enable_app_service') -and $Outputs.enable_app_service) {
+        if (-not $AppServicePackagePath -or -not (Test-Path -LiteralPath $AppServicePackagePath -PathType Leaf)) { throw 'Missing App Service package' }
+    }
     [IO.File]::AppendAllText($env:POC_FAKE_TRACE,"vm-operation $Operation smoke=$([bool]$Smoke) timeout=$TimeoutSeconds`n")
     return [pscustomobject]@{ validation=@{Ready=$true;Smoke='Pass'} }
 }
@@ -44,9 +47,16 @@ function Invoke-PrivateVmOperation {
 [IO.File]::AppendAllText($env:POC_FAKE_TRACE,"dotnet $($args -join ' ')`n")
 if ($args[0] -eq 'publish') {
     $publish=$args[[Array]::IndexOf($args,'-o')+1]
-    $null=New-Item -ItemType Directory -Path (Join-Path $publish '.azurefunctions') -Force
-    foreach ($file in @('host.json','worker.config.json','Poc.Functions.dll','.azurefunctions/worker.dll')) {
-        [IO.File]::WriteAllText((Join-Path $publish $file),'fixture')
+    $null=New-Item -ItemType Directory -Path $publish -Force
+    if ($args -contains 'src/Poc.Functions/Poc.Functions.csproj') {
+        $null=New-Item -ItemType Directory -Path (Join-Path $publish '.azurefunctions') -Force
+        foreach ($file in @('host.json','worker.config.json','Poc.Functions.dll','.azurefunctions/worker.dll')) {
+            [IO.File]::WriteAllText((Join-Path $publish $file),'fixture')
+        }
+    } elseif ($args -contains 'src/Poc.AppService/Poc.AppService.csproj') {
+        foreach ($file in @('Poc.AppService.dll','appsettings.json')) {
+            [IO.File]::WriteAllText((Join-Path $publish $file),'fixture')
+        }
     }
 }
 'fake dotnet success'
@@ -58,7 +68,9 @@ exit 0
 if (($env:Path -split [regex]::Escape([string][IO.Path]::PathSeparator))[0] -ne $PSScriptRoot) { throw 'Terraform must inherit the configured Azure CLI directory in PATH.' }
 if ('show' -in $args) { '{"resource_changes":[]}' }
 elseif ('output' -in $args) {
-    if ($env:POC_FAKE_PRIVATE_BATCH -eq 'true') {
+    if ($env:POC_FAKE_APP_SERVICE -eq 'true') {
+        '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null,"validation_vm_name":"poc-vm","vm_control_container_name":"vm-control","function_private_ip":"10.20.2.4","enable_app_service":true,"app_service_name":"poc-appservice","app_service_url":"https://poc-appservice.azurewebsites.net","app_service_private_ip":"10.20.2.6"}'
+    } elseif ($env:POC_FAKE_PRIVATE_BATCH -eq 'true') {
         '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null,"validation_vm_name":"poc-vm","vm_control_container_name":"vm-control","function_private_ip":"10.20.2.4","batch_private_ip":"10.20.2.5"}'
     } else {
         '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null,"validation_vm_name":"poc-vm","vm_control_container_name":"vm-control","function_private_ip":"10.20.2.4"}'
@@ -87,6 +99,8 @@ elseif ($command -match '^functionapp function list') {
 }
 elseif ($command -match '^functionapp function keys list') { '{"default":"PRIVATE-FUNCTION-KEY"}' }
 elseif ($command -match '^functionapp keys list') { '{"systemKeys":{"durabletask_extension":"PRIVATE-SYSTEM-KEY"}}' }
+elseif ($command -match '^functionapp restart') { '{}' }
+elseif ($command -match '^webapp restart') { '{}' }
 elseif ($command -match '^storage blob download') {
     $file=$args[[Array]::IndexOf($args,'--file')+1]
     $root="https://pocstorage.blob.core.windows.net/poc-results/runs/poc-$env:POC_FAKE_REQUESTID"
@@ -232,7 +246,30 @@ exit 0
     try { & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath }
     catch { $failed=$_.Exception.Message -match 'identity changed' }
     Assert-True $failed 'Deployment must reject changing persisted environment identity'
-    Write-Host 'Deploy workflow offline tests: PASS (PlanOnly, bootstrap PlanOnly/apply/state path, private VM sequence, subscription, VM Smoke switch, environment identity; no Azure calls).'
+
+    # App Service enabled deployment test: Stub auth mode must be rejected
+    $appServiceSecretUri = 'https://poc-vault.vault.azure.net/secrets/workflow-func-key/1234567890abcdef1234567890abcdef'
+    $stubAppServiceConfig = $config.Replace("name_suffix='test01'", "name_suffix='appsvc'; enable_app_service=`$true; app_service_workflow_function_key_secret_uri='$appServiceSecretUri'; app_service_auth_mode='Stub'")
+    $stubAppServiceConfigPath = Join-Path $temporary 'stub-appservice-config.psd1'
+    Set-Content -LiteralPath $stubAppServiceConfigPath -Value $stubAppServiceConfig -Encoding UTF8
+    Assert-Fails { & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'stub-appservice' -ConfigFile $stubAppServiceConfigPath -PlanOnly } "Stub.*prohibited"
+
+    # App Service enabled deployment test with production ClaimsPrincipal auth
+    $appServiceConfig = $config.Replace("name_suffix='test01'", "name_suffix='appsvc'; enable_app_service=`$true; app_service_workflow_function_key_secret_uri='$appServiceSecretUri'; app_service_auth_mode='ClaimsPrincipal'; app_service_auth_authority='https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0'; app_service_auth_audience='api://test-app'")
+    $appServiceConfigPath = Join-Path $temporary 'appservice-config.psd1'
+    Set-Content -LiteralPath $appServiceConfigPath -Value $appServiceConfig -Encoding UTF8
+    $env:POC_FAKE_APP_SERVICE = 'true'
+    Clear-Content -LiteralPath $env:POC_FAKE_TRACE
+    & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'appservice' -ConfigFile $appServiceConfigPath
+    $trace = @(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
+    $joined = $trace -join "`n"
+    Assert-True ($joined -match 'dotnet publish src/Poc.AppService/Poc.AppService.csproj') 'App Service project must be published when enable_app_service is true'
+    Assert-True ($joined -match 'az webapp restart --name poc-appservice') 'App Service must be restarted after deployment'
+    $appSvcValidate = [Array]::FindIndex($trace, [Predicate[string]]{ param($line) $line -match '^vm-operation AppServiceValidation ' })
+    Assert-True ($appSvcValidate -ge 0) 'AppServiceValidation must be invoked on the private VM'
+    $env:POC_FAKE_APP_SERVICE = 'false'
+
+    Write-Host 'Deploy workflow offline tests: PASS (PlanOnly, bootstrap PlanOnly/apply/state path, private VM sequence, subscription, VM Smoke switch, environment identity, App Service deploy; no Azure calls).'
 } finally {
     $env:POC_FAKE_TRACE=$oldTrace
     $env:POC_FAKE_DEFAULT=$oldDefault

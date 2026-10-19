@@ -1,5 +1,25 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘 P1（EasyAuth未対応拒否・VM権限拡充）の改修および P2（EasyAuth導入時のヘルスチェック課題）の記録
+
+- **[P1] App Service EasyAuth モードの未対応拒否（IaC / デプロイガード / アプリ起動ガード）**:
+  - App Service に `auth_settings_v2` がない状態で `EasyAuth` を選択すると、偽造 `X-MS-CLIENT-PRINCIPAL` ヘッダーによる所有者詐称リスクが生じるため、現時点の Azure デプロイでは `ClaimsPrincipal`（JWT Bearer）のみを許可し、`EasyAuth` を未対応の選択肢として明示的に拒否。
+  - `infra/variables.tf`: `app_service_auth_mode` のバリデーションにおいて、`enable_app_service = true` の環境では `ClaimsPrincipal` のみを許可。`Stub` および未構成の `EasyAuth` をバリデーションエラーとして拒否。
+  - `scripts/Deployment.Common.ps1`: `Assert-DeploymentAppServiceAuth` において `Stub` および `EasyAuth` のデプロイを即座にブロック。
+  - `src/Poc.AppService/Program.cs`: `!builder.Environment.IsDevelopment()` において `Stub` および `EasyAuth` の起動を例外で拒否。
+  - `tests/Poc.AppService.Tests/WorkflowConfigurationIntegrationTests.cs` 等に Stub / EasyAuth 起動拒否のテストを追加し、回帰を防止。
+- **[P1・前回] Validation VM への App Service スコープ権限付与とデプロイ・疎通確認統合**:
+  - `infra/app-service.tf`: Validation VM のマネージド ID に対し、App Service スコープへの `azurerm_role_assignment.validation_app_service`（`Reader` および `Website Contributor`）を付与。
+  - `scripts/PrivateVm.Worker.ps1`: `AppServiceValidation` オペレーションにおいて、App Service への ARM GET、プライベート DNS 解決、および閉域 HTTP 疎通確認（`Assert-PrivateAppServiceConnectivity`）を実装。
+  - `scripts/deploy.ps1`: SCM 経由の App Service ZIP デプロイ（`New-AppServiceZip` / `Publish-PrivateFunctionPackage -AppService`）、再起動、および閉域疎通確認を統合。
+- **[P2] 将来 App Service に EasyAuth を導入する際のヘルスチェック課題（課題記録）**:
+  - 現行の `PrivateVm.Worker.ps1` における App Service 疎通確認は、匿名の `GET /` に 200 を要求している。
+  - 将来 App Service 側に EasyAuth（`auth_settings_v2`）を構成して未認証アクセスを遮断（401 / 302 リダイレクト）する場合、未認証のままでは疎通確認がタイムアウトで失敗する。
+  - 将来 EasyAuth を有効化する際には、以下のいずれかの対応が必要となることを課題として記録：
+    1. 認証不要な専用ヘルスエンドポイント（例: `/healthz`）を新設し、EasyAuth の除外パス（unauthenticated actions / excluded paths）に登録する。
+    2. または、閉域検証 VM からの疎通確認においてマネージド ID による Bearer トークンを付与して認証付きプローブを実施する。
+- ローカル検証: .NET Release 437 件、Terraform Mock 51 件、PowerShell オフライン全 10 スイート（Deploy 含む）、`terraform validate` / `fmt -check` / `git diff --check` がすべて成功。Azure への実機配置・構成変更は行っていません。
+
 ## 2026-10-19 再レビュー6件の修正（JWT署名・既存Pool RBAC・Finalize固定版/競合・Key Vault参照・CLI空白パス）
 
 - JWT の署名バイパスを実行コードと公開 Options から撤去しました。旧 bypass 設定が true の場合は全環境で起動拒否し、テストは DI で署名鍵・ローカル metadata のみを供給して実際の JWT 検証を行います。Production の正常署名・未署名・別署名鍵・期限・issuer/audience 不一致を回帰確認しました。

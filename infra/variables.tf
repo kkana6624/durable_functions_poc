@@ -371,3 +371,33 @@ variable "app_service_workflow_function_key_secret_uri" {
   }
 }
 
+variable "app_service_auth_mode" {
+  type        = string
+  default     = "ClaimsPrincipal"
+  description = "Authentication mode for upstream callers to App Service: 'ClaimsPrincipal' (Entra ID Bearer). 'EasyAuth' is not yet configured with auth_settings_v2 for App Service, and 'Stub' is strictly forbidden when deploying to Azure."
+  validation {
+    condition     = var.enable_app_service ? (var.app_service_auth_mode == "ClaimsPrincipal") : contains(["ClaimsPrincipal", "Stub"], var.app_service_auth_mode)
+    error_message = "An enabled App Service currently requires 'ClaimsPrincipal' (JWT Bearer) authentication. 'EasyAuth' is unsupported on App Service until platform auth_settings_v2 is implemented, and 'Stub' is prohibited on Azure."
+  }
+}
+
+variable "app_service_auth_authority" {
+  type        = string
+  default     = null
+  description = "OpenID Connect / Entra ID authority URL (e.g. https://login.microsoftonline.com/{tenantId}/v2.0) required when app_service_auth_mode is ClaimsPrincipal."
+  validation {
+    condition     = (var.enable_app_service && var.app_service_auth_mode == "ClaimsPrincipal") ? (var.app_service_auth_authority != null && can(regex("^https://[A-Za-z0-9.-]+", var.app_service_auth_authority))) : true
+    error_message = "When App Service is enabled with ClaimsPrincipal auth mode, app_service_auth_authority must be a valid HTTPS authority URL."
+  }
+}
+
+variable "app_service_auth_audience" {
+  type        = string
+  default     = null
+  description = "Expected audience (aud) for JWT bearer tokens when app_service_auth_mode is ClaimsPrincipal."
+  validation {
+    condition     = (var.enable_app_service && var.app_service_auth_mode == "ClaimsPrincipal") ? (var.app_service_auth_audience != null && length(trimspace(var.app_service_auth_audience)) > 0) : true
+    error_message = "When App Service is enabled with ClaimsPrincipal auth mode, app_service_auth_audience must be a non-empty audience string."
+  }
+}
+

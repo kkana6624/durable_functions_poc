@@ -115,6 +115,8 @@ mock_provider "azurerm" {
 
 variables {
   app_service_workflow_function_key_secret_uri = "https://test-vault.vault.azure.net/secrets/workflow-key"
+  app_service_auth_authority                   = "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+  app_service_auth_audience                    = "api://test-app-service"
   validation_vm_ssh_public_key                 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA fixture"
   subscription_id                              = "00000000-0000-0000-0000-000000000000"
   resource_group_name                          = "shared-rg"
@@ -760,8 +762,8 @@ run "app_service_enabled_provisions_isolated_resources" {
     error_message = "App service must provision workflow-input container and grant Storage Blob Data Contributor to UAMI."
   }
   assert {
-    condition     = azurerm_linux_web_app.app_service[0].app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "@Microsoft.KeyVault(SecretUri=${var.app_service_workflow_function_key_secret_uri})" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "" && output.deployment.enable_app_service == true
-    error_message = "App service app_settings must reference Function URL, Storage endpoint, and default FunctionKey auth mode without secrets."
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "@Microsoft.KeyVault(SecretUri=${var.app_service_workflow_function_key_secret_uri})" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "" && azurerm_linux_web_app.app_service[0].app_settings.APP_SERVICE_AUTH_MODE == "ClaimsPrincipal" && azurerm_linux_web_app.app_service[0].app_settings.APP_SERVICE_AUTH_AUTHORITY == var.app_service_auth_authority && azurerm_linux_web_app.app_service[0].app_settings.APP_SERVICE_AUTH_AUDIENCE == var.app_service_auth_audience && length(azurerm_role_assignment.validation_app_service) == 1 && output.deployment.enable_app_service == true
+    error_message = "App service app_settings must reference Function URL, Storage endpoint, default FunctionKey auth mode, production upstream auth settings, and validation VM role assignment."
   }
 }
 
@@ -845,5 +847,24 @@ run "existing_pool_identity_in_another_subscription_rejected" {
     existing_batch_pool_uami_resource_id = "/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/resourceGroups/shared-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/existing-uami"
   }
   expect_failures = [var.existing_batch_pool_uami_resource_id]
+}
+
+run "app_service_stub_auth_rejected" {
+  command = plan
+  variables {
+    enable_app_service    = true
+    app_service_auth_mode = "Stub"
+  }
+  expect_failures = [var.app_service_auth_mode]
+}
+
+run "app_service_claims_principal_requires_authority" {
+  command = plan
+  variables {
+    enable_app_service         = true
+    app_service_auth_mode      = "ClaimsPrincipal"
+    app_service_auth_authority = null
+  }
+  expect_failures = [var.app_service_auth_authority]
 }
 

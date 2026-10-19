@@ -81,6 +81,9 @@ resource "azurerm_linux_web_app" "app_service" {
     WORKFLOW_AUTH_MODE                    = var.app_service_workflow_auth_mode != null ? var.app_service_workflow_auth_mode : (var.workflow_auth_mode == "EntraEasyAuth" ? "EntraBearer" : "FunctionKey")
     WORKFLOW_AUTH_AUDIENCE                = var.workflow_auth_audience != null ? var.workflow_auth_audience : (var.workflow_auth_api_client_id != null ? "api://${var.workflow_auth_api_client_id}" : "")
     WORKFLOW_FUNCTION_KEY                 = var.app_service_workflow_function_key_secret_uri != null ? "@Microsoft.KeyVault(SecretUri=${var.app_service_workflow_function_key_secret_uri})" : ""
+    APP_SERVICE_AUTH_MODE                 = var.app_service_auth_mode
+    APP_SERVICE_AUTH_AUTHORITY            = var.app_service_auth_authority != null ? var.app_service_auth_authority : ""
+    APP_SERVICE_AUTH_AUDIENCE             = var.app_service_auth_audience != null ? var.app_service_auth_audience : ""
   }
 }
 
@@ -127,4 +130,12 @@ resource "azurerm_role_assignment" "app_service_blob_contributor" {
   scope                = azurerm_storage_account.poc.id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_user_assigned_identity.app_service[0].principal_id
+}
+
+# Grant Validation VM Managed Identity read and publish permissions on App Service
+resource "azurerm_role_assignment" "validation_app_service" {
+  count              = var.enable_app_service ? 1 : 0
+  scope              = azurerm_linux_web_app.app_service[0].id
+  role_definition_id = azurerm_role_definition.validation_function.role_definition_resource_id
+  principal_id       = azurerm_linux_virtual_machine.validation.identity[0].principal_id
 }

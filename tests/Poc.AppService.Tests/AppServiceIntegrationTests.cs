@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,6 +27,7 @@ public class AppServiceIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     {
         this.factory = factory.WithWebHostBuilder(builder =>
         {
+            builder.UseEnvironment("Development");
             builder.ConfigureTestServices(services =>
             {
                 services.AddSingleton<IBlobStorageRepository>(inMemoryStorage);

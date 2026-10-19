@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'Deployment.Common.ps1')
 . (Join-Path $PSScriptRoot 'Test-Deployment.ps1')
 
-function Get-PrivateScmHost([hashtable]$Outputs) {
+function Get-PrivateScmHost([hashtable]$Outputs, [switch]$AppService) {
     # Read the actual SCM name instead of guessing its position in a regional or
     # generated default hostname. This uses the existing sites/read permission.
     # CLI functionapp show enriches its response with configuration/publishing
@@ -14,11 +14,13 @@ function Get-PrivateScmHost([hashtable]$Outputs) {
     if (-not $arm) { throw 'Resource Manager endpoint is unavailable.' }
     $subscription=[Uri]::EscapeDataString([string]$Outputs.subscription_id)
     $resourceGroup=[Uri]::EscapeDataString([string]$Outputs.resource_group_name)
-    $site=[Uri]::EscapeDataString([string]$Outputs.function_app_name)
+    $siteName=if ($AppService) { [string]$Outputs.app_service_name } else { [string]$Outputs.function_app_name }
+    $expectedUrl=if ($AppService) { [string]$Outputs.app_service_url } else { [string]$Outputs.function_app_url }
+    $site=[Uri]::EscapeDataString($siteName)
     $uri=$arm.TrimEnd('/')+"/subscriptions/$subscription/resourceGroups/$resourceGroup/providers/Microsoft.Web/sites/$site`?api-version=2024-11-01"
     $response=Invoke-AzJson -Sensitive -Arguments @('rest','--method','get','--url',$uri)
     $app=$response.properties
-    if ($app.defaultHostName -ne ([Uri]$Outputs.function_app_url).DnsSafeHost) { throw 'Function hostname does not match deployment metadata.' }
+    if ($app.defaultHostName -ne ([Uri]$expectedUrl).DnsSafeHost) { throw 'Hostname does not match deployment metadata.' }
     $hosts=@($app.enabledHostNames | Where-Object { $_ -match '^[a-zA-Z0-9.-]+\.scm\.[a-zA-Z0-9.-]*azurewebsites\.net$' })
     if ($hosts.Count -ne 1) { throw 'Expected exactly one SCM hostname.' }
     return [string]$hosts[0]
@@ -30,6 +32,16 @@ function Assert-PrivateFunctionDns([hashtable]$Outputs) {
     foreach ($name in @($hostName,$scmHost)) {
         $addresses=@([Net.Dns]::GetHostAddresses($name) | ForEach-Object { $_.IPAddressToString })
         if ($addresses.Count -eq 0 -or @($addresses | Where-Object { $_ -ne $Outputs.function_private_ip }).Count -gt 0) { throw 'Function/SCM DNS did not resolve exclusively to the expected Private Endpoint IP.' }
+    }
+}
+
+function Assert-PrivateAppServiceDns([hashtable]$Outputs) {
+    if (-not $Outputs.ContainsKey('enable_app_service') -or -not $Outputs.enable_app_service) { return }
+    $hostName=([Uri]$Outputs.app_service_url).DnsSafeHost
+    $scmHost=Get-PrivateScmHost $Outputs -AppService
+    foreach ($name in @($hostName,$scmHost)) {
+        $addresses=@([Net.Dns]::GetHostAddresses($name) | ForEach-Object { $_.IPAddressToString })
+        if ($addresses.Count -eq 0 -or @($addresses | Where-Object { $_ -ne $Outputs.app_service_private_ip }).Count -gt 0) { throw 'App Service/SCM DNS did not resolve exclusively to the expected Private Endpoint IP.' }
     }
 }
 
@@ -64,9 +76,33 @@ function Assert-PrivateFunctionConnectivity([hashtable]$Outputs, [int]$TimeoutSe
     } finally { $client.Dispose(); $handler.Dispose() }
 }
 
-function Publish-PrivateFunctionPackage([hashtable]$Outputs,[string]$Path,[int]$TimeoutSeconds) {
+function Assert-PrivateAppServiceConnectivity([hashtable]$Outputs, [int]$TimeoutSeconds) {
+    $rootUri = [string]$Outputs.app_service_url.TrimEnd('/') + '/'
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false
+    $client = [Net.Http.HttpClient]::new($handler); $client.Timeout = [TimeSpan]::FromSeconds(10)
+    try {
+        do {
+            try {
+                $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $rootUri)
+                try {
+                    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+                    $code = [int]$response.StatusCode
+                    if ($code -eq 200) { return }
+                } finally { $request.Dispose() }
+            } catch { }
+            $remaining = $TimeoutSeconds - $watch.Elapsed.TotalSeconds
+            if ($remaining -le 0) { break }
+            Start-Sleep -Seconds ([Math]::Min(5, [Math]::Max(1, [Math]::Ceiling($remaining))))
+        } while ($watch.Elapsed.TotalSeconds -lt $TimeoutSeconds)
+        throw "App Service private HTTP endpoint did not respond successfully within $TimeoutSeconds seconds."
+    } finally { $client.Dispose(); $handler.Dispose() }
+}
+
+function Publish-PrivateFunctionPackage([hashtable]$Outputs,[string]$Path,[int]$TimeoutSeconds,[switch]$AppService) {
     $script:PrivateVmScmDiagnostics=@{ stage='scm_host'; http_status=$null }
-    $hostName=Get-PrivateScmHost $Outputs
+    $hostName=Get-PrivateScmHost $Outputs -AppService:$AppService
     $script:PrivateVmScmDiagnostics.stage='cloud_metadata'
     $cloud=Invoke-AzJson -Sensitive -Arguments @('cloud','show')
     $resource=[string]$cloud.endpoints.appServiceResourceId
@@ -130,6 +166,7 @@ $result=@{ operation_id=[string]$request.operation_id; operation=[string]$reques
 $stage='dns'
 try {
     Assert-PrivateFunctionDns $outputs
+    Assert-PrivateAppServiceDns $outputs
     Assert-PrivateBatchDns $outputs
     if ($request.operation -eq 'Deploy') {
         $stage='package_integrity'
@@ -138,6 +175,23 @@ try {
         $stage='scm_publish'
         Publish-PrivateFunctionPackage $outputs $package ([int]$request.timeout_seconds)
         $result.package_sha256=$request.package_sha256
+        if ($outputs.ContainsKey('enable_app_service') -and $outputs.enable_app_service) {
+            $stage='app_service_package_integrity'
+            $appPackage=Join-Path $PSScriptRoot 'appservice.zip'
+            if (-not (Test-Path -LiteralPath $appPackage -PathType Leaf)) { throw 'Missing App Service package.' }
+            if ($request.PSObject.Properties['app_service_package_sha256'] -and $request.app_service_package_sha256) {
+                if ((Get-FileHash -LiteralPath $appPackage -Algorithm SHA256).Hash -ne $request.app_service_package_sha256) { throw 'App Service package hash mismatch.' }
+            }
+            $stage='app_service_scm_publish'
+            Publish-PrivateFunctionPackage $outputs $appPackage ([int]$request.timeout_seconds) -AppService
+            $result.app_service_package_sha256=(Get-FileHash -LiteralPath $appPackage -Algorithm SHA256).Hash
+        }
+        $result.exit_code=0
+    } elseif ($request.operation -eq 'AppServiceValidation') {
+        $watch=[Diagnostics.Stopwatch]::StartNew()
+        $remaining=[Math]::Max(1,[Math]::Floor([int]$request.timeout_seconds-$watch.Elapsed.TotalSeconds))
+        $stage='app_service_connectivity'
+        Assert-PrivateAppServiceConnectivity $outputs ([Math]::Min(120, $remaining))
         $result.exit_code=0
     } elseif ($request.operation -eq 'PoolValidation') {
         $watch=[Diagnostics.Stopwatch]::StartNew()
