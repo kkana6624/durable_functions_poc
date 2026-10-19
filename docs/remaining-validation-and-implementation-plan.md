@@ -1,29 +1,27 @@
-# 残りの検証・実装計画
+# 残りの検証・実装計画（実機検証済み境界と残課題）
 
-更新日: 2026-10-19。
-- **実機検証済みの最新デプロイ実績**:
-  - **最新 15関数デプロイおよび全6シナリオ実機回帰（合格）**: 実 Azure 環境（`poc` 環境・Azure Storage バックエンド、コミット `839932b`）への最新 15 関数パッケージのデプロイ（`.deploy/poc/20261019-080215-5263`、15 関数全件インデックス登録確認、3 Tasks スモークテスト合格: `deploy-13795081be9948a1b20a2114e447363b`、パッケージ SHA-256: `06bf36f4...`）、および閉域検証 VM 経由での全 6 シナリオ回帰検証（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）を**全件 Pass** で完了。取消確定と成果物公開の排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を含む最新版コードの実機成立を実証済み。
-  - **B案フェーズ1 Entra ID サービス間認証・認可および稼働パッケージ同定（完全合格）**: EasyAuth v2 を有効化した実機環境において、未認証・不正Audienceの 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合の 403 遮断、正当マネージドIDによる完走（202/200）、および `X-Poc-Package-Sha256` / `X-Poc-Assembly-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）の完全合格を確認。
-  - **B案フェーズ2 Azure Functions Regional VNet Integration & Azure Batch Private Endpoints（実機完全合格）**: Functions Outbound サブネット（`10.80.3.0/24`、`Microsoft.Web/serverFarms` 委任、NAT Gateway 関連付け）による Regional VNet 統合（`vnet_route_all_enabled = true`）および Azure Batch Account の Private Endpoint（`privatelink.batch.azure.com`、REST API 用 `batchAccount` `10.80.2.5`、ノード管理用 `nodeManagement` `10.80.2.6`）、Batch ノード用サブネット（`10.80.4.0/24`、NAT Gateway 関連付け）新設を Terraform に反映・Azure 実機デプロイ（`.deploy/poc/20261019-120416-8533`、コミット `119a088`）。
-  - **B案フェーズ3 Azure Batch Pool VNet 統合（NoPublicIPAddresses）& Batch Account パブリックアクセス完全遮断（実機完全合格）**: Batch Pool を `batch-nodes` サブネット（`10.80.4.0/24`）へ配置し `public_address_provisioning_type = "NoPublicIPAddresses"` を適用してノードのパブリック IP を完全排除。Batch Account のパブリックアクセスを完全遮断（`public_network_access_enabled = false`）。閉域検証 VM から Private Endpoint 経由で Pool 準備確認・Function デプロイ・認証認可・ワークフロー実行・稼働パッケージ同定の全フロー完走を確認（デプロイ: `.deploy/poc/20261019-131731-6874`、証跡: `artifacts/private-auth-validation/20261019-042651-0796/summary.json`、終了コード 0、Pass、`livePackageVerified = true`）。これをもって **B案（フェーズ 1〜3）完遂**。
-- **最新コードとテスト通過状況**:
-  - Release 単体テスト全 294 件（`Poc.Tests` 292 件、`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 37 件、PowerShell オフライン試験 8 組全件が合格し、実 Azure 環境への再デプロイおよび実機認証・ワークフロー完走も合格を確認済み。
-- **確定した実機検証済み境界**:
-  - `V01`（最新15関数パッケージデプロイ・Managed ID接続・スモークテスト合格）
-  - `V02`（単一Task投入および3 Tasks並列集約・マニフェスト整合性Pass）
-  - `V03`（非ゼロ終了42・Failed確定・成果物マニフェスト非公開Pass）
-  - `V04`（別入力409 Conflictおよび同一入力同一所有者の冪等受付・再送Pass）
-  - `V12`（利用者キャンセル: 202受理、cancel.json先行永続化、排他調停 resolution.json、Batch completed有界停止、manifest非公開、冪等200応答の実機完全実証Pass）
-  - `V11`（Entra ID サービス間認証・認可 & 稼働パッケージ同定Pass）
-  - **B案（フェーズ1〜3完遂）**: Functions Regional VNet 統合（`functions_outbound` `10.80.3.0/24`）、Batch Private Endpoints（`batchAccount` `10.80.2.5`, `nodeManagement` `10.80.2.6`）、Batch Pool VNet サブネット統合（`batch_nodes` `10.80.4.0/24`、`NoPublicIPAddresses`）、Batch Account パブリックアクセス完全遮断（`public_network_access_enabled = false`）、閉域検証 VM からのワークフロー完走・パッケージ同定Pass（`.deploy/poc/20261019-131731-6874`、証跡 `artifacts/private-auth-validation/20261019-042651-0796/summary.json`）。
-  - カテゴリ A（追加の耐障害性・運用系検証: `V05` Function App 再起動復旧、`V07` タイムアウト監視停止、`V08` ホスト停止中 Batch MaxWallClockTime 安全網、`V09` 0台オートスケール先行投入）についても過去に実機Pass済み。
-- **残る未完了項目（カテゴリ B・C）**:
-  - **V10（実 C++ バイナリ連携）**: 固定 C++ 計算バイナリの実行、Blob 確定入力（SHA-256/ETag）、計算出力のハッシュ照合・業務アプリ側許容誤差検証（C案）。
-  - **T09（大容量出力の Blob 直送）**: Azure Batch `OutputFiles` による Blob Storage 直接アップロード、転送完了とハッシュ整合性確認後のマニフェスト公開（C案）。
-  - **V00（全面閉域化・オンプレミス接続）**: Storage を含む全面閉域化、ExpressRoute/VPN オンプレミス接続。
-  - **DTS（Durable Task Scheduler）環境**: 最新 15 関数コード、cancellation、および認証・VNet統合・Batch閉域化設定の DTS 環境での実機回帰（過去の DTS 検証は 12 関数時点）。
+更新日: 2026-10-19
 
-> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。実機デプロイ検証済みの範囲は最新成果（`.deploy/poc/20261019-131731-6874`、証跡 `artifacts/private-auth-validation/20261019-042651-0796/summary.json`）および全 6 シナリオ回帰成果（`.deploy/poc/20261019-080215-5263`、コミット `839932b`、証跡 `artifacts/private-validation/20261018-230722-4253/summary.json`）です。Storage の全面閉域化、実 C++ ファイル入出力（C案）は後続作業です。
+## 現在の到達点（実機検証実績）
+
+本 PoC では、Azure 実環境（`poc` 環境）において以下の主要機能を検証し、すべて合格（Pass）を確認しました。
+
+1. **ジョブ基盤（A案完了）**:
+   - 最新 15 関数のデプロイと 3 Tasks 並列集約（`Sum=3`）スモークテスト合格。
+   - 閉域検証 VM からの全 6 シナリオ回帰検証（単一、並列集約、軽重分類、exit 42 失敗、409 競合、利用者キャンセル）に完全合格。
+   - 耐障害性・運用系検証（V05 再起動復旧、V07 タイムアウト停止、V08 ホスト停止時安全網、V09 0台オートスケール自動拡張・復元）に完全合格。
+2. **認証認可・完全閉域化（B案 100% 完遂）**:
+   - **B案フェーズ1**: Entra ID サービス間認証（EasyAuth v2）、App Role 認可（`Workflow.Execute`）、未認証 401 / 権限不足 403 遮断、稼働パッケージ同定（`livePackageVerified: true`）。
+   - **B案フェーズ2**: Azure Functions Regional VNet 統合（送信閉域化）、Azure Batch Private Endpoints（`batchAccount`, `nodeManagement`）。
+   - **B案フェーズ3**: Batch Pool の VNet サブネット統合（`NoPublicIPAddresses`）、Batch Account パブリックアクセス完全遮断（`public_network_access_enabled = false`）。
+
+## 残る未完了項目（次期開発フェーズへの引き継ぎ）
+
+- **C案**: 実業務 C++ バイナリ連携（`V10`）および Batch `OutputFiles` 大容量出力直接アップロード（`T09`）。
+- **DTS 環境**: 最新 15 関数・閉域化コードの Durable Task Scheduler 環境での回帰検証。
+- **V00**: Storage Account の全面閉域化（Private Endpoint 化）およびオンプレミス回線接続（ExpressRoute / VPN）。
+
+> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。Storage の全面閉域化、実 C++ ファイル入出力（C案）は後続の業務アプリ結合フェーズで実施します。
 
 ---
 

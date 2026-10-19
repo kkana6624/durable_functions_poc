@@ -5,12 +5,12 @@
 レビューで指摘された 2 件の課題（[P2・残存] ゲスト検証タイムアウトの起算点不一致による Pool 復元中断リスクの解消、[P2・新規] ゲスト指定ファイル名による証跡ディレクトリ外上書き／パストラバーサルの防止）を改修し、PowerShell オフライン全テスト（8 スイート）の合格を確認しました。
 
 - **対応内容詳細**:
-  1. **[P2・残存] ゲスト開始時の絶対期限共有（`POC_VM_DEADLINE_UTC`）と Pool 復元時間の完全保証**:
+  1. **[P2・残存] ゲスト開始時の絶対期限共有（`POC_VM_DEADLINE_UTC`）と Pool 復元予算の確保・失敗通知**:
      - `scripts/Invoke-PrivateVmOperation.ps1`: ホスト側で `budget_seconds`（`AutoscaleValidation` では `$TimeoutSeconds + 1200`、その他は `$TimeoutSeconds`）を算出し、Run Command の `$transport` メタデータへ含めて VM に渡す。
      - ゲストシェルスクリプト（`run.sh` / `pwsh`）: ゲスト `pwsh` の最先端（初期化直後）で `$guestStartUtc = [DateTime]::UtcNow` を記録し、`$env:POC_VM_DEADLINE_UTC = $guestStartUtc.AddSeconds([int]$t.budget_seconds).ToString("o")` を環境変数としてエクスポート。
      - 外側の bash `timeout` は `[Math]::Min(5300, $budgetSeconds + 300)` に設定し、Azure Action Run Command 上限（5,400 秒 / 90 分）の範囲内で内部処理全体に対して 300 秒の安全マージンを確保。
      - `scripts/Invoke-PocAutoscaleValidation.ps1`: `$deadlineUtc` を `[Environment]::GetEnvironmentVariable('POC_VM_DEADLINE_UTC')` から取得（`Get-Variable` は `Variable:` ドライブ限定のため使用せず、.NET API で確実に環境変数を読み取り。未設定時はフォールバック）。バンドルダウンロード再試行（最大 300 秒）や展開に要した時間にかかわらず、準備待機・0台待機・評価待機・ワークフロー検証の各残余制限時間を `($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds` から一元的に算出。
-    - `finally` 内のプール復元（オートスケール無効化、固定スケールリサイズ待機、レディネス検証）に最低 600 秒（`$restorationReserveSeconds`）を確実に残存させ、外側の `timeout` に先行消費されて復元が中断されるリスクを完全に排除。
+     - `finally` 内のプール復元（オートスケール無効化、固定スケールリサイズ待機、レディネス検証）用に共有期限から 600 秒（`$restorationReserveSeconds`）の復元予算を確保し、外側の `timeout` が復元時間を先行消費するのを防止。復元失敗時は `Status=Fail` / `Reason=PoolRestorationFailed` として明示的に検知・通知する設計へ改修。
   2. **[P2・新規] 証跡回収における固定許可リストとパストラバーサル防止**:
      - `scripts/Invoke-PrivateVmOperation.ps1`: VM から返却される `$result.summary_artifacts` の各ファイル名に対し、操作別の厳格な固定許可リスト（`WorkflowAuth`: `summary.json`、`AutoscaleValidation`: `autoscale-result.json`, `summary.json`, `summary.txt`、その他: `summary.json`, `summary.txt`）による検証を導入。
      - パス区切り文字（`\`, `/`）を含むファイル名や `[IO.Path]::GetFileName($name) -ne $name` となる不正な指定を即座に検知し、`throw "Private VM returned an untrusted or invalid summary artifact name: $name"` で拒否。

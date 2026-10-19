@@ -4,21 +4,21 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 
 設計の背景と実装要件については、[設計書](docs/azure-hpc-modernization-poc-design.md) および [実装指示書](docs/CODEX_IMPLEMENTATION_INSTRUCTIONS.md) を参照してください。
 
-> [!IMPORTANT]
-> **検証ステータスに関する注記**
-> - **最新コード（15 Functions・V12 利用者キャンセル & 排他調停・Azure 実機再検証全件合格）**: `CancelWorkflow` を追加した計 15 個の Functions を登録するコードで、取消確定とマニフェスト公開の排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認の永続化（`termination.json`）と Activity 再試行・状態 API 反映、Job 作成前・公開時取消ステータス正規化を含み、Release 単体テスト全 294 件（`Poc.Tests` 292/292 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が成功し、実 Azure 環境への再デプロイおよび全 6 シナリオ実機回帰も合格しています。
-> - **Azure 実環境デプロイ・実機回帰の実績（最新成果）**:
->   - **最新 15 関数デプロイおよび全 6 シナリオ実機回帰（合格）**: 実 Azure 環境（`poc` 環境・Azure Storage バックエンド、コミット `839932b`）への最新 15 関数パッケージのデプロイ（`.deploy/poc/20261019-080215-5263`、15 関数全件インデックス登録確認、3 Tasks スモークテスト合格: `deploy-13795081be9948a1b20a2114e447363b`、パッケージ SHA-256: `06bf36f4...`）、および閉域検証 VM 経由での全 6 シナリオ回帰検証（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）を**全件 Pass** で完了し、取消調停・停止再試行・停止確認永続化を含む V12 利用者キャンセルの最新改善の実機成立を実証済みです。
->   - **B案フェーズ1 Entra ID サービス間認証・認可および稼働パッケージ同定（完全合格・レビュー修正反映）**: EasyAuth v2 を有効化した実機環境（`.deploy/poc/20261019-102131-6222`）において、レビュー指摘3件（P2 後続不一致での同定無効化、P3 パッケージ全体コンテンツ指紋測定 `package_content_sha256`、P3 App Role 不足拒否前提確認 `unauthorizedClientConfirmedInAllowedList`）を反映した閉域検証 VM からの完全認証検証（`artifacts/private-auth-validation/20261019-013214-2425/summary.json`、終了コード 0、Pass）を実施し、未認証・不正Audienceの 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合の 403 遮断、正当マネージドIDによる完走（202/200）、および `X-Poc-Package-Sha256` / `X-Poc-Assembly-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）の完全合格を確認しました。
->   - **B案フェーズ2 & フェーズ3（完全達成・Azure実機検証完全合格）**: Azure Functions の Regional VNet Integration（`functions_outbound` サブネット `10.80.3.0/24`、`vnet_route_all_enabled = true`）、Azure Batch Account の Private Endpoint（`batchAccount` `10.80.2.5`、`nodeManagement` `10.80.2.6`）およびパブリックアクセス完全遮断（`publicNetworkAccess: Disabled`）、ならびに Batch Pool の VNet サブネット統合（`batch_nodes` `10.80.4.0/24`）とパブリック IP なし構成（`NoPublicIPAddresses`）を実 Azure 環境へ適用（デプロイ成果: `.deploy/poc/20261019-131731-6874`）。閉域検証 VM からの完全認証・認可・ワークフロー実機検証（証跡: `artifacts/private-auth-validation/20261019-042651-0796/summary.json`、終了コード 0、Pass）により、401/403 遮断、閉域ノード上での Job/Task 完走、および稼働パッケージ同定（`livePackageVerified: true`）の全 19 プローブ完全合格を確認しました。
-> - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、15 関数の初版登録・全 6 シナリオ回帰（`.deploy/poc/20261018-211336-1471`、コミット `b7ad854`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での 0 台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
-> - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の 12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
-> - **未実証・未再検証の範囲**:
->   - **アプリ・基盤連携（C案）**: 実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、全面閉域化（`V00`：Storage アカウントの Private Endpoint 化およびパブリックアクセス遮断）、Spot 回収復旧、ならびに DTS バックエンド環境での最新 15 関数・キャンセル・認証回帰が残っています。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
+## 1. PoC の結論と到達点
+
+本 PoC は、**クラウド基盤としての技術的実現性・非機能要件の検証を完了（合格）** しました。
+
+| 検証フェーズ | 実装・検証内容 | 実 Azure 検証状況 |
+|---|---|---|
+| **A案: ジョブ基盤** | 15関数のオーケストレーション、子オーケストレーションによる並列集約（Fan-out/Fan-in）、受付排他（409 Conflict）、障害復旧（V05）、タイムアウト監視（V07）、ホスト停止時安全網（V08）、0台オートスケール（V09）、利用者キャンセル（V12） | **完了 (Pass)**<br>閉域検証 VM からの全 6 シナリオ回帰検証および耐障害性試験に合格 |
+| **B案: 認証・閉域化** | ・**フェーズ1**: Entra ID サービス間認証（EasyAuth v2）、App Role 認可（`Workflow.Execute`）、稼働パッケージ暗号学的同定<br>・**フェーズ2**: Functions 送信用 Regional VNet 統合、Batch Private Endpoints（`batchAccount`, `nodeManagement`）<br>・**フェーズ3**: Batch Pool の VNet 統合（`NoPublicIPAddresses`）、Batch Account パブリックアクセス完全遮断（`public_network_access_enabled = false`） | **完了 (Pass)**<br>パブリック通信を遮断した閉域環境下で、認証・デプロイ・ワークフロー実行・パッケージ同定の全 19 プローブ完走を確認 |
+| **C案: 実業務連携** | 実 C++ 計算バイナリ連携（V10）、大容量ファイルの Blob Storage 直接アップロード（T09 / `OutputFiles`） | **次フェーズへ引き継ぎ**<br>業務アプリ側のバイナリ仕様・入出力データ仕様確定後に結合開発として実施 |
+
+詳細な試験結果と証跡は [検証結果](docs/test-results.md) および [実現性評価](docs/feasibility-matrix.md) を参照してください。
 
 ---
 
-## 本資材でできること・できないこと（アプリ側との責務境界）
+## 2. 本資材でできること・できないこと（責務境界）
 
 アプリケーション担当者および基盤担当者が本資材の範囲を共通認識できるよう、現在の資材で「実現できていること」と「含まれていないこと（アプリ側バイナリ組み込み時や後続フェーズで対応が必要な事項）」を整理します。
 

@@ -1,90 +1,83 @@
-# 次期実装計画
+# 次期開発引き継ぎ計画（PoC 完了と次フェーズのバックログ）
 
-確認日: 2026-10-19。最新状態: A案（15関数パッケージのデプロイおよび全6シナリオ実機回帰検証・V12利用者キャンセル実証）完了、ならびに **B案（フェーズ 1〜3）完全完遂**: **B案フェーズ1（Entra ID サービス間認証・認可 & 稼働パッケージ同定）**、**B案フェーズ2（Azure Functions Regional VNet Integration & Azure Batch Private Endpoints）**、および **B案フェーズ3（Azure Batch Pool VNet サブネット統合 NoPublicIPAddresses & Azure Batch Account パブリックアクセス完全遮断）** の Azure 実機完全合格（Pass）。実機検証済みデプロイ基準: `.deploy/poc/20261019-131731-6874`（Batch Pool VNet統合 `NoPublicIPAddresses` + Batch Account パブリックアクセス完全遮断 `public_network_access_enabled = false`、閉域検証VM経由のPool準備状態確認Pass、15関数全件登録、閉域検証VM認証・ワークフロー完走・稼働パッケージ同定検証: `artifacts/private-auth-validation/20261019-042651-0796/summary.json`、終了コード 0、Pass、`livePackageVerified = true`）、ならびに全6シナリオ実機回帰: `.deploy/poc/20261019-080215-5263`（コミット `839932b`、閉域検証VM実機回帰: `artifacts/private-validation/20261018-230722-4253/summary.json`、全6シナリオPass）。
+更新日: 2026-10-19
 
-## 現在の到達点
+## 1. 本書の目的とステータス
 
-コミット `e1d04d6`、`27b24b4`、`b14b25f`、`839932b`、`c14a0cf`、`406d3d5`、`119a088`、および最新デプロイ `.deploy/poc/20261019-131731-6874` により、受付・所有者の一体化、EasyAuth認可アダプター、opt-in EasyAuth IaC、独自API認証runner、**V12 利用者キャンセル（Job Cancellation）の実機実証を含む全6シナリオの実機回帰検証**、**Entra サービス間認証・認可・App Role 不足403遮断・暗号学的稼働パッケージ同定**、**Azure Functions Regional VNet 統合および Azure Batch Private Endpoints の実機検証**、ならびに **Batch Pool の VNet サブネット統合（NoPublicIPAddresses）と Batch パブリックアクセス完全遮断** がすべて合格（終了コード 0）しています。
+本 PoC は、Azure Batch（Windows ノード）と Durable Functions を組み合わせた計算基盤について、**クラウドアーキテクチャ・非機能要件の技術検証（A案・B案）を完了**しました。
 
-- **15関数パッケージのAzureデプロイとスモークテスト合格**:
-  - `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1 -Smoke` を実行（ログ: `.deploy/poc/20261019-080215-5263/`、コミット `839932b`）。
-  - 取消確定と成果物公開の排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を含む最新15関数が Function App 上に正常インデックス登録されたことを確認。
-  - 3 Tasks並列集約スモークテストが合格（`requestId=deploy-13795081be9948a1b20a2114e447363b`、Sum=3）。
-- **閉域検証VMからの実機回帰試験（全6シナリオPass）**:
-  - 閉域検証VMから `scripts/Invoke-PrivatePocValidation.ps1` を実行（証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）。
-  - `single`: Pass（単一Task投入・正常完了・Sum=1）
-  - `three`: Pass（3 Tasks並列集約・正常完了・Sum=3）
-  - `classification`: Pass（light/heavy/auto軽重分類・正常完了）
-  - `failure`: Pass（非ゼロ終了42・Failed確定・マニフェスト非公開）
-  - `conflict`: Pass（別入力409 Conflict・同一入力同一所有者冪等性）
-  - `cancellation`: Pass（**V12 利用者キャンセル実機完全実証**、`cancel.json` 先行永続化、`CancelRequested` 調停、Batch 有界停止、`manifest.json` 非公開、冪等 200/202 応答）
-- **B案フェーズ1: Entra ID サービス間認証・認可 & 稼働パッケージ同定の Azure 実機完全合格（Pass）**:
-  - App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 付与、Function App の EasyAuth v2（`auth_settings_v2`, `active_directory_v2`）有効化。
-  - 閉域検証 VM から `scripts/Invoke-PrivateWorkflowAuthValidation.ps1` を実行（証跡: `artifacts/private-auth-validation/20261019-023554-2683/summary.json`、デプロイ: `.deploy/poc/20261019-112704-9949`、終了コード 0、Pass）。
-  - 401 遮断（未認証プローブ 12 件、不正 Audience）、403 遮断（App Role 不足のマネージド ID `poc-unauthorized-id`、所有者・組織欠落／不整合）を確認。正規トークン（`Workflow.Execute` 付与）による 202/200 完走を確認。
-  - レスポンスヘッダー `livePackageSha256` / `liveAssemblySha256` とデプロイハッシュの完全一致による暗号学的稼働パッケージ同定（`livePackageVerified: true`）を確認。
-- **B案フェーズ2: Azure Functions Regional VNet Integration & Azure Batch Private Endpoints 実機完全合格（Pass）**:
-  - Functions Regional VNet Integration: `functions_outbound` サブネット（`10.80.3.0/24`、`Microsoft.Web/serverFarms` 委任、NAT Gateway 関連付け）、`vnet_route_all_enabled = true`。
-  - Batch Private Endpoints: `azurerm_private_endpoint.batch_account`（`batchAccount`、`10.80.2.5`）、`azurerm_private_endpoint.batch_node_management`（`nodeManagement`、`10.80.2.6`）、Private DNS Zone `privatelink.batch.azure.com`。
-  - 実機検証成果: `.deploy/poc/20261019-120416-8533`（コミット `119a088`）、証跡 `artifacts/private-auth-validation/20261019-031916-1137/summary.json`（終了コード 0、Pass）。
-- **B案フェーズ3: Azure Batch Pool VNet サブネット統合 & Batch Account パブリックアクセス完全遮断 実機完全合格（Pass）**:
-  - Batch Pool の `batch-nodes` サブネット（`10.80.4.0/24`）配置、`NoPublicIPAddresses` 構成適用（ノードのパブリック IP を完全排除）。ARM 上で `publicIPAddressConfiguration.provision = "NoPublicIPAddresses"`、`allocationState = "Steady"` を確認。
-  - Batch Account のパブリックネットワークアクセス完全遮断（`public_network_access_enabled = false`）。ARM 上で `publicNetworkAccess = "Disabled"` を確認。
-  - 閉域デプロイツール改修: `batch_private_ip` 検出時に Pool 準備状態確認（`Operation = PoolValidation`）を閉域検証 VM へ委譲し、Private Endpoint 経由での Pool 健全性検証を実現。
-  - 実機検証成果: `.deploy/poc/20261019-131731-6874`、証跡 `artifacts/private-auth-validation/20261019-042651-0796/summary.json`（終了コード 0、Pass、`livePackageVerified = true`、パブリック遮断下の Batch Account に対し Private Endpoint 経由で Job 作成・Task 実行・Blob 集約を完走）。**B案完遂**。
-- **検証実績**: Release 単体テスト全 294 件（`Poc.Tests` 292 件＋`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 37 件、PowerShell オフライン試験 8 組全件が合格。
-- **未実施・後続事項**:
-  - **C案**: 実 C++ バイナリ連携（`V10`）および Batch `OutputFiles` 大容量出力直送（`T09`）。
-  - **V00**: Storage を含む全面閉域化、ExpressRoute / VPN オンプレミス接続。
-  - **DTS 環境回帰**: 15 関数コードおよびキャンセル・認証・VNet統合・Batch閉域化設定の DTS 実機回帰。
+これに伴い、PoC としての検証フェーズを終了し、本ドキュメントを**「次期開発フェーズ（実業務アプリ連携・本番化）への引き継ぎ計画書」**として再構成します。
 
-## 優先順序と完了条件
+---
 
-| 順序 | 実装単位 | 完了条件 |
+## 2. 実機検証済みの基盤範囲（完了項目）
+
+以下の機能は、すべて実 Azure 環境上で正常動作（Pass）を確認済みです。
+
+| 検証領域 | 実装内容 | 実機確認結果 |
 |---|---|---|
-| 1 | V11: 受付・所有者の一体化と旧レコードの扱い | **【ローカル完了・実機回帰Pass】** 単一の不変受付レコード（`admission.json` v2）と旧受付移行・拒否条件をローカル検証。実機回帰試験（conflict シナリオ）にて 409 競合調停・冪等再送の実機動作を確認完了 |
-| 2 | V11: 認証境界（B案フェーズ1） | **【Azure 実機完全検証完了（Pass）】** 信頼されたバックエンドの Entra 認証・App Role・`idtyp=app` 検証アダプター、opt-in EasyAuth IaC、VM MI 用認証 runner（`Invoke-WorkflowAuthValidation.ps1`）を実機検証。App Role 不足トークンによる実機 403 拒否試験、所有者不整合 403 拒否試験、正当トークン通過（202/200）、および暗号学的稼働パッケージ同定（`livePackageVerified: true`）を確認（証跡: `artifacts/private-auth-validation/20261019-023554-2683/summary.json`） |
-| 4 | V12: 利用者キャンセル | **【Azure 実機検証完了（Pass）】** 要求永続化、冪等 cancel API（Functions 計15件）、Durable 外部イベント、Batch 有界停止、取消と manifest 公開の排他調停、所有者認可、runner シナリオ追加を実装完了。閉域 VM からの実機検証にて 202 受理、cancel.json 存在、Batch completed、manifest 非公開、冪等 200 を確認し完全実証 |
-| 3 | V11/V12: 15関数コードのAzure配置・閉域VM実機回帰（A案） | **【Azure 実機検証完了（Pass）】** 15 関数コードの Azure 配置および閉域 VM からの実機全 6 シナリオ回帰検証（証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）が合格 |
-| B案フェーズ2 | Functions VNet統合 & Batch Private Endpoints | **【Azure 実機完全検証完了（Pass）】** `functions_outbound` サブネット（`10.80.3.0/24`）経由の Regional VNet 統合（`vnet_route_all_enabled = true`）、Batch REST API（`batchAccount` `10.80.2.5`）およびノード管理（`nodeManagement` `10.80.2.6`）Private Endpoints、`privatelink.batch.azure.com` Private DNS Zone、`batch_nodes` サブネット（`10.80.4.0/24`）を整備。閉域検証 VM からのワークフロー起動・Batch 実行・稼働パッケージ同定（`livePackageVerified: true`）の完全合格を確認（証跡: `artifacts/private-auth-validation/20261019-031916-1137/summary.json`、デプロイ: `.deploy/poc/20261019-120416-8533`、コミット `119a088`） |
-| B案フェーズ3 | Batch Pool VNet統合（NoPublicIPAddresses）& Batch パブリックアクセス完全遮断 | **【Azure 実機完全検証完了（Pass）】** Batch Pool を `batch-nodes` サブネット（`10.80.4.0/24`）へ統合し `NoPublicIPAddresses` 構成を適用、Batch Account のパブリックアクセスを完全遮断（`public_network_access_enabled = false`）。閉域検証 VM からの Pool 準備状態確認（`Operation = PoolValidation`）、プライベート SCM デプロイ、認証認可・ワークフロー実行・稼働パッケージ同定の全フロー完走を確認（デプロイ: `.deploy/poc/20261019-131731-6874`、証跡: `artifacts/private-auth-validation/20261019-042651-0796/summary.json`、終了コード 0、Pass、`livePackageVerified = true`）。**B案完遂** |
-| 次の焦点 | C案（実 C++ バイナリ連携 & OutputFiles 直送）および V00（全面閉域化） | **【次なる作業候補】**<br>・**C案**: 実 C++ バイナリ連携（`V10`）および Batch `OutputFiles` 大容量出力直送（`T09`）の実機検証<br>・**DTS 環境回帰**: 15 関数コードおよびキャンセル・認証・VNet統合・Batch閉域化設定の DTS 実機回帰<br>・**V00**: Storage を含む全面閉域化およびオンプレミス接続実証 |
-| 5 | V10/T09: ファイル入出力（C案） | 入力確定、Blob version/ETag/size/SHA-256 とバイナリ版を実行契約へ追加。固定バイナリ、ResourceFiles、OutputFiles 直送を導入し、転送成功とハッシュ照合後だけ manifest 公開 |
-| 6 | V00・運用検証 | Storage全面閉域化、DNS・送信経路・SCM 経路、オンプレ接続を段階検証。その後 Spot 回収・一時障害注入・保持/清掃を拡充 |
+| **ジョブオーケストレーション** | ・HTTP API によるジョブ受付と 202 応答<br>・子オーケストレーションによる複数 Task の並列投入と集約（Fan-out / Fan-in）<br>・Durable Timer によるサーバーレス状態ポーリング | Pass (15関数稼働確認) |
+| **受付排他・冪等性** | ・`admission.json` v2 と Durable Entity による二重起動防止<br>・同一 `requestId`・同一所有者の冪等な結果返却<br>・異なるパラメータ送信時の `409 Conflict` 拒否 | Pass (`conflict` 回帰確認) |
+| **耐障害性・自動復旧** | ・Task 実行中の Function App 再起動からの無停止自動復旧（V05）<br>・監視期限超過時の Batch Job 有界停止（V07）<br>・Function ホスト停止時の Batch `MaxWallClockTime` 安全網（V08）<br>・0 台待機 Pool への先行投入と自動スケールアウト（V09） | Pass (実 Azure 復旧確認) |
+| **利用者キャンセル（V12）** | ・取消 API（`POST /api/workflows/{requestId}/cancel`）の提供<br>・`cancel.json` 先行永続化と Durable 外部イベント連携<br>・Batch Job の有界停止と成果物公開の排他調停（`resolution.json`）<br>・他者キャンセル要求の 403 拒否と、停止完了後の 200 冪等応答 | Pass (`cancellation` 回帰確認) |
+| **Entra サービス間認証 (B案-1)** | ・App Service EasyAuth v2 による未認証・不正トークンの 401 遮断<br>・App Role（`Workflow.Execute`）不足マネージド ID の 403 遮断<br>・稼働パッケージの暗号学的同定（`livePackageVerified: true`） | Pass (全 19 プローブ確認) |
+| **ネットワーク完全閉域化 (B案-2,3)** | ・Function App の Regional VNet 統合（送信閉域化）<br>・Batch Account の Private Endpoint 化（`batchAccount`, `nodeManagement`）<br>・Batch Pool の VNet サブネット統合（`NoPublicIPAddresses`）<br>・Batch Account のパブリックアクセス完全遮断（`publicNetworkAccess: Disabled`） | Pass (閉域ノード上完走) |
 
-## 実装済みの境界と次の実装
+---
 
-開始202の本文 `statusQueryGetUri` と `Location` は独自 `/api/workflows/{requestId}` に統一済みで、`Retry-After: 10` を維持しています。内部runnerはこの契約を検証後、system keyから管理URIをメモリ内で生成して詳細診断を継続します。独自状態APIへの全面移行は各Functionの認証設計と併せて進めます。開始専用Function keyを別Functionへ流用しません。
+## 3. 次期開発フェーズへの引き継ぎ項目（残課題バックログ）
 
-続くローカル実装でHTTP/旧custom statusのエラー遮蔽、明示ログのコード化、状態・結果API共通の公開成果物検証を追加しました。さらにActivity wrapperでは、再試行分類とtimeout型を維持し、固定message・innerなしの例外を外へ渡します。gRPC分類はHTTP/Activityとも `Unavailable` / `DeadlineExceeded` / `ResourceExhausted` に限定しました。これは冪等操作への有界再試行方針であり、回復保証ではありません。SDK層の再試行は別の層で、今回変更していません。
+本番開発および業務アプリ結合時に対応すべき残存タスクの一覧です。
 
-コミット `e1d04d6` で `WorkflowAdmission.cs` の受付と所有者の永続化を単一レコード（Version 2）へまとめ、同一入力・同一所有者の再送、異なる入力・所有者・組織の競合（409 Conflict）、所有者なし旧受付の扱いを実機検証しました。続くコミット `27b24b4` / `b14b25f` / `c14a0cf` / `406d3d5` で Entra ID サービス間認証・EasyAuth v2・App Role 403 遮断・稼働パッケージ暗号学的同定を実 Azure 上で完全実証しました。そしてコミット `119a088`（B案フェーズ2）により、Function App の Regional VNet Integration（`functions_outbound` `10.80.3.0/24`、`vnet_route_all_enabled = true`）および Azure Batch Account の Private Endpoint（`batchAccount` `10.80.2.5`、`nodeManagement` `10.80.2.6`、`privatelink.batch.azure.com` Private DNS Zone）を実機適用し、閉域検証 VM からの Batch Job/Task 完走および稼働パッケージ同定（`livePackageVerified: true`）を完全合格としました。
+```mermaid
+flowchart TD
+    PoC[PoC 完了: 基盤・閉域化・認証・キャンセル実証済] --> Phase2[次期開発フェーズ: 業務アプリ統合]
+    Phase2 --> C[C案: 実業務 C++ バイナリ連携 & OutputFiles 大容量直送]
+    Phase2 --> V00[V00: Storage 全面閉域化 & オンプレミス回線接続]
+    Phase2 --> DTS[DTS: Durable Task Scheduler 最新コード回帰]
+    Phase2 --> Ops[本番運用設計: データ保持期間 TTL & パージ]
+```
 
-単一レコード化は、別Blobだった所有者と受付の確認・claimの交差を新Starter間で防ぎます。現PoCでは所有者なし受付を維持し、所有者必須化は後続の認証済みAPI契約で検討します。旧レコードの移行は旧Starter停止後を前提とし、任意利用者による旧ジョブの所有権取得を許しません。
+### 3.1 【最優先】C案: 実 C++ バイナリ連携 & 大容量出力直送
+実業務アプリケーションのバイナリ仕様およびデータ入出力仕様が確定した後に実施します。
 
-`EntraEasyAuth`モードは認可済みバックエンドのみから必須owner/orgを受け取り、その値を利用者セッションへ正しく結び付ける責任をバックエンドに委ねます。実機環境では App Role `Workflow.Execute` を持つ正規マネージド ID からの要求のみを通過させ、App Role 不足のマネージド ID や未認証・他者コンテキスト要求を確実に 401/403 遮断できる境界を確立しました。後続ステップでは、新設済みの `batch_nodes` サブネット（`10.80.4.0/24`）へ Batch Pool を移行してパブリック IP を排除（`NoPublicIPAddresses`）し、Batch Account のパブリックネットワークアクセスを遮断（`public_network_access_enabled = false`）する B案フェーズ3 を進め、その後 C案（実 C++ バイナリ連携・大容量出力直送）および V00（全面閉域化）へ移行します。
+1. **実 C++ 計算バイナリ連携 (V10)**:
+   - 入力ライフサイクルの管理（アップロード中、確定状態の分離）。
+   - 入力マニフェスト（Blob バージョン / ETag / ファイルサイズ / SHA-256）の生成と改ざん検証。
+   - Windows 計算ノード上への固定バイナリ・依存 DLL・設定ファイルの配備（Batch `ResourceFiles` または Application Package）。
+   - 計算結果のハッシュ突合および業務アプリ側の許容誤差検証。
+2. **大容量出力の Blob Storage 直接アップロード (T09)**:
+   - 現行の Task File API（数 KB 向け）から、Azure Batch の `OutputFiles` 機能を用いた計算ノードから Blob Storage への直接アップロードへ移行。
+   - アップロード完了・全タスク正常終了・ハッシュ整合性を確認した後に `manifest.json` を公開する制御の実装。
 
-## キャンセル・出力で守る条件
+### 3.2 DTS（Durable Task Scheduler）環境での最新コード実機回帰
+- 過去の DTS 検証は 12 関数時点（キャンセル、EasyAuth、VNet 統合、Batch 閉域化の導入前）でした。
+- 最新の 15 関数コードおよび閉域化設定を DTS 環境へ適用し、実機回帰試験を実施します。
 
-- Durable外部イベントは通知手段であり、取消の完了証跡ではありません。起動前の要求喪失を防ぐため永続化した取消状態を各処理境界で照合し、重複通知を許容します。
-- Durableの強制TerminateはActivityや子orchestrationを停止しません。Job作成中に取消された場合も作成結果を確定させてから対象Jobを停止し、遅れて作られる孤立Jobを防ぎます。
-- Batch停止完了はJobの `completed` で確認します。未開始Taskは `active` のまま残り得るため、全Taskの `completed` を条件にしません。停止未確認をCancelled確定として返しません。
-- 取消確定とmanifest公開の順序を同じ永続制御点で調停し、再試行・クラッシュ後も順序が逆転しない方式を設計してから実装します。
-- OutputFilesのアップロード失敗でもTaskはCompletedになり得ます。exit codeだけでなくexecutionInfoのresult/failureInfo、成果物の存在・サイズ・ハッシュを検証します。
+### 3.3 V00: Storage 全面閉域化 & オンプレミス回線統合
+- **Storage Account の Private Endpoint 化**:
+  - Blob、Queue、Table、SCM デプロイ用 Storage の Private Endpoint を作成し、Storage のパブリックアクセスを遮断。
+- **オンプレミス回線・DNS 統合**:
+  - ExpressRoute Private Peering または Site-to-Site VPN 経由でのオンプレミス端末からの接続。
+  - オンプレミス DNS サーバーから Azure Private DNS Resolver への条件付きフォワーダー構築。
 
-## 外部情報と検証の境界
+### 3.4 本番運用・非機能要件の整備
+- **データ保持期間（TTL）とクリーンアップ設計**:
+  - 重複リクエスト抑止用インデックスと大容量結果データのライフサイクル管理（Blob ライフサイクルルール、オーケストレーション履歴の自動パージ運用）。
+- **オンプレミス Web バックエンド連携仕様の確定**:
+  - オンプレミス C# Web バックエンドからのクライアント証明書 / ワークロード ID 連携による Entra トークン取得と、利用者コンテキスト（`X-Poc-Owner-Id`, `X-Poc-Org-Id`）の伝播規約の正式合意。
 
-Entraテナント・許可するバックエンド主体/App Role・利用者ID形式、C++のCLI/依存DLL/期待値、入出力サイズと保持期間、PoolのManaged Identity設定可否、オンプレDNS/回線が実機試験の前提です。未確定項目に依存しない実装は先行し、検証用C++スタブ成功と業務バイナリ成功を区別します。
+---
 
-各実装単位で関連単体試験と必要なPowerShell/Terraform試験を実施し、配置変更時は新しいplanを作成します。実機証跡はコミット・ソース/パッケージハッシュと紐づけ、Mock/Fake、Azure、オンプレ接続を分離記録します。V11の取消認可はV12実装後に追加確認します。
+## 4. 業務アプリ結合前に必要な確定情報
 
-## 公式根拠
+次期フェーズ着手にあたり、業務アプリチームおよびインフラ運用チームから受領が必要な項目です。
 
-- [App Serviceの認証済みユーザー情報](https://learn.microsoft.com/en-us/azure/app-service/configure-authentication-user-identities): プラットフォームの認証モジュールが注入するIDヘッダーの信頼境界。
-- [APIのscope/App Role検証](https://learn.microsoft.com/en-us/entra/identity-platform/scenario-protected-web-api-verification-scope-app-roles): サービス呼出元のroles検証。
-- [Durable外部イベント](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-external-events): 非同期配信と重複・不存在instanceの扱い。
-- [Durable instance management](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-instance-management): Terminateの非同期性と子/Activity非伝播。
-- [Batch Job Terminate](https://learn.microsoft.com/en-us/rest/api/batchservice/jobs/terminate-job?view=rest-batchservice-2025-06-01): Job停止と未開始Taskの状態。
-- [Batch OutputFiles](https://learn.microsoft.com/en-us/azure/batch/batch-task-output-files): 直接アップロードと転送失敗の確認。
-
-既存の設計・検証根拠: [全体計画](remaining-validation-and-implementation-plan.md)、[信頼性設計](workflow-reliability.md)、[検証結果](test-results.md)、[プロジェクトメモリ](project-memory.md)。
+1. **実 C++ バイナリ仕様**:
+   - 実行ファイル名、CLI 引数体系、必要なランタイム（VC++ Redistributable バージョン等）、依存 DLL 一覧。
+2. **入出力データ仕様**:
+   - シナリオデータ（入力）および計算結果（出力）の典型サイズ・最大サイズ、ファイルフォーマット。
+3. **オンプレミス接続環境**:
+   - 既存 ExpressRoute 回線または VPN の接続先 VNet、オンプレミス側の DNS フォワーダー構成。
+4. **本番 Azure サブスクリプション環境**:
+   - 本番用リソースグループ、Core クォータ（Spot / Dedicated）、マネージド ID 付与方針。

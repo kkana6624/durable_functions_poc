@@ -2,11 +2,20 @@
 
 更新日: 2026-10-19
 
-個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、15 Functions（`CancelWorkflow` 含む）の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオおよび利用者キャンセルを含む全 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`）の Pass（コミット `b7ad854` 基準）、B案 Entra ID サービス間認証・認可の Pass（コミット `9ad401c` 基準）、B案フェーズ2 Function 送信側 Regional VNet 統合および Batch Private Endpoints（`batchAccount` / `nodeManagement`）の Pass（コミット `119a088` 基準）、ならびに **B案フェーズ3 Batch Pool の VNet サブネット統合（`NoPublicIPAddresses`）および Batch Account パブリックアクセス完全遮断（`public_network_access_enabled = false`）の Pass（実 Azure 実機検証）** は確認済みです。また、過去の配置環境において Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）、および 0 台オートスケール Pool 先行投入（`V09`）の Pass も実機確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function および Batch Account の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。Storage の全面閉域化（Blob/Queue/Table Private Endpoint）、実 C++ バイナリ連携（C案）、および VPN / ExpressRoute 接続は後続フェーズで実施します。
+本ドキュメントは、Azure Batch および Durable Functions を閉域ネットワーク環境で運用・検証するための接続構成と設計をまとめたものです。
+
+### 現在の到達点（実機検証済み）
+- **Function App 受信閉域化**: 受信用 Private Endpoint（`sites`）を構成し、パブリックネットワークアクセスを無効化（`Disabled`）。
+- **Function App 送信閉域化**: Regional VNet 統合（`functions-outbound` サブネット `10.80.3.0/24`、`vnet_route_all_enabled = true`）を導入。
+- **Batch 完全閉域化**:
+  - Batch Account の Private Endpoint（`batchAccount` `10.80.2.5`、`nodeManagement` `10.80.2.6`）を構成し、パブリックアクセスを完全遮断（`public_network_access_enabled = false`）。
+  - Batch Pool を `batch-nodes` サブネット（`10.80.4.0/24`）に統合し、ノードのパブリック IP を完全排除（`NoPublicIPAddresses`）。
+- **閉域検証 VM**: VNet 内部の RHEL 9 検証 VM（Public IP なし・SSH 受信拒否）から、Azure VM Run Command 経由でデプロイ、全 6 シナリオ回帰テスト、耐障害性試験（V05/V08/V09）、および Entra ID 認証認可テストを実機検証済み。
+- **後続フェーズ（次期開発）**: Storage Account の Private Endpoint 化、オンプレミス実回線（ExpressRoute / VPN）の接続。
 
 ## 1. 今回の構成
 
-Batch の Windows 計算ノードは PoC 設定で Spot 1台・専用0台を要求します。Run Command の実行元となる RHEL 検証 VM は通常 VM のままとし、Spot 回収による配置・検証操作の中断を避けます。Function の受信用 Private Endpoint・NAT・DNS に加え、B案フェーズ2 で送信用 Regional VNet 統合サブネット（`functions-outbound`）および Batch Private Endpoints（`batchAccount` / `nodeManagement`）を導入、さらに B案フェーズ3 で Batch Pool ノードを `batch-nodes` サブネット（`10.80.4.0/24`）へ `NoPublicIPAddresses` 構成で統合し、Batch Account のパブリックアクセスを完全遮断済みです。Spot の容量と結果回収の制限は [IaC 設計](one-command-deployment-inventory.md) を参照してください。
+Batch の Windows 計算ノードは PoC 設定で Spot 1 台・専用 0 台を要求します。Run Command の実行元となる RHEL 検証 VM は通常 VM のままとし、Spot 回収による配置・検証操作の中断を避けます。Function の受信用 Private Endpoint・NAT・DNS に加え、B案フェーズ2 で送信用 Regional VNet 統合サブネット（`functions-outbound`）および Batch Private Endpoints（`batchAccount` / `nodeManagement`）を導入、さらに B案フェーズ3 で Batch Pool ノードを `batch-nodes` サブネット（`10.80.4.0/24`）へ `NoPublicIPAddresses` 構成で統合し、Batch Account のパブリックアクセスを完全遮断済みです。Spot の容量と結果回収の制限は [IaC 設計](one-command-deployment-inventory.md) を参照してください。
 
 ```mermaid
 flowchart LR
@@ -55,10 +64,10 @@ VM の Public IP を省略しても外部サービスへの送信は必要です
 | 主体 | 必要な権限 |
 |---|---|
 | デプロイ実行者 | リソース作成、対象スコープの RBAC 割り当てとカスタムロール定義の作成、VM Run Command の操作権限、および転送専用 `poc-vm-control` コンテナの `Storage Blob Data Contributor`（`validation_operator_principal_id` を指定した場合のみその ID へ IaC で付与し、未指定時は事前に付与） |
-| VM Managed Identity | Function スコープのカスタムロール 6 操作（`sites/read`、`functions/read`、`functions/listkeys/action`、`host/listkeys/action`［再起動復旧検証時の状態照会用、実機ロールへ反映済み］、`config/list/action`、`publish/action`）、Batch Account スコープの `Azure Batch Account Reader`、Storage スコープの `Storage Blob Data Reader`、および `poc-vm-control` コンテナスコープの `Storage Blob Data Contributor` |
+| VM Managed Identity | Function スコープのカスタムロール 6 操作（`sites/read`、`functions/read`、`functions/listkeys/action`、`host/listkeys/action`［再起動復旧検証時の状態照会用、実機ロールへ反映済み］、`config/list/action`、`publish/action`）、Batch Account スコープの `Azure Batch Account Reader`（`batch_mode=new` では Pool 操作・0台オートスケール検証用に `Azure Batch Account Contributor` も付与、`batch_mode=existing` では Reader を維持）、Storage スコープの `Storage Blob Data Reader`、および `poc-vm-control` コンテナスコープの `Storage Blob Data Contributor` |
 | Function Managed Identity | 現行の host Storage / 結果 Blob / Batch 操作権限（DTS 選択時は対象 Task Hub の `Durable Task Data Contributor` を追加） |
 
-ローカル checkout から Git リビジョン・ソース fingerprint・package hash をバンドルに含めることで、`.git` ディレクトリを持たない検証 VM ゲスト内でも来歴情報を記録できるようにしています（これらは実行時に引き渡した来歴情報であり、ゲスト上でのソース再計算値や Azure ホスト上のロード済みバイナリの直接照合値とは区別します）。cloud-init の準備完了待機は最大 900 秒、以後のゲスト操作全体は最大 4200 秒（70 分）に制限し、Azure VM Run Command の 90 分上限内に収めます。検証ランナーの `TimeoutSeconds` はシナリオ内の待機上限（60〜3600 秒）であり、長時間を要する試験は `-Scenarios` を小分けにして実行します。Run Command は VM 上で任意のスクリプトを実行できる強い権限であるため、操作権限の付与先は管理者・検証担当者に限定してください。また、VM の Managed Identity によるログインだけで Function の HTTP トリガーが自動認証されるわけではなく、Function キーの取得権限と Private Endpoint へのネットワーク到達性が別途必要です。
+ローカル checkout から Git リビジョン・ソース fingerprint・package hash をバンドルに含めることで、`.git` ディレクトリを持たない検証 VM ゲスト内でも来歴情報を記録できるようにしています（これらは実行時に引き渡した来歴情報であり、ゲスト上でのソース再計算値や Azure ホスト上のロード済みバイナリの直接照合値とは区別します）。cloud-init の準備完了待機は最大 900 秒、以後のゲスト操作全体は操作ごとの予算（`TimeoutSeconds` に基づき `AutoscaleValidation` では +1200 秒）に 300 秒の安全マージンを加えた動的タイムアウト（最大 5,300 秒）を設定し、Azure VM Run Command の 90 分（5,400 秒）上限内に収めます。また、ゲスト開始時の絶対時刻から `POC_VM_DEADLINE_UTC` を共有し、Pool 復元用の時間（最低 600 秒）を確保します。検証ランナーの `TimeoutSeconds` はシナリオ内の待機上限（60〜3600 秒）であり、長時間を要する試験は `-Scenarios` を小分けにして実行します。Run Command は VM 上で任意のスクリプトを実行できる強い権限であるため、操作権限の付与先は管理者・検証担当者に限定してください。また、VM の Managed Identity によるログインだけで Function の HTTP トリガーが自動認証されるわけではなく、Function キーの取得権限と Private Endpoint へのネットワーク到達性が別途必要です。
 
 環境設定ファイルへの追加入力項目は `validation_vm_ssh_public_key`、`validation_vm_admin_username`、`validation_vm_size`、および任意の `validation_operator_principal_id`（nullable GUID）です。SSH ポート自体は NSG で遮断しますが、Azure Linux VM のプロビジョニング要件として有効な SSH 公開鍵の指定が必須であるため、サンプル値は必ず実際の公開鍵へ置換してください（秘密鍵は設定ファイルや state に保存しません）。VM SKU・リージョン容量・クォータ・実行者権限・組織ポリシーは実環境への適用前に確認します。
 
