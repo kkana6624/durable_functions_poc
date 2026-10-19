@@ -179,9 +179,12 @@ exit $LASTEXITCODE
         $result.summary_available=(Test-Path -LiteralPath (Join-Path $evidence 'summary.json')) -and (Test-Path -LiteralPath (Join-Path $evidence 'summary.txt'))
         if (-not $result.summary_available) { $result.exit_code=1; throw 'Missing sanitized validation summary.' }
         $stage='summary_upload'
+        $uploaded=@()
         foreach ($file in @('summary.json','summary.txt')) {
             $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',(Join-Path $evidence $file),'--auth-mode','login','--overwrite','false','--no-progress')
+            $uploaded += $file
         }
+        $result.summary_artifacts=$uploaded
     } elseif ($request.operation -in @('RecoveryStart','RecoveryComplete')) {
         $stage='validation_runner'
         . (Join-Path $PSScriptRoot 'Invoke-PocRecoveryValidation.ps1')
@@ -194,9 +197,12 @@ exit $LASTEXITCODE
         $result.summary_available=(Test-Path -LiteralPath (Join-Path $evidence 'summary.json')) -and (Test-Path -LiteralPath (Join-Path $evidence 'summary.txt'))
         if (-not $result.summary_available) { throw 'Missing sanitized recovery summary.' }
         $stage='summary_upload'
+        $uploaded=@()
         foreach ($file in @('summary.json','summary.txt')) {
             $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',(Join-Path $evidence $file),'--auth-mode','login','--overwrite','false','--no-progress')
+            $uploaded += $file
         }
+        $result.summary_artifacts=$uploaded
     } elseif ($request.operation -eq 'WorkflowAuth') {
         $watch=[Diagnostics.Stopwatch]::StartNew()
         $remaining=[Math]::Max(1,[Math]::Floor([int]$request.timeout_seconds-$watch.Elapsed.TotalSeconds))
@@ -239,6 +245,7 @@ exit $LASTEXITCODE
         if (-not $result.summary_available) { throw 'Missing sanitized workflow auth summary.' }
         $stage='summary_upload'
         $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/summary.json",'--file',(Join-Path $evidence 'summary.json'),'--auth-mode','login','--overwrite','false','--no-progress')
+        $result.summary_artifacts=@('summary.json')
     } elseif ($request.operation -eq 'AutoscaleValidation') {
         $stage='autoscale_validation'
         Assert-PrivateBatchDns $outputs
@@ -270,12 +277,15 @@ exit $LASTEXITCODE
         $result.summary_available=(Test-Path -LiteralPath (Join-Path $evidence 'autoscale-result.json')) -or (Test-Path -LiteralPath (Join-Path $evidence 'summary.json'))
         if (-not $result.summary_available) { throw 'Missing sanitized autoscale summary.' }
         $stage='summary_upload'
+        $uploaded=@()
         foreach ($file in @('autoscale-result.json','summary.json','summary.txt')) {
             $sourceFile=Join-Path $evidence $file
             if (Test-Path -LiteralPath $sourceFile) {
                 $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',$sourceFile,'--auth-mode','login','--overwrite','false','--no-progress')
+                $uploaded += $file
             }
         }
+        $result.summary_artifacts=$uploaded
     } else { $stage='operation'; throw 'Unknown private VM operation.' }
     $result.error_code=$(if ($result.exit_code -eq 1) { 'ValidationFailed' } else { $null })
 } catch {

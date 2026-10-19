@@ -370,8 +370,8 @@ run "private_function_and_validation_vm" {
     error_message = "VM inbound must be denied and explicit NAT egress must be configured."
   }
   assert {
-    condition     = azurerm_role_assignment.validation_function.scope == azurerm_linux_function_app.poc.id && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/write") && contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/publish/action") && azurerm_role_assignment.validation_batch.role_definition_name == "Azure Batch Account Contributor" && azurerm_role_assignment.validation_batch.scope == var.batch_account_id && azurerm_role_assignment.validation_blob.role_definition_name == "Storage Blob Data Reader" && endswith(azurerm_role_assignment.validation_control.scope, "/containers/poc-vm-control") && azurerm_role_assignment.validation_control.role_definition_name == "Storage Blob Data Contributor"
-    error_message = "VM identity must have scoped publishing/read rights and write only to the private control container."
+    condition     = azurerm_role_assignment.validation_function.scope == azurerm_linux_function_app.poc.id && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/write") && contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/publish/action") && azurerm_role_assignment.validation_batch.role_definition_name == "Azure Batch Account Reader" && azurerm_role_assignment.validation_batch.scope == var.batch_account_id && length(azurerm_role_assignment.validation_batch_contributor) == 0 && azurerm_role_assignment.validation_blob.role_definition_name == "Storage Blob Data Reader" && endswith(azurerm_role_assignment.validation_control.scope, "/containers/poc-vm-control") && azurerm_role_assignment.validation_control.role_definition_name == "Storage Blob Data Contributor"
+    error_message = "VM identity must have scoped publishing/read rights, Reader-only Batch access in existing mode, and write only to the private control container."
   }
   assert {
     condition     = contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/host/listkeys/action") && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/restart/action") && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "Microsoft.Web/sites/start/action") && !contains(azurerm_role_definition.validation_function.permissions[0].actions, "*")
@@ -489,6 +489,10 @@ run "new_marketplace_creates_dedicated_resources" {
   assert {
     condition     = length(azurerm_private_dns_zone.batch) == 1 && azurerm_private_dns_zone.batch[0].name == "privatelink.batch.azure.com" && length(azurerm_private_endpoint.batch_account) == 1 && length(azurerm_private_endpoint.batch_node_management) == 1 && contains(azurerm_private_endpoint.batch_account[0].private_service_connection[0].subresource_names, "batchAccount") && contains(azurerm_private_endpoint.batch_node_management[0].private_service_connection[0].subresource_names, "nodeManagement")
     error_message = "New mode must provision Batch private DNS and private endpoints for batchAccount and nodeManagement."
+  }
+  assert {
+    condition     = azurerm_role_assignment.validation_batch.role_definition_name == "Azure Batch Account Reader" && length(azurerm_role_assignment.validation_batch_contributor) == 1 && azurerm_role_assignment.validation_batch_contributor[0].role_definition_name == "Azure Batch Account Contributor"
+    error_message = "New mode must grant VM identity both Reader and Contributor on the dedicated Batch account for autoscale operations."
   }
 }
 

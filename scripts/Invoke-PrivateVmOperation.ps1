@@ -23,7 +23,7 @@ function Invoke-PrivateVmOperation {
         [Parameter(Mandatory)][string]$EvidenceDirectory,
         [string]$PackagePath,
         [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$PackageSha256='',
-        [ValidateRange(60,3600)][int]$TimeoutSeconds=900,
+        [ValidateRange(60,5400)][int]$TimeoutSeconds=900,
         [ValidateSet('single','three','classification','failure','admission20','conflict','timeout','cancellation')][string[]]$Scenarios=@('single','three','classification','failure','admission20','conflict'),
         [switch]$Smoke,
         [switch]$DedicatedEnvironment,
@@ -115,6 +115,7 @@ function Invoke-PrivateVmOperation {
         # Only non-secret names and a hash enter Run Command (which is a privileged management operation).
         $transport=@{ subscription=$Outputs.subscription_id; account=$Outputs.storage_account_name; container=$Outputs.vm_control_container_name; blob=$blob; sha256=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash; operation_id=$id }
         $encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($transport | ConvertTo-Json -Compress)))
+        $guestTimeoutSec = if ($Operation -eq 'AutoscaleValidation') { [Math]::Min(5300, $TimeoutSeconds + 1320) } else { [Math]::Max(900, [Math]::Min(5300, $TimeoutSeconds + 600)) }
         $shell=@'
 #!/bin/sh
 set -eu
@@ -127,7 +128,7 @@ work=$(mktemp -d /var/tmp/poc-vm-XXXXXXXX)
 export AZURE_CONFIG_DIR="$work/azure"
 export POC_VM_TRANSPORT='__TRANSPORT__'
 # Worker output is deliberately suppressed; only allowlisted JSON artifacts are returned via Blob.
-if ! timeout 4200 pwsh -NoLogo -NoProfile -NonInteractive -Command '
+if ! timeout __GUEST_TIMEOUT__ pwsh -NoLogo -NoProfile -NonInteractive -Command '
   $ErrorActionPreference="Stop"
   try {
     $t=$env:POC_VM_TRANSPORT | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) } | ConvertFrom-Json
@@ -154,7 +155,7 @@ fi
 echo 'Private VM operation completed; sanitized results are in the control container.'
 '@
         # Execute from the operation directory so concurrent runs do not share files.
-        $shell=$shell.Replace('export AZURE_CONFIG_DIR=', 'cd "$work"' + "`n" + 'export AZURE_CONFIG_DIR=').Replace('__TRANSPORT__',$encoded)
+        $shell=$shell.Replace('export AZURE_CONFIG_DIR=', 'cd "$work"' + "`n" + 'export AZURE_CONFIG_DIR=').Replace('__TRANSPORT__',$encoded).Replace('__GUEST_TIMEOUT__',[string]$guestTimeoutSec)
         $shellPath=Join-Path $work 'run.sh'
         [IO.File]::WriteAllText($shellPath,$shell.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
         $commandFailed=$false
@@ -179,11 +180,25 @@ echo 'Private VM operation completed; sanitized results are in the control conta
             $failureStage=[string]$result.failure_stage
         }
         if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','AutoscaleValidation') -and $result.summary_available) {
-            $summaryNames = if ($Operation -eq 'WorkflowAuth') { @('summary.json') } elseif ($Operation -eq 'AutoscaleValidation') { @('autoscale-result.json','summary.json','summary.txt') } else { @('summary.json','summary.txt') }
+            $summaryNames = if ($result.PSObject.Properties['summary_artifacts'] -and $result.summary_artifacts.Count -gt 0) {
+                @($result.summary_artifacts)
+            } elseif ($Operation -eq 'WorkflowAuth') {
+                @('summary.json')
+            } elseif ($Operation -eq 'AutoscaleValidation') {
+                @('autoscale-result.json','summary.json','summary.txt')
+            } else {
+                @('summary.json','summary.txt')
+            }
+            $retrievalErrors = @()
             foreach ($name in $summaryNames) {
                 try {
                     $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',(Join-Path $EvidenceDirectory $name),'--overwrite','true','--auth-mode','login','--no-progress')
-                } catch { }
+                } catch {
+                    $retrievalErrors += $name
+                }
+            }
+            if ($retrievalErrors.Count -gt 0) {
+                throw "Private VM operation $id completed (exit_code=$($result.exit_code)), but failed to retrieve evidence summary file(s) ($($retrievalErrors -join ', ')) from the control container."
             }
         }
         if ($commandFailed -or ($Operation -in @('Deploy','FunctionValidation','PoolValidation','AutoscaleValidation') -and [int]$result.exit_code -ne 0)) { throw "Private VM operation $id failed ($($result.error_code)); stage=$failureStage; raw output suppressed." }

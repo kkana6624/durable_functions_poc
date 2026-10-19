@@ -176,13 +176,19 @@ function Invoke-PocAutoscaleValidation {
         restoredPoolReadyVerified=$false
         completedUtc=$null
     }
+    $overallWatch = [Diagnostics.Stopwatch]::StartNew()
+    $restorationReserveSeconds = 600
+    # Overall deadline budget includes the verification wait ($TimeoutSeconds), preparation budget, and restoration reserve.
+    $overallBudgetSeconds = $TimeoutSeconds + 600 + $restorationReserveSeconds
     try {
         $poolMutated=$true
         $summary.stage='PrepareZeroNodes'
         if ($initialPool.enableAutoScale) {
             $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/disableautoscale?api-version=2025-06-01"
         }
-        $steadyInitial=Wait-PocPoolSteady -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds 300
+        $prepRemaining = $overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds
+        if ($prepRemaining -lt 60) { throw 'Insufficient time remaining before pool preparation while reserving restoration time.' }
+        $steadyInitial=Wait-PocPoolSteady -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds ([Math]::Min(300, [int]$prepRemaining))
         if ([int]$steadyInitial.targetDedicatedNodes -ne 0 -or [int]$steadyInitial.targetLowPriorityNodes -ne 0 -or [int]$steadyInitial.currentDedicatedNodes -ne 0 -or [int]$steadyInitial.currentLowPriorityNodes -ne 0) {
             $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/resize?api-version=2025-06-01" -Body @{
                 targetDedicatedNodes=0
@@ -191,7 +197,9 @@ function Invoke-PocAutoscaleValidation {
                 nodeDeallocationOption='taskcompletion'
             }
         }
-        $null=Wait-PocPoolZeroNodes -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds ([Math]::Min(600,$TimeoutSeconds))
+        $zeroRemaining = $overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds
+        if ($zeroRemaining -lt 60) { throw 'Insufficient time remaining for zero node wait while reserving restoration time.' }
+        $null=Wait-PocPoolZeroNodes -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds ([Math]::Min(600, [int]$zeroRemaining))
         $summary.zeroNodeSteadyObservedUtc=[DateTime]::UtcNow.ToString('o')
         $summary.stage='EnablePendingTasksAutoscale'
         $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/enableautoscale?api-version=2025-06-01" -Body @{
@@ -200,18 +208,25 @@ function Invoke-PocAutoscaleValidation {
         }
         $zeroAutoscalePool=Wait-PocPoolZeroNodes -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds 180
         $summary.stage='EvaluatePendingTasksAutoscale'
-        $null=Wait-PocAutoscaleIdleEvaluation -Endpoint $endpoint -PoolId $poolId -Formula $formula -TimeoutSeconds 300
+        $evalRemaining = $overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds
+        if ($evalRemaining -lt 60) { throw 'Insufficient time remaining for autoscale idle evaluation while reserving restoration time.' }
+        $null=Wait-PocAutoscaleIdleEvaluation -Endpoint $endpoint -PoolId $poolId -Formula $formula -TimeoutSeconds ([Math]::Min(300, [int]$evalRemaining))
         if (-not $zeroAutoscalePool.enableAutoScale -or [int]$zeroAutoscalePool.targetDedicatedNodes -ne 0 -or [int]$zeroAutoscalePool.targetLowPriorityNodes -ne 0) {
             throw 'Pool did not remain at 0 target nodes after enabling autoscale.'
         }
         $summary.autoscaleEnabledObservedUtc=[DateTime]::UtcNow.ToString('o')
         $summary.zeroNodesVerifiedBeforeSubmission=$true
         $summary.stage='SubmitSingleWorkflowOnZeroNodePool'
+        $remainingForWorkflow = [int]($overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds)
+        if ($remainingForWorkflow -lt 60) {
+            throw "Insufficient time remaining ($remainingForWorkflow s) for workflow validation while reserving $restorationReserveSeconds s for pool restoration."
+        }
+        $workflowTimeout = [Math]::Min($TimeoutSeconds, $remainingForWorkflow)
         if ($AsGuest) {
             $workflowArgs=@{
                 DeploymentResultPath = $DeploymentResultPath
                 EvidenceDirectory = (Join-Path $EvidenceDirectory 'workflow')
-                TimeoutSeconds = $TimeoutSeconds
+                TimeoutSeconds = $workflowTimeout
                 Scenarios = @('single')
                 DedicatedEnvironment = [bool]$DedicatedEnvironment
             }
@@ -219,14 +234,14 @@ function Invoke-PocAutoscaleValidation {
                 $validationSummary=Invoke-PocValidation @workflowArgs
                 $summary.workflowExitCode=[int]$validationSummary.ExitCode
             } else {
-                $runnerCmd=@((Join-Path $PSScriptRoot 'Invoke-PocValidation.ps1'),'-DeploymentResultPath',$DeploymentResultPath,'-EvidenceDirectory',(Join-Path $EvidenceDirectory 'workflow'),'-TimeoutSeconds',$TimeoutSeconds,'-Scenarios','single')
+                $runnerCmd=@((Join-Path $PSScriptRoot 'Invoke-PocValidation.ps1'),'-DeploymentResultPath',$DeploymentResultPath,'-EvidenceDirectory',(Join-Path $EvidenceDirectory 'workflow'),'-TimeoutSeconds',$workflowTimeout,'-Scenarios','single')
                 if ($DedicatedEnvironment) { $runnerCmd += '-DedicatedEnvironment' }
                 & @runnerCmd
                 $summary.workflowExitCode=[int]$LASTEXITCODE
             }
             if ($summary.workflowExitCode -ne 0) { throw 'Single workflow validation on 0-node autoscale pool did not pass.' }
         } else {
-            $vmResult=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('single') -EvidenceDirectory (Join-Path $EvidenceDirectory 'workflow') -TimeoutSeconds $TimeoutSeconds
+            $vmResult=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('single') -EvidenceDirectory (Join-Path $EvidenceDirectory 'workflow') -TimeoutSeconds $workflowTimeout
             $summary.workflowExitCode=[int]$vmResult.exit_code
             if ($vmResult.exit_code -ne 0) { throw 'Single workflow validation on 0-node autoscale pool did not pass.' }
         }
@@ -248,11 +263,13 @@ function Invoke-PocAutoscaleValidation {
     } finally {
         try {
             if ($poolMutated) {
+                $restoreRemaining = [Math]::Max(60, [int]($overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds))
+                $steadyTimeout = [Math]::Min(600, [Math]::Max(30, [int]($restoreRemaining / 2)))
                 $currentPool=Invoke-PocBatchPoolRest -Method get -Uri "$endpoint/pools/$poolId`?api-version=2025-06-01"
                 if ($currentPool.enableAutoScale) {
                     $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/disableautoscale?api-version=2025-06-01"
                 }
-                $afterDisable=Wait-PocPoolSteady -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds 600
+                $afterDisable=Wait-PocPoolSteady -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds $steadyTimeout
                 if ([int]$afterDisable.targetDedicatedNodes -ne $restoreDedicated -or [int]$afterDisable.targetLowPriorityNodes -ne $restoreLowPriority -or [int]$afterDisable.currentDedicatedNodes -ne $restoreDedicated -or [int]$afterDisable.currentLowPriorityNodes -ne $restoreLowPriority) {
                     $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/resize?api-version=2025-06-01" -Body @{
                         targetDedicatedNodes=$restoreDedicated
@@ -262,7 +279,9 @@ function Invoke-PocAutoscaleValidation {
                     }
                 }
                 $summary.restoredFixedScaleSucceeded=$true
-                $readiness=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds 600 -PollSeconds 10
+                $readinessRemaining = [Math]::Max(60, [int]($overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds))
+                $readinessTimeout = [Math]::Min(600, $readinessRemaining)
+                $readiness=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $readinessTimeout -PollSeconds 10
                 $summary.restoredPoolReadyVerified=[bool]$readiness.Ready
                 if (-not $summary.restoredPoolReadyVerified) {
                     throw 'Restored Batch pool failed readiness verification.'

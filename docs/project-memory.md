@@ -1,8 +1,23 @@
 # プロジェクトメモリ
 
-## 2026-10-19 レビュー指摘4件（P2閉域オートスケールVM委譲・P2パイプラインpipefail・P3 README到達点整合・P3指紋誤記訂正）の改修完了
+## 2026-10-19 レビュー指摘4件（P2配置ガード置換回避・P2既存Batch権限絞り込み・P2オートスケール復元時間確保・P3証跡回収失敗通知）の改修完了
 
-全体レビューで指摘された 4 件の課題（[P2] Batch 閉域化後のオートスケール検証 V09 の閉域委譲、[P2] `branch-protection-guard.yml` の pipefail 欠落によるレビュー取得失敗時の承認漏れ防止、[P3] `README.md` の到達点記述と最新 IaC / 検証実績の整合、[P3] `project-memory.md` のフェーズ3稼働パッケージ指紋誤記訂正）を改修し、オフライン全テストおよび IaC 検証の合格を確認しました。
+全体レビューで指摘された 4 件の課題（[P2] `validation_batch` の Reader → Contributor 変更による既存環境デプロイ停止の回避、[P2] `batch_mode=existing` 共有 Batch に対する Reader 維持と過剰権限防止、[P2] オートスケールゲスト検証における全体期限共有と Pool 復元時間の確保、[P3] `Invoke-PrivateVmOperation` での証跡サマリ回収失敗の明示的通知）を改修し、IaC およびオフライン全テストの合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P2] 既存環境更新での配置ガード停止回避（既存割り当て維持＋新設割り当て）**:
+     - `infra/validation-vm.tf`: `azurerm_role_assignment.validation_batch` のロール定義を `Azure Batch Account Reader` に戻し、既存環境でリソース置換（ForceNew / `delete`）が発生しないよう保持。
+     - 専用 Batch アカウント環境（`var.batch_mode == "new"`）向けに、追加のリソース `azurerm_role_assignment.validation_batch_contributor` を `count = var.batch_mode == "new" ? 1 : 0` で定義。これにより既存環境への適用時も `create`（追加付与）となり、`Deployment.Common.ps1` の配置ガード（`Assert-DeploymentPlan`）を正常に通過。
+  2. **[P2] 共有 Batch（`batch_mode=existing`）の最小権限（Reader）維持**:
+     - `validation_batch_contributor` の条件判定により、共有 Batch 環境では Contributor の `count = 0` となり、共有 Batch に対する管理・削除権限を付与せず `Azure Batch Account Reader` のみを厳格に維持。
+     - `infra/tests/modes.tftest.hcl`: `existing` モードでは `validation_batch_contributor` が 0 件・Reader のみであること、`new` モードでは Reader と Contributor（1 件）の双方が付与されることのアサーションを追加（Terraform Test 37/37 全件 Pass）。
+  3. **[P2] ゲスト検証の全体期限共有と Pool 復元時間の確保**:
+     - `scripts/Invoke-PrivateVmOperation.ps1`: ゲストシェルスクリプトの `timeout 4200` を動的化。`AutoscaleValidation` では `$TimeoutSeconds + 1320`（最大 5,300 秒、Action Run Command 上限 5,400 秒 / 90 分以内）を割り当て、検証遅延時でも外側のプロセス強制終了を防止。
+     - `scripts/Invoke-PocAutoscaleValidation.ps1`: 全体期限バジェット（`$overallBudgetSeconds = $TimeoutSeconds + 600 + $restorationReserveSeconds`）と復元確保時間（`$restorationReserveSeconds = 600`）を新設。準備段階およびワークフロー実行段階で復元時間をあらかじめ差し引いた制限時間（`$workflowTimeout`）を割り当て、万一の遅延発生時も `finally` 内のプール復元（オートスケール無効化、固定スケールリサイズ待機、レディネス検証）に必要な時間を確実に担保。
+  4. **[P3] 証跡サマリ回収失敗の明示的通知**:
+     - `scripts/Invoke-PrivateVmOperation.ps1`: `storage blob download` による証跡サマリ回収処理において、例外を空握りつぶし（`catch { }`）していた箇所を改修。回収失敗したファイル名を追跡し、取得漏れが発生した場合は VM 側の成功とは区別して `"Private VM operation $id completed (exit_code=...), but failed to retrieve evidence summary file(s) (...) from the control container."` を明示的にスロー。
+     - `scripts/PrivateVm.Worker.ps1`: 実際にアップロードされたサマリファイル一覧を `$result.summary_artifacts` に記録し、ホスト側がアップロード済みの全証跡成果物を確実に検証・回収するフローを確立。
+     - `scripts/tests/PrivateVm.Tests.ps1`: サマリダウンロード失敗時に例外が発生すること、および動的タイムアウトが正しくシェルスクリプトに反映されることのテストケースを追加。
 
 - **対応内容詳細**:
   1. **[P2] 閉域化後のオートスケール検証（V09）の閉域委譲と RBAC 拡充**:

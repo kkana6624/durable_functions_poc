@@ -222,9 +222,18 @@ resource "azurerm_role_assignment" "validation_blob" {
   principal_id         = azurerm_linux_virtual_machine.validation.identity[0].principal_id
 }
 
-# Includes Batch data-plane operations (pool management, autoscale, tasks); generic Reader is insufficient.
-# https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/compute#azure-batch-account-contributor
 resource "azurerm_role_assignment" "validation_batch" {
+  scope                = local.batch_account_id
+  role_definition_name = "Azure Batch Account Reader"
+  principal_id         = azurerm_linux_virtual_machine.validation.identity[0].principal_id
+}
+
+# Batch Account Contributor enables autoscale and pool management on dedicated (new) Batch accounts.
+# Shared/existing Batch accounts intentionally retain Reader-only to prevent unauthorized modifications.
+# Keeping validation_batch as Reader prevents resource replacement in existing deployments.
+# https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/compute#azure-batch-account-contributor
+resource "azurerm_role_assignment" "validation_batch_contributor" {
+  count                = var.batch_mode == "new" ? 1 : 0
   scope                = local.batch_account_id
   role_definition_name = "Azure Batch Account Contributor"
   principal_id         = azurerm_linux_virtual_machine.validation.identity[0].principal_id
