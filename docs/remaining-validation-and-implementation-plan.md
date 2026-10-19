@@ -3,7 +3,7 @@
 更新日: 2026-10-19。
 - **実機検証済みの最新デプロイ実績**:
   - **最新 15関数デプロイおよび全6シナリオ実機回帰（合格）**: 実 Azure 環境（`poc` 環境・Azure Storage バックエンド、コミット `839932b`）への最新 15 関数パッケージのデプロイ（`.deploy/poc/20261019-080215-5263`、15 関数全件インデックス登録確認、3 Tasks スモークテスト合格: `deploy-13795081be9948a1b20a2114e447363b`、パッケージ SHA-256: `06bf36f4...`）、および閉域検証 VM 経由での全 6 シナリオ回帰検証（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）を**全件 Pass** で完了。取消確定と成果物公開の排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を含む最新版コードの実機成立を実証済み。
-  - **B案フェーズ1 Entra ID サービス間認証・認可および稼働パッケージ同定（完全合格）**: EasyAuth v2 を有効化した実機環境（`.deploy/poc/20261019-092244-0886`）において、閉域検証 VM からの完全認証検証（`artifacts/private-auth-validation/20261019-004913-5659/summary.json`、終了コード 0、Pass）を実施し、未認証・不正Audienceの 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合の 403 遮断、正当マネージドIDによる完走（202/200）、および `X-Poc-Package-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）の完全合格を確認。
+  - **B案フェーズ1 Entra ID サービス間認証・認可および稼働パッケージ同定（完全合格・レビュー修正反映）**: EasyAuth v2 を有効化した実機環境（`.deploy/poc/20261019-102131-6222`）において、レビュー指摘3件（P2 後続不一致での同定無効化、P3 パッケージ全体コンテンツ指紋測定 `package_content_sha256`、P3 App Role 不足拒否前提確認 `unauthorizedClientConfirmedInAllowedList`）を反映した閉域検証 VM からの完全認証検証（`artifacts/private-auth-validation/20261019-013214-2425/summary.json`、終了コード 0、Pass）を実施し、未認証・不正Audienceの 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合の 403 遮断、正当マネージドIDによる完走（202/200）、および `X-Poc-Package-Sha256` / `X-Poc-Assembly-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）の完全合格を確認。
 - **最新コードとテスト通過状況**:
   - Release 単体テスト全 294 件（`Poc.Tests` 292 件、`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が合格し、実 Azure 環境への再デプロイおよび全 6 シナリオ実機回帰も合格を確認済み。
 - **実機検証に伴う不具合修正と堅牢化**:
@@ -18,7 +18,7 @@
   - `V03`（非ゼロ終了42・Failed確定・成果物マニフェスト非公開Pass）
   - `V04`（別入力409 Conflictおよび同一入力同一所有者の冪等受付・再送Pass）
   - `V12`（利用者キャンセル: 202受理、cancel.json先行永続化、排他調停 resolution.json、Batch completed有界停止、manifest非公開、冪等200応答の実機完全実証Pass）
-  - `V11`（Entra ID サービス間認証・認可 & 稼働パッケージ同定Pass: EasyAuth v2 401プローブ遮断、不正Audience 401遮断、App Role不足マネージドID 403遮断、認可済みトークン下での所有者/組織不整合403遮断、正当なVM Managed Identityトークンによる202/200完走確認、`livePackageVerified: true`確認、デプロイ成果 `.deploy/poc/20261019-092244-0886`、証跡 `artifacts/private-auth-validation/20261019-004913-5659/summary.json`）
+  - `V11`（Entra ID サービス間認証・認可 & 稼働パッケージ同定Pass: EasyAuth v2 401プローブ遮断、不正Audience 401遮断、App Role不足マネージドID 403遮断、認可済みトークン下での所有者/組織不整合403遮断、正当なVM Managed Identityトークンによる202/200完走確認、`livePackageVerified: true`確認、デプロイ成果 `.deploy/poc/20261019-102131-6222`、証跡 `artifacts/private-auth-validation/20261019-013214-2425/summary.json`）
   - カテゴリ A（追加の耐障害性・運用系検証: `V05` Function App 再起動復旧、`V07` タイムアウト監視停止、`V08` ホスト停止中 Batch MaxWallClockTime 安全網、`V09` 0台オートスケール先行投入）についても過去に実機Pass済み。
 - **残る未完了項目（カテゴリ B・C）**:
   - **Batch 閉域化（B案フェーズ2・3）**: Azure Batch Account の Private Endpoint（`batchAccount` サブリソース）化とパブリックアクセス遮断、および Batch Pool の VNet サブネット統合／パブリック IP なし（`NoPublicIPAddresses`）構成。

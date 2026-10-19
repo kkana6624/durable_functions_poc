@@ -33,7 +33,8 @@ function Invoke-PrivateVmOperation {
         [string]$AuthOrgId='',
         [string]$AuthUnauthorizedClientId='',
         [string]$AuthManagedIdentityClientId='',
-        [string]$AssemblySha256=''
+        [string]$AssemblySha256='',
+        [string]$PackageContentSha256=''
     )
     foreach ($key in @('subscription_id','resource_group_name','validation_vm_name','vm_control_container_name','storage_account_name','function_app_name','function_app_url','function_private_ip')) {
         if (-not $Outputs.ContainsKey($key) -or [string]::IsNullOrWhiteSpace([string]$Outputs[$key])) { throw "Private VM output '$key' is required; apply the private network infrastructure first." }
@@ -67,7 +68,7 @@ function Invoke-PrivateVmOperation {
         if ($Operation -eq 'WorkflowAuth') {
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-WorkflowAuthValidation.ps1') -Destination $bundle
         }
-        $request=@{ operation=$Operation; outputs=$Outputs; timeout_seconds=$TimeoutSeconds; scenarios=@($Scenarios); smoke=[bool]$Smoke; dedicated_environment=[bool]$DedicatedEnvironment; operation_id=$id; package_sha256=$PackageSha256; assembly_sha256=$AssemblySha256 }
+        $request=@{ operation=$Operation; outputs=$Outputs; timeout_seconds=$TimeoutSeconds; scenarios=@($Scenarios); smoke=[bool]$Smoke; dedicated_environment=[bool]$DedicatedEnvironment; operation_id=$id; package_sha256=$PackageSha256; assembly_sha256=$AssemblySha256; package_content_sha256=$PackageContentSha256 }
         if ($Operation -in @('RecoveryStart','RecoveryComplete')) { $request.recovery_context=$RecoveryContext }
         if ($Operation -eq 'WorkflowAuth') {
             $request.auth_resource=$AuthResource

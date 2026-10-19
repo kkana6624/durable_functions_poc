@@ -94,9 +94,21 @@ try {
     $null = Invoke-Tool $dotnet @('publish', 'src/Poc.Functions/Poc.Functions.csproj', '-c', 'Release', '--no-restore', '-o', $publish) -LogPath (Join-Path $run 'publish.log')
     $assemblyDll = Join-Path $publish 'Poc.Functions.dll'
     $assemblySha = (Get-FileHash -LiteralPath $assemblyDll -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText((Join-Path $publish 'package-sha256.txt'), $assemblySha, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $publish 'assembly-sha256.txt'), $assemblySha, [Text.UTF8Encoding]::new($false))
+    $publishFiles = @(Get-ChildItem -LiteralPath $publish -File -Recurse | Where-Object { $_.Name -notin @('package-sha256.txt','assembly-sha256.txt','package-manifest.txt') } | Sort-Object FullName)
+    $manifestLines = @($publishFiles | ForEach-Object {
+        $rel = $_.FullName.Substring($publish.Length).TrimStart('\','/').Replace('\','/')
+        $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $rel + ':' + $hash
+    })
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $packageContentSha = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($manifestLines -join [char]10)))).Replace('-','').ToLowerInvariant()
+    } finally { $sha.Dispose() }
+    [IO.File]::WriteAllText((Join-Path $publish 'package-sha256.txt'), $packageContentSha, [Text.UTF8Encoding]::new($false))
     $zip = Join-Path $run 'functions.zip'
     New-FunctionZip $publish $zip
+    $packageSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 
     if ($backend.ContainsKey('Create') -and $backend.Create) {
         $bootstrapWork = Join-Path $work 'bootstrap'
@@ -168,10 +180,11 @@ try {
     $null = Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $timeout
 
     Write-Host 'Deploying and checking the private Function from the validation VM...'
-    $privateResult = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -EvidenceDirectory (Join-Path $run 'private-vm') -TimeoutSeconds $timeout -Smoke:$Smoke
+    $privateResult = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -PackageSha256 $packageSha -AssemblySha256 $assemblySha -PackageContentSha256 $packageContentSha -EvidenceDirectory (Join-Path $run 'private-vm') -TimeoutSeconds $timeout -Smoke:$Smoke
     $validation = $privateResult.validation
-    $packageSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-    $summary = @{ environment = $Environment; completed_utc = [DateTime]::UtcNow.ToString('o'); package_sha256 = $packageSha; assembly_sha256 = $assemblySha; outputs = $outputs; validation = $validation; smoke_requested = [bool]$Smoke }
+    Write-Host "Restarting Function App to ensure newly published assembly is loaded..."
+    $null = Invoke-AzJson @('functionapp', 'restart', '--name', $outputs.function_app_name, '--resource-group', $outputs.resource_group_name)
+    $summary = @{ environment = $Environment; completed_utc = [DateTime]::UtcNow.ToString('o'); package_sha256 = $packageSha; assembly_sha256 = $assemblySha; package_content_sha256 = $packageContentSha; outputs = $outputs; validation = $validation; smoke_requested = [bool]$Smoke }
     Write-DeploymentJson (Join-Path $run 'deployment-result.json') $summary
     Write-Host "Deployment completed: $($outputs.function_app_name). Logs: $run"
 }

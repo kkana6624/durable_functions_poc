@@ -23,14 +23,16 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     private const string ResultUnavailableMessage = "Workflow result could not be verified. Retry later.";
 
     public const string PackageSha256Header = "X-Poc-Package-Sha256";
+    public const string AssemblySha256Header = "X-Poc-Assembly-Sha256";
     private static readonly string PackageSha256 = ComputePackageSha256();
+    private static readonly string AssemblySha256 = ComputeAssemblySha256();
 
-    private static string ComputePackageSha256()
+    private static string ComputeAssemblySha256()
     {
         try
         {
             var basePath = AppContext.BaseDirectory;
-            var path = Path.Combine(basePath, "package-sha256.txt");
+            var path = Path.Combine(basePath, "assembly-sha256.txt");
             if (File.Exists(path))
             {
                 var content = File.ReadAllText(path).Trim();
@@ -48,10 +50,28 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         return "unknown";
     }
 
+    private static string ComputePackageSha256()
+    {
+        try
+        {
+            var basePath = AppContext.BaseDirectory;
+            var path = Path.Combine(basePath, "package-sha256.txt");
+            if (File.Exists(path))
+            {
+                var content = File.ReadAllText(path).Trim();
+                if (content.Length == 64) return content.ToLowerInvariant();
+            }
+            return ComputeAssemblySha256();
+        }
+        catch { }
+        return "unknown";
+    }
+
     private static HttpResponseData CreateWorkflowResponse(HttpRequestData request, HttpStatusCode statusCode)
     {
         var response = request.CreateResponse(statusCode);
         response.Headers.Add(PackageSha256Header, PackageSha256);
+        response.Headers.Add(AssemblySha256Header, AssemblySha256);
         return response;
     }
 

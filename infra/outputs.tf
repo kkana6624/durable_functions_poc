@@ -68,6 +68,13 @@ output "deployment" {
     validation_vm_hostname     = azurerm_linux_virtual_machine.validation.computer_name
     validation_vm_principal_id = azurerm_linux_virtual_machine.validation.identity[0].principal_id
     vm_control_container_name  = azurerm_storage_container.vm_control.name
-    function_private_ip        = azurerm_private_endpoint.functions.private_service_connection[0].private_ip_address
+    function_private_ip                   = azurerm_private_endpoint.functions.private_service_connection[0].private_ip_address
+    workflow_auth_mode                    = var.workflow_auth_mode
+    workflow_auth_allowed_backend_app_ids = var.workflow_auth_allowed_backend_app_ids
   }
+}
+
+output "workflow_auth_allowed_backend_app_ids" {
+  value       = var.workflow_auth_allowed_backend_app_ids
+  description = "Allowed backend application client IDs for EntraEasyAuth mode."
 }

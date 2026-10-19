@@ -56,10 +56,14 @@ function Invoke-WorkflowAuthHttp([string]$Uri,[string]$Method,[hashtable]$Header
         if ($Body) { $request.Content=[Net.Http.StringContent]::new($Body,[Text.Encoding]::UTF8,'application/json') }
         $response=$client.SendAsync($request).GetAwaiter().GetResult()
         $code=[int]$response.StatusCode
-        $data=$null; $location=$null; $packageHeader=$null
+        $data=$null; $location=$null; $packageHeader=$null; $assemblyHeader=$null
         if ($response.Headers.Contains('X-Poc-Package-Sha256')) {
             $vals=@($response.Headers.GetValues('X-Poc-Package-Sha256'))
             if ($vals.Count -gt 0) { $packageHeader=[string]$vals[0] }
+        }
+        if ($response.Headers.Contains('X-Poc-Assembly-Sha256')) {
+            $vals=@($response.Headers.GetValues('X-Poc-Assembly-Sha256'))
+            if ($vals.Count -gt 0) { $assemblyHeader=[string]$vals[0] }
         }
         if ($code -in @(200,202)) {
             $content=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
@@ -67,7 +71,7 @@ function Invoke-WorkflowAuthHttp([string]$Uri,[string]$Method,[hashtable]$Header
             $data=ConvertTo-DeploymentHashtable ($content | ConvertFrom-Json)
             if ($response.Headers.Location) { $location=$response.Headers.Location.ToString() }
         }
-        return @{Code=$code;Data=$data;Location=$location;PackageSha256=$packageHeader}
+        return @{Code=$code;Data=$data;Location=$location;PackageSha256=$packageHeader;AssemblySha256=$assemblyHeader}
     } catch { Stop-WorkflowAuthValidation 'HttpRequestFailed' }
     finally { if ($response) {$response.Dispose()}; $request.Dispose(); $client.Dispose(); $handler.Dispose() }
 }
@@ -88,7 +92,7 @@ function Invoke-WorkflowAuthValidation {
     $ErrorActionPreference='Stop'
     $summary=[ordered]@{schemaVersion=1;validationKind='AzureWorkflowAuth';status='Fail';reason='SetupFailed';checks=@();
         configuredDurableBackend=$null;configuredTaskHub=$null;
-        provenance=@{source='deploymentDescriptor';livePackageVerified=$false;livePackageSha256=$null;gitRevision=$null;gitDirty=$null;sourceSha256=$null;packageSha256=$null;assemblySha256=$null};
+        provenance=@{source='deploymentDescriptor';livePackageVerified=$false;livePackageSha256=$null;liveAssemblySha256=$null;gitRevision=$null;gitDirty=$null;sourceSha256=$null;packageSha256=$null;assemblySha256=$null;packageContentSha256=$null;unauthorizedClientConfirmedInAllowedList=$null};
         completedUtc=$null;exitCode=1}
     $token=$null; $keys=$null; $headers=$null
     try {
@@ -107,6 +111,7 @@ function Invoke-WorkflowAuthValidation {
         }
         if ($deployment.ContainsKey('package_sha256') -and $deployment.package_sha256 -is [string] -and $deployment.package_sha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.packageSha256=$deployment.package_sha256.ToLowerInvariant() }
         if ($deployment.ContainsKey('assembly_sha256') -and $deployment.assembly_sha256 -is [string] -and $deployment.assembly_sha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.assemblySha256=$deployment.assembly_sha256.ToLowerInvariant() }
+        if ($deployment.ContainsKey('package_content_sha256') -and $deployment.package_content_sha256 -is [string] -and $deployment.package_content_sha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.packageContentSha256=$deployment.package_content_sha256.ToLowerInvariant() }
         $outputs=$deployment.outputs
         foreach ($field in @('subscription_id','resource_group_name','function_app_name','function_app_url')) {
             if (-not $outputs.ContainsKey($field) -or [string]::IsNullOrWhiteSpace([string]$outputs[$field])) { Stop-WorkflowAuthValidation 'MissingDeploymentOutput' }
@@ -132,18 +137,66 @@ function Invoke-WorkflowAuthValidation {
         $path='/api/workflows/'+$id; $start=$origin+'/api/workflows'
         $body=@{requestId=$id;classification='light';taskCount=1;lightDelaySeconds=1;heavyDelaySeconds=1}|ConvertTo-Json -Compress
         $headers=@{Authorization='Bearer '+$token;'X-Poc-Owner-Id'=$OwnerId;'X-Poc-Org-Id'=$OrgId;'x-functions-key'=$keys.StartWorkflow}
+        $script:verifiedResponses = 0
+        $script:livePackageMismatch = $false
         $verifyLivePackage = {
             param($httpResp)
-            if ($httpResp -and $httpResp.ContainsKey('PackageSha256') -and $httpResp.PackageSha256) {
-                $rawSha = ([string]$httpResp.PackageSha256).Trim().ToLowerInvariant()
-                if ($rawSha -match '\A[0-9a-fA-F]{64}\z') {
-                    $summary.provenance.livePackageSha256 = $rawSha
-                    if (($summary.provenance.assemblySha256 -and $rawSha -eq $summary.provenance.assemblySha256) -or
-                        ($summary.provenance.packageSha256 -and $rawSha -eq $summary.provenance.packageSha256)) {
-                        $summary.provenance.livePackageVerified = $true
-                    }
-                }
+            if (-not $httpResp -or -not $httpResp.ContainsKey('PackageSha256') -or [string]::IsNullOrWhiteSpace([string]$httpResp.PackageSha256)) {
+                $script:livePackageMismatch = $true
+                $summary.provenance.livePackageVerified = $false
+                return
             }
+            $rawSha = ([string]$httpResp.PackageSha256).Trim().ToLowerInvariant()
+            if ($rawSha -cnotmatch '\A[0-9a-f]{64}\z') {
+                $script:livePackageMismatch = $true
+                $summary.provenance.livePackageVerified = $false
+                return
+            }
+            $expected = if ($summary.provenance.packageContentSha256) { $summary.provenance.packageContentSha256 }
+                        elseif ($summary.provenance.assemblySha256) { $summary.provenance.assemblySha256 }
+                        elseif ($summary.provenance.packageSha256) { $summary.provenance.packageSha256 }
+                        else { $null }
+
+            if ($expected -and $rawSha -ne $expected) {
+                $script:livePackageMismatch = $true
+                $summary.provenance.livePackageVerified = $false
+                return
+            }
+            if ($summary.provenance.livePackageSha256 -and $summary.provenance.livePackageSha256 -ne $rawSha) {
+                $script:livePackageMismatch = $true
+                $summary.provenance.livePackageVerified = $false
+                return
+            }
+
+            if ($httpResp.ContainsKey('AssemblySha256') -and $httpResp.AssemblySha256) {
+                $rawAssembly = ([string]$httpResp.AssemblySha256).Trim().ToLowerInvariant()
+                if ($rawAssembly -cnotmatch '\A[0-9a-f]{64}\z') {
+                    $script:livePackageMismatch = $true
+                    $summary.provenance.livePackageVerified = $false
+                    return
+                }
+                if ($summary.provenance.assemblySha256 -and $rawAssembly -ne $summary.provenance.assemblySha256) {
+                    $script:livePackageMismatch = $true
+                    $summary.provenance.livePackageVerified = $false
+                    return
+                }
+                if ($summary.provenance.liveAssemblySha256 -and $summary.provenance.liveAssemblySha256 -ne $rawAssembly) {
+                    $script:livePackageMismatch = $true
+                    $summary.provenance.livePackageVerified = $false
+                    return
+                }
+                $summary.provenance.liveAssemblySha256 = $rawAssembly
+            }
+
+            if (-not $script:livePackageMismatch) {
+                $summary.provenance.livePackageSha256 = $rawSha
+                if ($expected -and $rawSha -eq $expected) {
+                    $summary.provenance.livePackageVerified = $true
+                }
+            } else {
+                $summary.provenance.livePackageVerified = $false
+            }
+            $script:verifiedResponses++
         }
         # No-token probes: the forged header must never establish authentication.
         # EasyAuth may strip/replace it; this probe tests bypass resistance, not raw-header delivery.
@@ -183,6 +236,20 @@ function Invoke-WorkflowAuthValidation {
         }
         # Missing App Role probe (UAMI in allowed_backend_app_ids but lacking 'Workflow.Execute'; app rejects 403):
         if ($UnauthorizedManagedIdentityClientId) {
+            $allowedApps = @()
+            if ($outputs.ContainsKey('workflow_auth_allowed_backend_app_ids') -and $outputs.workflow_auth_allowed_backend_app_ids) {
+                $allowedApps = @($outputs.workflow_auth_allowed_backend_app_ids)
+            } elseif ($outputs.ContainsKey('allowed_backend_app_ids') -and $outputs.allowed_backend_app_ids) {
+                $allowedApps = @($outputs.allowed_backend_app_ids)
+            }
+            if ($allowedApps.Count -gt 0) {
+                if ($UnauthorizedManagedIdentityClientId -notin $allowedApps) {
+                    Stop-WorkflowAuthValidation 'UnauthorizedClientNotInAllowedBackendList'
+                }
+                $summary.provenance.unauthorizedClientConfirmedInAllowedList = $true
+            } else {
+                $summary.provenance.unauthorizedClientConfirmedInAllowedList = $false
+            }
             $missingRoleToken = Get-WorkflowAuthToken $Resource $UnauthorizedManagedIdentityClientId
             foreach ($api in @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult')) {
                 $probeHeaders = @{
@@ -254,6 +321,9 @@ function Invoke-WorkflowAuthValidation {
         if ((@($r.Data.taskIds) -join ',') -cne 'task-00') { Stop-WorkflowAuthValidation 'ResultTaskIdsMismatch' }
         if ($r.Data.jobId -cne $jobId) { Stop-WorkflowAuthValidation 'ResultJobIdMismatch' }
         if ($r.Data.fingerprint -cne $fingerprint) { Stop-WorkflowAuthValidation 'ResultFingerprintMismatch' }
+        if ($script:livePackageMismatch -or $script:verifiedResponses -lt 1) {
+            $summary.provenance.livePackageVerified = $false
+        }
         $summary.checks+=@{name='ownerReplayConflictStatusResult';code=200}
         $summary.status='Pass'; $summary.reason='CustomApiChecksPassed'; $summary.exitCode=0
     } catch { if ($_.Exception.Data['WorkflowAuthCode']) { $summary.reason=[string]$_.Exception.Data['WorkflowAuthCode'] } }

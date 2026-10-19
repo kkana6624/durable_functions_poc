@@ -1,21 +1,22 @@
 # プロジェクトメモリ
 
-## 2026-10-19 B案フェーズ1: Microsoft Entra ID サービス間認証・認可の実機検証および稼働パッケージ暗号学的同定の完全合格（今回の作業）
+## 2026-10-19 B案フェーズ1: Microsoft Entra ID サービス間認証・認可の実機検証および稼働パッケージ暗号学的同定の完全合格（レビュー修正反映・最新成果）
 
-B案フェーズ1（Microsoft Entra ID によるサービス間認証・認可および稼働パッケージ同定）の実機実装・検証を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`）において実施し、**全項目完全合格（Pass、終了コード 0）** を確認しました。
+B案フェーズ1（Microsoft Entra ID によるサービス間認証・認可および稼働パッケージ同定）の実機実装・検証を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`）において実施し、レビュー指摘3件（P2 後続不一致での同定無効化、P3 パッケージ全体コンテンツ指紋測定 `package_content_sha256`、P3 App Role 不足拒否前提確認 `unauthorizedClientConfirmedInAllowedList`）の修正を適用した上で、**全項目完全合格（Pass、終了コード 0）** を確認しました。
 
-- **Azure 実機デプロイ成果**: `.deploy/poc/20261019-092244-0886`
+- **Azure 実機デプロイ成果**: `.deploy/poc/20261019-102131-6222`
   - Function App の EasyAuth v2（`active_directory_v2`、`unauthenticated_action: Return401`、`allowed_audiences`、`allowed_applications`）を有効化。
-  - アセンブリ SHA-256: `cdbadf5f313b056f3ebc5d90e565dfc77c22e620af26656ebcbad393feafd150`
-  - パッケージ SHA-256: `d5e64e446d9c2911d6c32112eaf55cb092a35991518a1cdc5f33ba9bf0da6ea8`
-  - 全 API レスポンスに `X-Poc-Package-Sha256` レスポンスヘッダーを付与する稼働パッケージ同定を実装。
-- **実機検証エビデンス**: `artifacts/private-auth-validation/20261019-004913-5659/summary.json`
+  - アセンブリ SHA-256: `d62ce67d6fae7a5c1090ccad3a8171fa0479a6f5a580374d64bfb3bbc83b46a9`
+  - パッケージコンテンツ SHA-256: `a654af0e07c5ba8f5aa596e7418971870841df71a454faa44b65dbe14beb3815`
+  - パッケージ ZIP SHA-256: `d4970c4c410c0ab4a186039790f26e72a92d343489fc6bba1d82245d1e3eb17a`
+  - 全 API レスポンスにコンテンツ指紋 `X-Poc-Package-Sha256` およびエントリアセンブリ指紋 `X-Poc-Assembly-Sha256` を付与。
+- **実機検証エビデンス**: `artifacts/private-auth-validation/20261019-013214-2425/summary.json`
   - **未認証遮断（401）**: `anonymous`, `keyOnly`, `forgedPrincipal`, `bearerWithoutKey` の計12プローブすべてで HTTP 401 遮断を確認。
   - **Audience 不正遮断（401）**: ARM 宛てトークン（`https://management.azure.com/`）に対し、EasyAuth による HTTP 401 遮断を全3 API で確認。
-  - **App Role 不足遮断（403）**: 有効な Entra トークンを取得可能だが `Workflow.Execute` App Role を持たないユーザー割り当てマネージド ID（`poc-unauthorized-id`: `fb03274d-66d2-4f2e-856c-6bf17b142334`）からの要求に対し、`EntraEasyAuthCallerResolver` による **HTTP 403 Forbidden 遮断** を全3 API で確認。
+  - **App Role 不足遮断（403）**: EasyAuth 許可リスト確認済み（`unauthorizedClientConfirmedInAllowedList = true`）の条件下で、有効な Entra トークンを取得可能だが `Workflow.Execute` App Role を持たないユーザー割り当てマネージド ID（`poc-unauthorized-id`: `fb03274d-66d2-4f2e-856c-6bf17b142334`）からの要求に対し、`EntraEasyAuthCallerResolver` による **HTTP 403 Forbidden 遮断** を全3 API で厳密に確認。
   - **所有者伝播認可（403）**: 認可トークン存在下での所有者ヘッダー欠落・他者指定に対し HTTP 403 遮断を確認。
   - **正当マネージド ID 通過（200/202）**: `Workflow.Execute` を持つ VM システム割り当てマネージド ID（`2896f1b6...`）からの要求が 202 受理、同一再送 202、入力競合 409、ステータスポーリングを経て 200 結果取得（全Task整合）まで完走することを確認。
-  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`cdbadf5f...`）とデプロイアセンブリハッシュ（`assemblySha256`）が完全一致し、`livePackageVerified: true` を確認。
+  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`a654af0e...`）とデプロイコンテンツ指紋（`packageContentSha256`）、および `liveAssemblySha256`（`d62ce67d...`）とデプロイアセンブリハッシュ（`assemblySha256`）が完全一致し、`livePackageVerified: true` を確認。途中の不一致やヘッダー欠落で無効化される不変保護も確認。
 - **Batch ネットワーク調査成果（B案フェーズ2・3の確定）**:
   - 現行 Batch Account は `publicNetworkAccess: Enabled`、Batch Pool ノードは既定のパブリック送信 NAT を利用していることを確認。
   - 後続として、Batch Account の Private Endpoint（`batchAccount` サブリソース）化（フェーズ2）、および Batch Pool ノードの VNet サブネット統合・`NoPublicIPAddresses` 構成（フェーズ3）の移行計画を文書化（`batch-networking-and-plan-b.md`）。

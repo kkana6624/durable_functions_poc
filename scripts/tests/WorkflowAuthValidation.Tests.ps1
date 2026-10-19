@@ -9,7 +9,7 @@ $script:AzPath='fake'
 $script:secret='NEVER-SERIALIZE-BEARER-KEY-PRINCIPAL'
 $script:mode='pass'; $script:calls=@(); $script:accepted=$false
 $deployment=Join-Path $directory 'deployment.json'
-Write-DeploymentJson $deployment @{source_provenance=@{gitRevision=('A'*40);gitDirty=$false;sourceSha256=('B'*64);untrusted='NEVER-SERIALIZE-BEARER-KEY-PRINCIPAL'};package_sha256=('C'*64);outputs=@{subscription_id='sub';resource_group_name='rg';function_app_name='app';function_app_url='https://app.example';durable_backend='azureStorage';task_hub_name='PocBatchHub'}}
+Write-DeploymentJson $deployment @{source_provenance=@{gitRevision=('A'*40);gitDirty=$false;sourceSha256=('B'*64);untrusted='NEVER-SERIALIZE-BEARER-KEY-PRINCIPAL'};package_sha256=('C'*64);assembly_sha256=('D'*64);package_content_sha256=('C'*64);outputs=@{subscription_id='sub';resource_group_name='rg';function_app_name='app';function_app_url='https://app.example';durable_backend='azureStorage';task_hub_name='PocBatchHub';workflow_auth_allowed_backend_app_ids=@('11111111-2222-3333-4444-555555555555')}}
 function Get-WorkflowAuthToken {
     param($Resource,$ClientId)
     if ($Resource -eq 'https://management.azure.com/') { return 'unauthorized-audience-token' }
@@ -34,7 +34,14 @@ function Invoke-WorkflowAuthHttp {
     if (-not $Headers.ContainsKey('X-Poc-Owner-Id') -or -not $Headers.ContainsKey('X-Poc-Org-Id') -or $Headers['X-Poc-Owner-Id'] -ne 'owner' -or $Headers['X-Poc-Org-Id'] -ne 'org') {
         return @{Code=403;Data=$null;Location=$null}
     }
-    $pkgHeader = if ($script:mode -eq 'verifiedPackage') { ('c'*64) } else { $null }
+    $script:httpCallIndex++
+    $pkgHeader = if ($script:mode -eq 'verifiedPackage') { ('c'*64) }
+                 elseif ($script:mode -eq 'inconsistentPackage') {
+                     if ($script:httpCallIndex -eq 1) { ('c'*64) }
+                     elseif ($script:httpCallIndex -eq 2) { ('d'*64) }
+                     else { $null }
+                 } else { $null }
+    $asmHeader = if ($script:mode -in @('verifiedPackage','inconsistentPackage')) { ('d'*64) } else { $null }
     if ($Method -eq 'Post') {
         $request=$Body|ConvertFrom-Json
         if ($request.taskCount -eq 2) { return @{Code=409;Data=$null;Location=$null} }
@@ -46,15 +53,15 @@ function Invoke-WorkflowAuthHttp {
         try {$script:fingerprint=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical))).Replace('-','').ToLowerInvariant()} finally {$sha.Dispose()}
         $location='https://app.example/api/workflows/'+$script:requestId
         if ($script:mode -eq 'unsafeUrl') {$location+='?sig='+$script:secret}
-        return @{Code=202;Data=@{instanceId=$script:jobId;statusQueryGetUri=$location;untrusted=$script:secret};Location=$location;PackageSha256=$pkgHeader}
+        return @{Code=202;Data=@{instanceId=$script:jobId;statusQueryGetUri=$location;untrusted=$script:secret};Location=$location;PackageSha256=$pkgHeader;AssemblySha256=$asmHeader}
     }
     if ($Uri.EndsWith('/result')) {
         Assert-True ($Headers['x-functions-key'] -eq 'result-key') 'Result must use its own Function key'
         $sum=1; if ($script:mode -eq 'wrongResult') {$sum=2}
-        return @{Code=200;Data=@{requestId=$script:requestId;jobId=$script:jobId;fingerprint=$script:fingerprint;status='Succeeded';taskCount=1;sum=$sum;taskIds=@('task-00');untrusted=$script:secret};Location=$null;PackageSha256=$pkgHeader}
+        return @{Code=200;Data=@{requestId=$script:requestId;jobId=$script:jobId;fingerprint=$script:fingerprint;status='Succeeded';taskCount=1;sum=$sum;taskIds=@('task-00');untrusted=$script:secret};Location=$null;PackageSha256=$pkgHeader;AssemblySha256=$asmHeader}
     }
     Assert-True ($Headers['x-functions-key'] -eq 'status-key') 'Status must use its own Function key'
-    return @{Code=200;Data=@{requestId=$script:requestId;instanceId=$script:jobId;jobId=$script:jobId;status='Succeeded';resultAvailable=$true;untrusted=$script:secret};Location=$null;PackageSha256=$pkgHeader}
+    return @{Code=200;Data=@{requestId=$script:requestId;instanceId=$script:jobId;jobId=$script:jobId;status='Succeeded';resultAvailable=$true;untrusted=$script:secret};Location=$null;PackageSha256=$pkgHeader;AssemblySha256=$asmHeader}
 }
 try {
     $script:keyNames=@()
@@ -69,13 +76,15 @@ try {
     }
     $retrieved=& $realGetKeys @{function_app_name='app';resource_group_name='rg'}
     Assert-True (($script:keyNames -join ',') -eq 'StartWorkflow,GetWorkflowStatus,GetWorkflowResult' -and $retrieved.Count -eq 3) 'Retrieve three individually scoped keys'
-    foreach ($mode in @('pass','bypass','unsafeUrl','wrongResult','verifiedPackage')) {
-        $script:mode=$mode; $script:calls=@()
+    foreach ($mode in @('pass','bypass','unsafeUrl','wrongResult','verifiedPackage','inconsistentPackage')) {
+        $script:mode=$mode; $script:calls=@(); $script:httpCallIndex=0
         $evidence=Join-Path $directory $mode
         $result=Invoke-WorkflowAuthValidation -DeploymentResultPath $deployment -Resource 'api://api-app' -OwnerId owner -OrgId org -EvidenceDirectory $evidence -PollSeconds 1 -TimeoutSeconds 1
-        Assert-True (($result.exitCode -eq 0) -eq ($mode -in @('pass','verifiedPackage'))) ('Unexpected result: '+$mode+' '+$result.reason)
+        Assert-True (($result.exitCode -eq 0) -eq ($mode -in @('pass','verifiedPackage','inconsistentPackage'))) ('Unexpected result: '+$mode+' '+$result.reason)
         if ($mode -eq 'verifiedPackage') {
-            Assert-True ($result.provenance.livePackageVerified -eq $true -and $result.provenance.livePackageSha256 -ceq ('c'*64)) 'Live package must be verified'
+            Assert-True ($result.provenance.livePackageVerified -eq $true -and $result.provenance.livePackageSha256 -ceq ('c'*64) -and $result.provenance.liveAssemblySha256 -ceq ('d'*64)) 'Live package must be verified'
+        } elseif ($mode -eq 'inconsistentPackage') {
+            Assert-True ($result.provenance.livePackageVerified -eq $false) 'Inconsistent package sequence must remain unverified (livePackageVerified=false)'
         } else {
             Assert-True ($result.provenance.gitRevision -ceq ('a'*40) -and $result.provenance.sourceSha256 -ceq ('b'*64) -and $result.provenance.packageSha256 -ceq ('c'*64) -and $result.provenance.livePackageVerified -eq $false) 'Descriptor provenance must be selected, normalized to lowercase, and remain unverified'
         }
@@ -83,10 +92,16 @@ try {
         Assert-True ($text -notmatch $script:secret -and $text -notmatch 'app.example|start-key|status-key|result-key|sig=') 'Evidence leaked untrusted data'
         Assert-True (@($script:calls|Where-Object {$_.uri -match '/runtime/'}).Count -eq 0) 'Runner must use only custom APIs'
     }
-    $script:calls=@()
+    $script:calls=@(); $script:httpCallIndex=0
     $script:mode='pass'
     $unauthResult=Invoke-WorkflowAuthValidation -DeploymentResultPath $deployment -Resource 'api://api-app' -UnauthorizedManagedIdentityClientId '11111111-2222-3333-4444-555555555555' -OwnerId owner -OrgId org -EvidenceDirectory (Join-Path $directory 'unauth-probe') -PollSeconds 1 -TimeoutSeconds 1
     Assert-True ($unauthResult.exitCode -eq 0 -and @($unauthResult.checks | Where-Object { $_.name -like 'missingAppRole*' }).Count -eq 3) 'MissingAppRole probes must be executed and recorded'
+    Assert-True ($unauthResult.provenance.unauthorizedClientConfirmedInAllowedList -eq $true) 'Allowed list premise must be confirmed'
+
+    # Verify that an unauthorized client not in allowed_backend_app_ids fails with UnauthorizedClientNotInAllowedBackendList
+    $script:calls=@(); $script:httpCallIndex=0
+    $unlistedResult=Invoke-WorkflowAuthValidation -DeploymentResultPath $deployment -Resource 'api://api-app' -UnauthorizedManagedIdentityClientId '99999999-9999-9999-9999-999999999999' -OwnerId owner -OrgId org -EvidenceDirectory (Join-Path $directory 'unlisted-client') -PollSeconds 1 -TimeoutSeconds 1
+    Assert-True ($unlistedResult.exitCode -eq 1 -and $unlistedResult.reason -eq 'UnauthorizedClientNotInAllowedBackendList') 'Unlisted client ID must be rejected by premise assertion'
     $script:calls=@()
     $invalidDescriptor=ConvertTo-DeploymentHashtable (Get-Content $deployment -Raw|ConvertFrom-Json)
     $invalidDescriptor.source_provenance.gitRevision=@(('a'*40),$script:secret)

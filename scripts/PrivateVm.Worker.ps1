@@ -158,6 +158,7 @@ exit $LASTEXITCODE
         $deployment=Join-Path $PSScriptRoot 'deployment-result.json'
         $deploymentObj=@{ outputs=$outputs; source_provenance=$request.source_provenance; package_sha256=$request.package_sha256 }
         if ($request.PSObject.Properties['assembly_sha256'] -and $request.assembly_sha256) { $deploymentObj.assembly_sha256 = $request.assembly_sha256 }
+        if ($request.PSObject.Properties['package_content_sha256'] -and $request.package_content_sha256) { $deploymentObj.package_content_sha256 = $request.package_content_sha256 }
         Write-DeploymentJson $deployment $deploymentObj
         $runner=@'
 $r=Get-Content -LiteralPath ./request.json -Raw | ConvertFrom-Json
