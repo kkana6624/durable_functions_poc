@@ -1,5 +1,23 @@
 # プロジェクトメモリ
 
+## 2026-10-19 Track 2（Batch 大容量入出力 ResourceFiles/OutputFiles・Blob検証・公開調停）および TASK-0.2（未確定ゲートチェックシート）の実装完了
+
+作業計画書（`docs/app-service-blob-batch-work-plan.md`）の Track 2（TASK-2.1〜2.5）および Track 0（TASK-0.2）を実装し、単体テスト（359件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。これにより現行の 4 KiB Task File API 制約を解消し、Blob 経由の大容量入出力パイプラインを確立しました。
+
+- **対応内容詳細**:
+  1. **[TASK-2.1] Task Plan への ResourceFiles（UAMI 参照・versionId 固定）定義追加**:
+     - `src/Poc.Core/AzureBatchGateway.cs`: `AzureBatchGateway` に `BatchStorageOptions`（`PoolUamiResourceId`, `BlobEndpoint`, `OutputContainer`）を注入可能とし、`ReadyManifest` が指定されたタスクに対し、Pool に割り当てられた UAMI（`BatchNodeIdentityReference`）を用いた `ResourceFile`（`HttpUri` に `?versionId=...` クエリを付加した Blob URL、`FilePath = "inputs/input.dat"`）を動的構成。
+  2. **[TASK-2.2] Batch Task への OutputFiles（Blob 直送・attempt 分離）定義追加**:
+     - `src/Poc.Core/AzureBatchGateway.cs`: `OutputFileBlobContainerDestination` を使用し、ノード上の `output.json` を `spec.OutputBlobPath`（`runs/poc-{requestId}/tasks/{taskId}/attempts/{attempt}/output.json`）へ直接アップロードする `OutputFile`（`OutputFileUploadCondition.TaskSuccess`）を構成。
+     - `src/Poc.Core/Contracts.cs`: `WindowsTaskCommand.Build` を拡張し、`inputs/input.dat` の存在検証（未存在時 exit 101）および `output.json`（JSON ペイロード）と `result.txt`（レガシー互換）の同時生成コマンドを安全に構築。
+  3. **[TASK-2.3 & 2.4] 出力 Blob 検証・集約 Activity の実装と成果物公開調停**:
+     - `src/Poc.Core/Contracts.cs`: `BatchTaskOutputPayload` を新設し、TaskOutput スキーマ、requestId / taskId 一致、`Status == "Succeeded"` の検証ロジックを実装。
+     - `src/Poc.Core/WorkflowOperations.cs`: `ClassifyAsync` で `WorkflowPlan.Manifest` に `ReadyManifest` を格納。`FetchAndPersistAsync` において、`ReadyManifest` 指定時は従来の 4 KiB `ReadResultAsync` に代わり、ノードから直送された出力 Blob（`spec.OutputBlobPath`）をストリーミング検証。欠損（404）時は `FileNotFoundException`、異常時は `InvalidDataException` / `InvalidOperationException` でタスク失敗と判定。検証合格時のみ `AggregateAsync` および既存の `resolution.json` 排他調停を経て `manifest.json` を公開。
+  4. **[TASK-2.5] Fixture モードによる回帰テストスイート整備**:
+     - `tests/Poc.Tests/BatchExecutionTests.cs`: 新規 6 件のテストを追加（ResourceFiles / OutputFiles 構成検証、レガシー要求後方互換検証、OutputFiles Blob 検証と集約・公開、出力 Blob 欠損時 404 失敗、異常ステータス時失敗、キャンセル競合時の公開抑止）。全テスト PASS を確認。
+  5. **[TASK-0.2] 未確定ゲート一覧と合意チェックシートの文書化**:
+     - `docs/undecided-gates-and-checklist.md`: 実 C++ バイナリ配布方式、入力データ形式・最大サイズ、業務 Web バックエンド構成・認証境界、インフラ閉域化（Storage PNA 遮断）の未確定事項を ADR 形式で整理。
+
 ## 2026-10-19 レビュー指摘3件（P2一時障害503応答・P2保存ヘルパーDIリポジトリ接続・P2初期化待機総予算算入）の改修完了
 
 レビューで指摘された 3 件の課題（[P2] Ready 入力受付時の一時障害に対する Retry-After 付き 503 応答の保証、[P2] `WorkflowOperations.SaveReadyManifestAsync` における DI 登録済み `BlobStorageRepository` 接続による本番 `InvalidOperationException` の解消、[P2] `Invoke-PrivateVmOperation.ps1` における VM 初期化待ち時間の総時間予算算入とスクリプト開始時からの残余時間計算）を改修し、単体テスト（353件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。

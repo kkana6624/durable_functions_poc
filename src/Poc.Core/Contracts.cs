@@ -130,12 +130,14 @@ public sealed record WorkflowRequest(
 public sealed record WorkflowSettings(int PollSeconds = 10, int TimeoutMinutes = 15);
 public sealed record WorkloadClassification(string Classification, string Reason);
 public sealed record WorkflowPlan(WorkflowRequest Request, string Classification, string Reason, string JobId,
-    string Fingerprint, int PollSeconds, int TimeoutMinutes, bool CancelRequested = false);
-public sealed record TaskSpec(WorkflowPlan Plan, int Index, DateTime? DeadlineUtc = null)
+    string Fingerprint, int PollSeconds, int TimeoutMinutes, bool CancelRequested = false,
+    ReadyManifest? Manifest = null);
+public sealed record TaskSpec(WorkflowPlan Plan, int Index, DateTime? DeadlineUtc = null, int Attempt = 0)
 {
     public string TaskId => $"task-{Index:00}";
     public int DelaySeconds => Plan.Classification == "heavy" ? Plan.Request.HeavyDelaySeconds : Plan.Request.LightDelaySeconds;
     public bool InjectFailure => Plan.Request.FailTaskIndex == Index;
+    public string OutputBlobPath => WorkflowIdentity.TaskOutputBlobPath(Plan.Request.RequestId, TaskId, Attempt);
 }
 public sealed record BatchJobTerminationStatus(string State, bool Completed);
 public sealed class TransientWorkflowException : Exception
@@ -304,15 +306,63 @@ public static class WorkflowIdentity
     public static string ManifestPath(string requestId) => $"runs/poc-{requestId}/final/manifest.json";
     public static string AggregatePath(WorkflowPlan plan) => AggregatePath(plan.Request.RequestId);
     public static string ManifestPath(WorkflowPlan plan) => ManifestPath(plan.Request.RequestId);
+    public static string TaskOutputBlobPath(string requestId, string taskId, int attempt = 0) =>
+        $"runs/poc-{requestId}/tasks/{taskId}/attempts/{attempt}/output.json";
+    public static string TaskOutputBlobPath(TaskSpec spec) =>
+        TaskOutputBlobPath(spec.Plan.Request.RequestId, spec.TaskId, spec.Attempt);
+}
+
+public sealed record BatchStorageOptions(
+    string? PoolUamiResourceId = null,
+    Uri? BlobEndpoint = null,
+    string? OutputContainer = null);
+
+public sealed record BatchTaskOutputPayload(
+    int SchemaVersion,
+    string RequestId,
+    string TaskId,
+    int Attempt,
+    string Status,
+    int Value,
+    string? Sha256 = null,
+    long? SizeBytes = null)
+{
+    public void Validate(string expectedRequestId, string expectedTaskId)
+    {
+        if (SchemaVersion != 1) throw new InvalidDataException($"Unsupported TaskOutput schemaVersion: {SchemaVersion}");
+        if (RequestId != expectedRequestId) throw new InvalidDataException($"TaskOutput RequestId mismatch: expected {expectedRequestId}, got {RequestId}");
+        if (TaskId != expectedTaskId) throw new InvalidDataException($"TaskOutput TaskId mismatch: expected {expectedTaskId}, got {TaskId}");
+        if (Status != "Succeeded") throw new InvalidOperationException($"TaskOutput status is not Succeeded: {Status}");
+    }
 }
 
 public static class WindowsTaskCommand
 {
-    public static string Build(int delaySeconds, bool fail)
+    public static string Build(int delaySeconds, bool fail) => Build(delaySeconds, fail, null, null);
+
+    public static string Build(int delaySeconds, bool fail, string? inputRelativePath, string? outputFileName)
     {
         if (delaySeconds is < 1 or > 3600) throw new ArgumentOutOfRangeException(nameof(delaySeconds));
         // Only validated integers and constant text reach the shell. Explicit exit propagates through cmd.
-        return $"cmd /d /c powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$ErrorActionPreference='Stop'; Start-Sleep -Seconds {delaySeconds}; " +
-            (fail ? "exit 42\"" : "Set-Content -LiteralPath result.txt -Value 1 -Encoding ASCII; exit 0\"");
+        var sb = new StringBuilder();
+        sb.Append($"cmd /d /c powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$ErrorActionPreference='Stop'; Start-Sleep -Seconds {delaySeconds}; ");
+        if (fail)
+        {
+            sb.Append("exit 42\"");
+            return sb.ToString();
+        }
+        if (!string.IsNullOrEmpty(inputRelativePath))
+        {
+            // Verify input file downloaded by Batch ResourceFiles
+            sb.Append($"if (-not (Test-Path -LiteralPath '{inputRelativePath}')) {{ exit 101 }}; ");
+        }
+        // Always write legacy result.txt for backward compatibility
+        sb.Append("Set-Content -LiteralPath result.txt -Value 1 -Encoding ASCII; ");
+        if (!string.IsNullOrEmpty(outputFileName))
+        {
+            sb.Append($"Set-Content -LiteralPath '{outputFileName}' -Value '{{\\\"schemaVersion\\\":1,\\\"status\\\":\\\"Succeeded\\\",\\\"value\\\":1}}' -Encoding ASCII; ");
+        }
+        sb.Append("exit 0\"");
+        return sb.ToString();
     }
 }

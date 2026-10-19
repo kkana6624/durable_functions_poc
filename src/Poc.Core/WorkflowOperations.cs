@@ -49,7 +49,7 @@ public sealed class WorkflowOperations(
         }
         var cancelRequested = cancelRecord is not null || resolution?.Status == "Cancelled";
         return new(request, classification.Classification, classification.Reason, WorkflowIdentity.JobId(request.RequestId),
-            WorkflowIdentity.Fingerprint(request, classification.Classification, manifest), settings.PollSeconds, settings.TimeoutMinutes, cancelRequested);
+            WorkflowIdentity.Fingerprint(request, classification.Classification, manifest), settings.PollSeconds, settings.TimeoutMinutes, cancelRequested, manifest);
     }
     public Task<BatchJobTerminationStatus> TerminateJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.TerminateJobAsync(plan, cancellationToken);
     public Task EnsureJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.EnsureJobAsync(plan, cancellationToken);
@@ -63,9 +63,34 @@ public sealed class WorkflowOperations(
             var spec = new TaskSpec(plan, i);
             var status = await batch.GetStatusAsync(spec, cancellationToken);
             if (!status.Completed || !status.Succeeded) throw new InvalidOperationException($"Task {spec.TaskId} is not successful: {status.Failure}");
-            var text = await batch.ReadResultAsync(spec, cancellationToken);
-            if (text.Length > 4096 || !int.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) || value != 1)
-                throw new InvalidDataException($"Task {spec.TaskId}: expected a small result containing integer 1.");
+
+            int value;
+            if (plan.Manifest is not null || !string.IsNullOrEmpty(plan.Request.ReadyManifestId))
+            {
+                // Verify OutputFiles blob uploaded directly from compute node
+                BatchTaskOutputPayload? outputPayload;
+                try
+                {
+                    outputPayload = await results.ReadAsync<BatchTaskOutputPayload>(spec.OutputBlobPath, cancellationToken);
+                }
+                catch (Exception ex) when (ex is FileNotFoundException or KeyNotFoundException or Azure.RequestFailedException { Status: 404 })
+                {
+                    throw new FileNotFoundException($"Output blob for {spec.TaskId} not found at {spec.OutputBlobPath}.", ex);
+                }
+
+                if (outputPayload is null)
+                    throw new InvalidDataException($"Output blob for {spec.TaskId} was empty or could not be deserialized.");
+
+                outputPayload.Validate(plan.Request.RequestId, spec.TaskId);
+                value = outputPayload.Value;
+            }
+            else
+            {
+                var text = await batch.ReadResultAsync(spec, cancellationToken);
+                if (text.Length > 4096 || !int.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value) || value != 1)
+                    throw new InvalidDataException($"Task {spec.TaskId}: expected a small result containing integer 1.");
+            }
+
             var uri = await results.PutIfAbsentAsync(WorkflowIdentity.TaskPath(spec), new TaskResult(plan.Request.RequestId,
                 plan.JobId, spec.TaskId, plan.Classification, plan.Reason, plan.Fingerprint, value), cancellationToken);
             references.Add(new(plan.Request.RequestId, spec.TaskId, uri));

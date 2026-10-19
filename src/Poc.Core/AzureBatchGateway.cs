@@ -3,7 +3,7 @@ using Azure.Compute.Batch;
 
 namespace Poc.Core;
 
-public sealed class AzureBatchGateway(BatchClient client, string poolId) : IBatchGateway
+public sealed class AzureBatchGateway(BatchClient client, string poolId, BatchStorageOptions? storageOptions = null) : IBatchGateway
 {
     private const string FingerprintName = "poc-fingerprint";
     private const string FingerprintEnvironment = "POC_FINGERPRINT";
@@ -51,9 +51,65 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId) : IBatc
         if (job.State != BatchJobState.Active) throw new WorkflowConflictException("Batch job is no longer active.");
         if (spec.DeadlineUtc is { } submissionDeadline && DateTime.UtcNow >= submissionDeadline)
             throw new TimeoutException("Task submission deadline exceeded while checking the job.");
-        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure);
+
+        ResourceFile? resourceFile = null;
+        OutputFile? outputFile = null;
+        string? inputRelativePath = null;
+        string? outputFileName = null;
+
+        var manifest = spec.Plan.Manifest;
+        if (manifest is not null && storageOptions?.BlobEndpoint is not null)
+        {
+            inputRelativePath = "inputs/input.dat";
+            outputFileName = "output.json";
+
+            var endpointStr = storageOptions.BlobEndpoint.AbsoluteUri.TrimEnd('/');
+            var inputUriBuilder = new UriBuilder($"{endpointStr}/{manifest.Blob.Container}/{manifest.Blob.BlobKey}");
+            if (!string.IsNullOrEmpty(manifest.Blob.VersionId))
+            {
+                inputUriBuilder.Query = $"versionId={Uri.EscapeDataString(manifest.Blob.VersionId)}";
+            }
+
+            var identityRef = !string.IsNullOrWhiteSpace(storageOptions.PoolUamiResourceId)
+                ? new BatchNodeIdentityReference { ResourceId = new Azure.Core.ResourceIdentifier(storageOptions.PoolUamiResourceId) }
+                : null;
+
+            resourceFile = new ResourceFile
+            {
+                HttpUri = inputUriBuilder.Uri,
+                FilePath = inputRelativePath,
+                IdentityReference = identityRef
+            };
+
+            var outputContainer = storageOptions.OutputContainer ?? manifest.Blob.Container;
+            var outputContainerUri = new Uri($"{endpointStr}/{outputContainer}");
+            outputFile = new OutputFile(
+                filePattern: outputFileName,
+                destination: new OutputFileDestination
+                {
+                    Container = new OutputFileBlobContainerDestination(outputContainerUri)
+                    {
+                        IdentityReference = identityRef,
+                        Path = spec.OutputBlobPath
+                    }
+                },
+                uploadOptions: new OutputFileUploadConfig(OutputFileUploadCondition.TaskSuccess)
+            );
+        }
+
+        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure, inputRelativePath, outputFileName);
         var create = new BatchTaskCreateOptions(spec.TaskId, command) { Constraints = new BatchTaskConstraints { MaxTaskRetryCount = 0 } };
         create.EnvironmentSettings.Add(new EnvironmentSetting(FingerprintEnvironment) { Value = spec.Plan.Fingerprint });
+
+        if (resourceFile is not null)
+        {
+            create.ResourceFiles.Add(resourceFile);
+        }
+        if (outputFile is not null)
+        {
+            create.OutputFiles.Add(outputFile);
+        }
+
         try { await client.CreateTaskAsync(spec.Plan.JobId, create, cancellationToken: cancellationToken); }
         catch (RequestFailedException ex) when (ex.Status == 409 && ex.ErrorCode == "TaskExists") { }
         var task = (await client.GetTaskAsync(spec.Plan.JobId, spec.TaskId, cancellationToken: cancellationToken)).Value;
