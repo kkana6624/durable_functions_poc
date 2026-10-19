@@ -1,5 +1,45 @@
 # プロジェクトメモリ
 
+## 2026-10-19 Track 4（App Service 上流 API 実装 TASK-4.2）および Track 5（DTS Private Endpoint & DNS IaC 構成 TASK-5.2）の実装完了
+
+作業計画書（`docs/app-service-blob-batch-work-plan.md`）の TASK-4.2（App Service 上流 API 実装）および TASK-5.2（DTS Scheduler Private Endpoint & DNS IaC 構成）を実装し、Terraform テスト（42件全件）、全 .NET 単体テスト（400件全件: 既存 365 件 + 新規 35 件）、および PowerShell オフライン全テスト（9 スイート全件）の完全合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[TASK-5.2] DTS Scheduler Private Endpoint & DNS 構成 (`infra/durable-task-scheduler.tf`, `infra/variables.tf`, `infra/outputs.tf`)**:
+     - 公式一次資料に基づき、DTS Scheduler のターゲットサブリソース名 `subresource_names = ["scheduler"]`、正準 Private DNS Zone 名 `privatelink.durabletask.io` を採用。
+     - `infra/variables.tf`: `variable "dts_public_network_access_enabled"`（bool, 既定 `true`）を追加。
+     - `azapi_resource.durable_scheduler`: `properties.publicNetworkAccess = var.dts_public_network_access_enabled ? "Enabled" : "Disabled"`、`properties.ipAllowlist = var.dts_public_network_access_enabled ? ["0.0.0.0/0"] : []` に対応。
+     - `azurerm_private_dns_zone.dts`: `privatelink.durabletask.io` を定義。
+     - `azurerm_private_dns_zone_virtual_network_link.dts`: AzureRM 5.10 仕様に適合させ `private_dns_zone_id` と `virtual_network_id = azurerm_virtual_network.validation.id` を紐付け。
+     - `azurerm_private_endpoint.durable_scheduler`: サブネット `private_endpoints`、`subresource_names = ["scheduler"]`、DNS Zone グループを構成。
+     - `infra/tests/modes.tftest.hcl`: DTS Private Endpoint 生成、DNS 紐付け、PNA Disabled 切り替えのテストを追加（42 件全件 PASS）。
+
+- **対応内容詳細**:
+  1. **[TASK-4.2] App Service プロジェクト新規作成 (`src/Poc.AppService/`)**:
+     - `Poc.AppService.csproj` を .NET 10 (ASP.NET Core Web API) として新規作成し、ソリューション `DurableBatchPoc.slnx` に追加。`Poc.Core` を参照。
+     - **所有者解決・偽装防止 (`IAppServiceCallerResolver`)**:
+       - `StubAppServiceCallerResolver`: ローカル・テスト環境向けに `X-Poc-Owner-Id` / `X-Poc-Org-Id` および設定既定値を解決。
+       - `ClaimsPrincipalAppServiceCallerResolver` / `EasyAuthAppServiceCallerResolver`: Entra ID JWT Bearer トークンまたは `X-MS-CLIENT-PRINCIPAL` ヘッダーから認証済み `oid` / `tid` を抽出。クライアントが異なる `X-Poc-Owner-Id` を送付した場合の偽装攻撃を検知し `403 Forbidden`（`WorkflowForbiddenException`）で遮断。
+     - **アップロード受付 API (`POST /api/uploads/initiate`)**:
+       - ファイル名（パストラバーサル・禁止文字排除）、想定サイズ（最大値チェック）を検証し、安全な BlobKey（`owners/{ownerId}/inputs/{inputId}/{filename}`）を採番。
+     - **アップロード確定 API (`POST /api/uploads/finalize`)**:
+       - 他オーナーの Blob 確定要求を `403 Forbidden` で拒否。
+       - Storage 上の実体 Blob の存在・サイズ・SHA-256 をストリーミング検証し、合格時に `ReadyManifest`（schemaVersion: 1）を構築して `inputs/{readyManifestId}/manifest.json` に条件付き保存。
+     - **ワークフロー開始 API (`POST /api/workflows`)**:
+       - `requestId`, `readyManifestId`, 業務パラメータを受け取り、Functions の `StartWorkflow` へ転送。
+       - S2S 認証: `IWorkflowClient`（Function Key `x-functions-key` または Entra Bearer Token `TokenCredential` 注入対応）を介して呼び出し。
+       - 202 Accepted およびクライアント向けポーリング URL（`/api/workflows/{requestId}`）と `Retry-After: 10` を返却。
+     - **状態照会プロキシ API (`GET /api/workflows/{requestId}`)**:
+       - Functions の状態照会 API を呼び出し、安全にサニタイズされたステータス JSON（`requestId`, `status`, `resultAvailable`, `pollUrl`, `terminationConfirmed`, `error`）を返却。
+       - Durable management URL（`runtime/webhooks/...`）、System key（`code=...`）、内部 SAS トークン（`sig=...`）等をレスポンスおよびヘッダーから完全に遮断（AGENTS.md 準拠）。
+     - **キャンセル転送 API (`POST /api/workflows/{requestId}/cancel`)**:
+       - Functions の `CancelWorkflow` へ安全に転送し、取消結果を proxy。
+  2. **[TASK-4.2] App Service 単体・結合テストスイート (`tests/Poc.AppService.Tests/`)**:
+     - `CallerResolverTests.cs`: Stub、ClaimsPrincipal、EasyAuth での所有者解決および偽装ヘッダー検知（403）をテスト。
+     - `UploadServiceTests.cs`: パストラバーサル拒否、最大サイズ超過拒否、実体検証合格/不合格、他オーナー Blob 確定拒否をテスト。
+     - `WorkflowClientTests.cs`: Function Key 注入、Entra Bearer 注入、所有者ヘッダー転送、ステータス/キャンセル応答のデシリアライズをテスト。
+     - `AppServiceIntegrationTests.cs`: `WebApplicationFactory<Program>` を用いた E2E 結合テスト。Initiate -> Finalize -> Start -> Status -> Cancel の一連フロー、401 未認証拒否、403 偽装拒否、400 不正入力拒否、409 競合拒否、503 リトライ応答、および内部キー・Durable 管理 URL 非露出検証をテスト。
+
 ## 2026-10-19 Track 3（Storage 閉域化 疎通検証スクリプト TASK-3.2）・Track 4（App Service IaC 骨格 TASK-4.1）・Track 5（DTS 独立環境定義 TASK-5.1）の実装完了
 
 作業計画書（`docs/app-service-blob-batch-work-plan.md`）の TASK-3.2（閉域アクセス到達性・疎通テストスクリプト作成）、TASK-4.1（業務 App Service インフラ定義骨格）、TASK-5.1（DTS 独立環境構成ファイル整備）を実装し、Terraform テスト（41件全件）、単体テスト（365件全件）、PowerShell オフライン全テスト（9 スイート全件）の完全合格を確認しました。

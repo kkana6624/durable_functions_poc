@@ -1,0 +1,27 @@
+namespace Poc.AppService.Authentication;
+
+public sealed class AppServiceAuthenticationOptions
+{
+    public const string SectionName = "AppServiceAuth";
+
+    /// <summary>
+    /// Authentication mode: "Stub" (for local/testing), "ClaimsPrincipal" (Entra ID bearer tokens), or "EasyAuth" (App Service built-in auth).
+    /// </summary>
+    public string Mode { get; set; } = "Stub";
+
+    /// <summary>
+    /// Optional default owner ID when running in Stub mode without headers.
+    /// </summary>
+    public string? DefaultOwnerId { get; set; }
+
+    /// <summary>
+    /// Optional default org ID when running in Stub mode without headers.
+    /// </summary>
+    public string? DefaultOrgId { get; set; }
+
+    /// <summary>
+    /// Whether to allow requests without an authenticated caller in Stub mode.
+    /// Default is false (unauthenticated requests return 401).
+    /// </summary>
+    public bool AllowAnonymousInStub { get; set; }
+}

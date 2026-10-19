@@ -43,6 +43,11 @@ variable "durable_task_hub_name" {
     error_message = "Task hub name must be 3-45 alphanumeric characters beginning with a letter."
   }
 }
+variable "dts_public_network_access_enabled" {
+  type        = bool
+  default     = true
+  description = "Enable public network access for the Durable Task Scheduler."
+}
 variable "validation_operator_principal_id" {
   type        = string
   default     = null

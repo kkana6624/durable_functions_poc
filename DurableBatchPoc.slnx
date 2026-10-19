@@ -2,10 +2,12 @@
   <Folder Name="/src/">
     <Project Path="src/Poc.Core/Poc.Core.csproj" />
     <Project Path="src/Poc.Functions/Poc.Functions.csproj" />
+    <Project Path="src/Poc.AppService/Poc.AppService.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Poc.Tests/Poc.Tests.csproj" />
     <Project Path="tests/DtsProbe.Tests/DtsProbe.Tests.csproj" />
+    <Project Path="tests/Poc.AppService.Tests/Poc.AppService.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/BatchSmoke/BatchSmoke.csproj" />

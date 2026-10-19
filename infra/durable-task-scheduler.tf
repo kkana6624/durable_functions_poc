@@ -23,12 +23,49 @@ resource "azapi_resource" "durable_scheduler" {
   body = {
     properties = {
       sku                 = { name = "Consumption" }
-      publicNetworkAccess = "Enabled"
-      ipAllowlist         = ["0.0.0.0/0"]
+      publicNetworkAccess = var.dts_public_network_access_enabled ? "Enabled" : "Disabled"
+      ipAllowlist         = var.dts_public_network_access_enabled ? ["0.0.0.0/0"] : []
     }
   }
   response_export_values = ["properties.endpoint"]
   depends_on             = [azurerm_resource_group.poc]
+}
+
+resource "azurerm_private_dns_zone" "dts" {
+  count               = local.use_durable_task_scheduler ? 1 : 0
+  name                = "privatelink.durabletask.io"
+  resource_group_name = local.resource_group_name
+  tags                = local.tags
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "dts" {
+  count                = local.use_durable_task_scheduler ? 1 : 0
+  name                 = "${local.prefix}-vnetlink-dts"
+  private_dns_zone_id  = azurerm_private_dns_zone.dts[0].id
+  virtual_network_id   = azurerm_virtual_network.validation.id
+  registration_enabled = false
+  tags                 = local.tags
+}
+
+resource "azurerm_private_endpoint" "durable_scheduler" {
+  count               = local.use_durable_task_scheduler ? 1 : 0
+  name                = "${local.prefix}-pe-dts-scheduler"
+  location            = local.location
+  resource_group_name = local.resource_group_name
+  subnet_id           = azurerm_subnet.private_endpoints.id
+  tags                = local.tags
+
+  private_service_connection {
+    name                           = "${local.prefix}-psc-dts-scheduler"
+    private_connection_resource_id = azapi_resource.durable_scheduler[0].id
+    subresource_names              = ["scheduler"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "dts-dns-zone-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.dts[0].id]
+  }
 }
 
 resource "azapi_resource" "durable_task_hub" {

@@ -45,6 +45,7 @@ output "deployment" {
     service_plan_id                       = local.service_plan_id
     durable_backend                       = var.durable_backend
     task_hub_name                         = var.durable_task_hub_name
+    dts_public_network_access_enabled     = var.dts_public_network_access_enabled
     durable_scheduler_id                  = local.use_durable_task_scheduler ? azapi_resource.durable_scheduler[0].id : null
     durable_scheduler_name                = local.use_durable_task_scheduler ? azapi_resource.durable_scheduler[0].name : null
     durable_scheduler_endpoint            = local.use_durable_task_scheduler ? azapi_resource.durable_scheduler[0].output.properties.endpoint : null
@@ -136,4 +137,10 @@ output "app_service_private_ip" {
   value       = var.enable_app_service ? azurerm_private_endpoint.app_service_inbound[0].private_service_connection[0].private_ip_address : null
   description = "Private IP address of the optional business App Service inbound Private Endpoint."
 }
+
+output "dts_private_endpoint_id" {
+  value       = local.use_durable_task_scheduler ? azurerm_private_endpoint.durable_scheduler[0].id : null
+  description = "The ID of the Durable Task Scheduler Private Endpoint."
+}
+
 

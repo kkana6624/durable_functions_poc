@@ -216,7 +216,7 @@ run "existing_preserves_shared_resources" {
     error_message = "The default must retain a managed plan, using the moved address without changing its identity."
   }
   assert {
-    condition     = length(azapi_resource.durable_scheduler) == 0 && length(azapi_resource.durable_task_hub) == 0 && length(azapi_resource.durable_retention) == 0 && length(azurerm_role_assignment.durable_task_hub) == 0 && output.deployment.durable_backend == "azureStorage" && output.deployment.task_hub_name == "PocBatchHub" && output.deployment.durable_scheduler_endpoint == null && !contains(keys(azurerm_linux_function_app.poc.app_settings), "DURABLE_TASK_SCHEDULER_CONNECTION_STRING") && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureFunctionsJobHost__extensions__durableTask__storageProvider__type") && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureFunctionsJobHost__extensions__durableTask__hubName")
+    condition     = length(azapi_resource.durable_scheduler) == 0 && length(azapi_resource.durable_task_hub) == 0 && length(azapi_resource.durable_retention) == 0 && length(azurerm_role_assignment.durable_task_hub) == 0 && length(azurerm_private_endpoint.durable_scheduler) == 0 && length(azurerm_private_dns_zone.dts) == 0 && output.dts_private_endpoint_id == null && output.deployment.durable_backend == "azureStorage" && output.deployment.task_hub_name == "PocBatchHub" && output.deployment.durable_scheduler_endpoint == null && !contains(keys(azurerm_linux_function_app.poc.app_settings), "DURABLE_TASK_SCHEDULER_CONNECTION_STRING") && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureFunctionsJobHost__extensions__durableTask__storageProvider__type") && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureFunctionsJobHost__extensions__durableTask__hubName")
     error_message = "Default Azure Storage must preserve the existing app settings and create no DTS resources or permissions."
   }
   assert {
@@ -321,6 +321,29 @@ run "durable_task_scheduler_consumption_and_identity" {
   assert {
     condition     = output.deployment.durable_backend == "durableTaskScheduler" && output.deployment.task_hub_name == "testhub" && output.deployment.durable_scheduler_endpoint == "https://scheduler-test.region.durabletask.io" && output.deployment.durable_task_hub_id == azapi_resource.durable_task_hub[0].id
     error_message = "Non-secret deployment metadata must identify the selected backend, scheduler and hub."
+  }
+  assert {
+    condition     = length(azurerm_private_endpoint.durable_scheduler) == 1 && length(azurerm_private_dns_zone.dts) == 1 && azurerm_private_dns_zone.dts[0].name == "privatelink.durabletask.io" && contains(azurerm_private_endpoint.durable_scheduler[0].private_service_connection[0].subresource_names, "scheduler") && contains(azurerm_private_endpoint.durable_scheduler[0].private_dns_zone_group[0].private_dns_zone_ids, azurerm_private_dns_zone.dts[0].id) && output.deployment.dts_public_network_access_enabled == true && output.dts_private_endpoint_id == azurerm_private_endpoint.durable_scheduler[0].id
+    error_message = "DTS must provision Private Endpoint with subresource 'scheduler' and Private DNS Zone."
+  }
+}
+
+run "dts_public_network_access_can_be_disabled" {
+  command = plan
+  variables {
+    durable_backend                   = "durableTaskScheduler"
+    durable_task_hub_name             = "testhub"
+    dts_public_network_access_enabled = false
+  }
+  override_resource {
+    target = azapi_resource.durable_task_hub[0]
+    values = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.DurableTask/schedulers/scheduler-test/taskHubs/testhub"
+    }
+  }
+  assert {
+    condition     = azapi_resource.durable_scheduler[0].body.properties.publicNetworkAccess == "Disabled" && length(azapi_resource.durable_scheduler[0].body.properties.ipAllowlist) == 0 && output.deployment.dts_public_network_access_enabled == false
+    error_message = "DTS public network access must be Disabled with empty ipAllowlist when disabled."
   }
 }
 
