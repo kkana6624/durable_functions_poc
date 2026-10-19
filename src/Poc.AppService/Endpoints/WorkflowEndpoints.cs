@@ -27,7 +27,11 @@ public static class WorkflowEndpoints
             {
                 owner = callerResolver.Resolve(httpContext);
             }
-            catch (Exception ex) when (ex is ArgumentException or WorkflowForbiddenException)
+            catch (WorkflowForbiddenException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+            }
+            catch (ArgumentException ex)
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
@@ -128,7 +132,11 @@ public static class WorkflowEndpoints
             {
                 owner = callerResolver.Resolve(httpContext);
             }
-            catch (Exception ex) when (ex is ArgumentException or WorkflowForbiddenException)
+            catch (WorkflowForbiddenException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+            }
+            catch (ArgumentException ex)
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
@@ -195,7 +203,11 @@ public static class WorkflowEndpoints
             {
                 owner = callerResolver.Resolve(httpContext);
             }
-            catch (Exception ex) when (ex is ArgumentException or WorkflowForbiddenException)
+            catch (WorkflowForbiddenException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+            }
+            catch (ArgumentException ex)
             {
                 return Results.BadRequest(new { error = ex.Message });
             }

@@ -1,5 +1,25 @@
 # プロジェクトメモリ
 
+## 2026-10-19 Track 4（App Service 統合テストスクリプト TASK-4.3）の実装完了
+
+作業計画書（`docs/app-service-blob-batch-work-plan.md`）の TASK-4.3（S2S 認証・App Role 認可・所有者マッピング統合テストスクリプト作成 `scripts/Invoke-AppServiceValidation.ps1` & `scripts/tests/AppServiceValidation.Tests.ps1`）を実装し、Pester テスト（全 12 スイート 24 テストグループ全件合格、新規 13 テスト PASS）および全 .NET 単体テスト（400件全件 PASS）の完全合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[TASK-4.3] 統合テストスクリプト (`scripts/Invoke-AppServiceValidation.ps1`)**:
+     - パラメータ: `AppServiceUrl` (必須), `BearerToken` (任意), `OwnerId` (既定 'app-owner-001'), `OrgId` (既定 'app-org-001'), `PollIntervalSeconds` (既定 2), `TimeoutSeconds` (既定 120), `AsJson` (switch), `HttpHandler` (scriptblock 任意).
+     - **全 6 シナリオ検証**:
+       - シナリオ 1: `POST /api/uploads/initiate` で安全な BlobKey（`owners/{ownerId}/inputs/{inputId}/{filename}`）取得と入力採番を検証。
+       - シナリオ 2: `POST /api/uploads/finalize` で ReadyManifest 構築と `readyManifestId`、サイズ、SHA-256 取得を検証。
+       - シナリオ 3: `POST /api/workflows` で 202 Accepted および相対ポーリング URL（`/api/workflows/{requestId}`）の受領を検証。
+       - シナリオ 4: `GET /api/workflows/{requestId}` で状態ポーリングを実施し、ステータス JSON が正しく取得できること、および **Durable management URL (`runtime/webhooks`) や Function Key、内部 SAS が caller に一切漏洩していないこと** を厳格にアサート。
+       - シナリオ 5: `POST /api/workflows/{requestId}/cancel` でキャンセル要求が転送され `Cancelled`/`Cancelling` を取得できることを検証。
+       - シナリオ 6 (セキュリティ): 異なる所有者を詐称する `X-Poc-Owner-Id` 送付時に `403 Forbidden` となることを検証。
+     - **セキュリティ・秘密情報保護**: AGENTS.md に準拠し、BearerToken、Function key、SAS、Durable 管理 URL は出力ログおよび構造化戻り値から完全にマスク（`Protect-AppServiceSecret` / `Test-AppServiceSecretLeak`）。
+  2. **[TASK-4.3] Pester テストスイート (`scripts/tests/AppServiceValidation.Tests.ps1`)**:
+     - Fake HTTP ハンドラ注入フックを用い、オフラインで全 6 シナリオの正常完走（Pass）、複数回ポーリング遷移、403 偽装拒否の検知、Durable 管理 URL / SAS / キー漏洩時の Fail 検知、ポーリングタイムアウト時の Fail、入力パラメータバリデーション、および `-AsJson` 出力を網羅（13 件全件 PASS）。
+  3. **App Service エンドポイント改修 (`src/Poc.AppService/Endpoints/UploadEndpoints.cs`, `WorkflowEndpoints.cs`)**:
+     - `callerResolver.Resolve` での `WorkflowForbiddenException`（所有者詐称ヘッダー不一致時）を 400 ではなく HTTP 403 Forbidden として返却するようにハンドリングを是正。
+
 ## 2026-10-19 Track 4（App Service 上流 API 実装 TASK-4.2）および Track 5（DTS Private Endpoint & DNS IaC 構成 TASK-5.2）の実装完了
 
 作業計画書（`docs/app-service-blob-batch-work-plan.md`）の TASK-4.2（App Service 上流 API 実装）および TASK-5.2（DTS Scheduler Private Endpoint & DNS IaC 構成）を実装し、Terraform テスト（42件全件）、全 .NET 単体テスト（400件全件: 既存 365 件 + 新規 35 件）、および PowerShell オフライン全テスト（9 スイート全件）の完全合格を確認しました。
