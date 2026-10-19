@@ -235,6 +235,10 @@ run "existing_preserves_shared_resources" {
     condition     = azurerm_linux_function_app.poc.storage_account_name == azurerm_storage_account.poc.name && azurerm_linux_function_app.poc.storage_uses_managed_identity == true && !contains(keys(azurerm_linux_function_app.poc.app_settings), "AzureWebJobsStorage__accountName")
     error_message = "Host storage account name must come only from the provider-managed identity attributes, not app_settings."
   }
+  assert {
+    condition     = azurerm_linux_function_app.poc.app_settings.BATCH_POOL_UAMI_RESOURCE_ID == "" && length(azurerm_role_assignment.batch_pool_blob_reader) == 0 && length(azurerm_role_assignment.batch_pool_blob_output_contributor) == 0 && azurerm_linux_function_app.poc.app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input"
+    error_message = "Existing mode must not assign Batch pool blob roles and must leave BATCH_POOL_UAMI_RESOURCE_ID empty while providing WORKFLOW_INPUT_CONTAINER."
+  }
 }
 
 run "existing_cross_rg_service_plan_is_read_only" {
@@ -556,7 +560,7 @@ run "new_marketplace_creates_dedicated_resources" {
     error_message = "Batch pool must be configured with UserAssigned identity."
   }
   assert {
-    condition     = azurerm_role_assignment.batch_pool_blob_reader.role_definition_name == "Storage Blob Data Reader" && azurerm_role_assignment.batch_pool_blob_reader.principal_id == azurerm_user_assigned_identity.batch_pool.principal_id && azurerm_role_assignment.batch_pool_blob_output_contributor.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.batch_pool_blob_output_contributor.principal_id == azurerm_user_assigned_identity.batch_pool.principal_id
+    condition     = azurerm_role_assignment.batch_pool_blob_reader[0].role_definition_name == "Storage Blob Data Reader" && azurerm_role_assignment.batch_pool_blob_reader[0].principal_id == azurerm_user_assigned_identity.batch_pool.principal_id && azurerm_role_assignment.batch_pool_blob_output_contributor[0].role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.batch_pool_blob_output_contributor[0].principal_id == azurerm_user_assigned_identity.batch_pool.principal_id
     error_message = "Batch pool UAMI must receive Reader on storage account and Contributor on workflow-output container."
   }
   assert {
@@ -749,8 +753,8 @@ run "app_service_enabled_provisions_isolated_resources" {
     error_message = "App service must provision workflow-input container and grant Storage Blob Data Contributor to UAMI."
   }
   assert {
-    condition     = azurerm_linux_web_app.app_service[0].app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input" && output.deployment.enable_app_service == true
-    error_message = "App service app_settings must reference Function URL and Storage endpoint without secrets."
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "" && output.deployment.enable_app_service == true
+    error_message = "App service app_settings must reference Function URL, Storage endpoint, and default FunctionKey auth mode without secrets."
   }
 }
 
@@ -761,5 +765,46 @@ run "invalid_app_service_sku_rejected" {
     app_service_sku    = "INVALID_SKU"
   }
   expect_failures = [var.app_service_sku]
+}
+
+run "existing_with_custom_uami" {
+  command = plan
+  variables {
+    existing_batch_pool_uami_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/existing-uami"
+  }
+  assert {
+    condition     = azurerm_linux_function_app.poc.app_settings.BATCH_POOL_UAMI_RESOURCE_ID == var.existing_batch_pool_uami_resource_id && length(azurerm_role_assignment.batch_pool_blob_reader) == 0 && length(azurerm_role_assignment.batch_pool_blob_output_contributor) == 0
+    error_message = "Function app settings must use the specified existing Batch pool UAMI resource ID and not create new pool role assignments."
+  }
+}
+
+run "app_service_with_entra_auth" {
+  command = plan
+  variables {
+    enable_app_service                    = true
+    workflow_auth_mode                    = "EntraEasyAuth"
+    workflow_auth_tenant_id               = "11111111-1111-1111-1111-111111111111"
+    workflow_auth_api_client_id           = "22222222-2222-2222-2222-222222222222"
+    workflow_auth_audience                = "api://workflow"
+    workflow_auth_allowed_backend_app_ids = ["33333333-3333-3333-3333-333333333333"]
+    workflow_auth_required_app_role       = "Workflow.Invoke"
+  }
+  assert {
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "EntraBearer" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "api://workflow" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == ""
+    error_message = "App service should resolve EntraBearer and audience from workflow auth configuration."
+  }
+}
+
+run "app_service_with_explicit_auth_settings" {
+  command = plan
+  variables {
+    enable_app_service                = true
+    app_service_workflow_auth_mode    = "FunctionKey"
+    app_service_workflow_function_key = "dummy_secret_key"
+  }
+  assert {
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "dummy_secret_key"
+    error_message = "App service should use explicit auth mode and function key."
+  }
 }
 

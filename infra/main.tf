@@ -16,15 +16,16 @@ resource "azurerm_resource_group" "poc" {
 }
 
 locals {
-  prefix                    = "poc-${var.name_suffix}"
-  tags                      = { purpose = "durable-batch-feasibility", scope = "poc" }
-  resource_group_name       = var.create_resource_group ? azurerm_resource_group.poc[0].name : data.azurerm_resource_group.existing[0].name
-  location                  = var.create_resource_group ? azurerm_resource_group.poc[0].location : data.azurerm_resource_group.existing[0].location
-  batch_account_id          = var.batch_mode == "new" ? azurerm_batch_account.poc[0].id : var.batch_account_id
-  batch_endpoint            = var.batch_mode == "new" ? "https://${trimprefix(azurerm_batch_account.poc[0].account_endpoint, "https://")}" : var.batch_endpoint
-  batch_pool_id             = var.batch_mode == "new" ? azurerm_batch_pool.poc[0].name : var.batch_pool_id
-  batch_account_name        = var.batch_mode == "new" ? azurerm_batch_account.poc[0].name : try(split("/", var.batch_account_id)[8], null)
-  batch_resource_group_name = var.batch_mode == "new" ? local.resource_group_name : try(split("/", var.batch_account_id)[4], null)
+  prefix                      = "poc-${var.name_suffix}"
+  tags                        = { purpose = "durable-batch-feasibility", scope = "poc" }
+  resource_group_name         = var.create_resource_group ? azurerm_resource_group.poc[0].name : data.azurerm_resource_group.existing[0].name
+  location                    = var.create_resource_group ? azurerm_resource_group.poc[0].location : data.azurerm_resource_group.existing[0].location
+  batch_account_id            = var.batch_mode == "new" ? azurerm_batch_account.poc[0].id : var.batch_account_id
+  batch_endpoint              = var.batch_mode == "new" ? "https://${trimprefix(azurerm_batch_account.poc[0].account_endpoint, "https://")}" : var.batch_endpoint
+  batch_pool_id               = var.batch_mode == "new" ? azurerm_batch_pool.poc[0].name : var.batch_pool_id
+  batch_account_name          = var.batch_mode == "new" ? azurerm_batch_account.poc[0].name : try(split("/", var.batch_account_id)[8], null)
+  batch_resource_group_name   = var.batch_mode == "new" ? local.resource_group_name : try(split("/", var.batch_account_id)[4], null)
+  batch_pool_uami_resource_id = var.batch_mode == "new" ? azurerm_user_assigned_identity.batch_pool.id : var.existing_batch_pool_uami_resource_id
 }
 
 
@@ -144,9 +145,10 @@ resource "azurerm_linux_function_app" "poc" {
     BATCH_POLL_SECONDS              = tostring(var.batch_poll_seconds)
     WORKFLOW_TIMEOUT_MIN            = tostring(var.workflow_timeout_minutes)
     WEBSITE_RUN_FROM_PACKAGE        = "1"
-    BATCH_POOL_UAMI_RESOURCE_ID     = azurerm_user_assigned_identity.batch_pool.id
+    BATCH_POOL_UAMI_RESOURCE_ID     = local.batch_pool_uami_resource_id != null ? local.batch_pool_uami_resource_id : ""
     BATCH_OUTPUT_CONTAINER          = azurerm_storage_container.workflow_output.name
     BLOB_SERVICE_ENDPOINT           = azurerm_storage_account.poc.primary_blob_endpoint
+    WORKFLOW_INPUT_CONTAINER        = "workflow-input"
   }, local.durable_app_settings, local.workflow_auth_app_settings)
 }
 
@@ -173,6 +175,7 @@ resource "azurerm_role_assignment" "batch" {
 
 # Batch pool nodes download inputs using Storage Blob Data Reader
 resource "azurerm_role_assignment" "batch_pool_blob_reader" {
+  count                = var.batch_mode == "new" ? 1 : 0
   scope                = azurerm_storage_account.poc.id
   role_definition_name = "Storage Blob Data Reader"
   principal_id         = azurerm_user_assigned_identity.batch_pool.principal_id
@@ -180,6 +183,7 @@ resource "azurerm_role_assignment" "batch_pool_blob_reader" {
 
 # Batch pool nodes upload task output files to the dedicated output container using Storage Blob Data Contributor
 resource "azurerm_role_assignment" "batch_pool_blob_output_contributor" {
+  count                = var.batch_mode == "new" ? 1 : 0
   scope                = "${azurerm_storage_account.poc.id}/blobServices/default/containers/${azurerm_storage_container.workflow_output.name}"
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_user_assigned_identity.batch_pool.principal_id

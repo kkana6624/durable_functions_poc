@@ -158,21 +158,8 @@ public sealed class WorkflowAdmission
 
     public async Task<ReadyManifest?> TryGetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(readyManifestId) || results is null) return null;
-        try
-        {
-            var manifest = await results.ReadAsync<ReadyManifest>(WorkflowIdentity.ReadyManifestPath(readyManifestId), cancellationToken);
-            if (manifest is not null)
-            {
-                manifest.Validate();
-                if (manifest.ReadyManifestId != readyManifestId)
-                    throw new InvalidDataException("Ready manifest ID mismatch.");
-            }
-            return manifest;
-        }
-        catch (FileNotFoundException) { return null; }
-        catch (KeyNotFoundException) { return null; }
-        catch (Azure.RequestFailedException ex) when (ex.Status == 404) { return null; }
+        if (string.IsNullOrWhiteSpace(readyManifestId)) return null;
+        return await storage.TryGetReadyManifestAsync(readyManifestId, cancellationToken);
     }
 
     public async Task<ReadyManifest> GetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>

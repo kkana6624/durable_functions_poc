@@ -10,12 +10,12 @@ public sealed class WorkflowClientOptions
     public string FunctionAppUrl { get; set; } = "http://localhost:7071";
 
     /// <summary>
-    /// Authentication mode for Function App S2S calls: "PocFunctionKey" or "EntraBearer".
+    /// Authentication mode for Function App S2S calls: "PocFunctionKey", "EntraBearer", or "EntraEasyAuth".
     /// </summary>
     public string AuthMode { get; set; } = "PocFunctionKey";
 
     /// <summary>
-    /// Function key (x-functions-key) used when AuthMode is "PocFunctionKey".
+    /// Function key (x-functions-key). Can be used independently or in combination with Entra Bearer.
     /// Kept out of logs, repository files, and client-facing responses.
     /// </summary>
     public string? FunctionKey { get; set; }

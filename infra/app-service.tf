@@ -77,6 +77,9 @@ resource "azurerm_linux_web_app" "app_service" {
     WORKFLOW_INPUT_CONTAINER              = "workflow-input"
     APP_SERVICE_UAMI_CLIENT_ID            = azurerm_user_assigned_identity.app_service[0].client_id
     APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.poc.connection_string
+    WORKFLOW_AUTH_MODE                    = var.app_service_workflow_auth_mode != null ? var.app_service_workflow_auth_mode : (var.workflow_auth_mode == "EntraEasyAuth" ? "EntraBearer" : "FunctionKey")
+    WORKFLOW_AUTH_AUDIENCE                = var.workflow_auth_audience != null ? var.workflow_auth_audience : (var.workflow_auth_api_client_id != null ? "api://${var.workflow_auth_api_client_id}" : "")
+    WORKFLOW_FUNCTION_KEY                 = var.app_service_workflow_function_key != null ? var.app_service_workflow_function_key : ""
   }
 }
 

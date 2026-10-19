@@ -186,6 +186,17 @@ variable "batch_pool_id" {
     error_message = "Existing mode requires a valid Pool ID; new mode must leave it null."
   }
 }
+variable "existing_batch_pool_uami_resource_id" {
+  type        = string
+  default     = null
+  description = "Existing User-Assigned Managed Identity resource ID attached to the existing Batch pool for blob transfer, or null if unassigned."
+  validation {
+    condition = var.existing_batch_pool_uami_resource_id == null ? true : (
+      can(regex("(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft.ManagedIdentity/userAssignedIdentities/[^/]+$", var.existing_batch_pool_uami_resource_id))
+    )
+    error_message = "Existing Batch pool UAMI resource ID must be a valid Microsoft.ManagedIdentity/userAssignedIdentities ARM ID, or null."
+  }
+}
 variable "gallery_image_version_id" {
   type        = string
   default     = null
@@ -323,5 +334,22 @@ variable "app_service_outbound_subnet_prefix" {
     condition     = can(cidrnetmask(var.app_service_outbound_subnet_prefix))
     error_message = "Use a separate IPv4 App Service outbound subnet CIDR within the validation VNet."
   }
+}
+
+variable "app_service_workflow_auth_mode" {
+  type        = string
+  default     = null
+  description = "Authentication mode for App Service to call Functions (e.g. FunctionKey, EntraBearer). Defaults to matching workflow_auth_mode."
+  validation {
+    condition     = var.app_service_workflow_auth_mode == null ? true : contains(["FunctionKey", "EntraBearer"], var.app_service_workflow_auth_mode)
+    error_message = "app_service_workflow_auth_mode must be null, FunctionKey, or EntraBearer."
+  }
+}
+
+variable "app_service_workflow_function_key" {
+  type        = string
+  default     = null
+  sensitive   = true
+  description = "Optional Function Key for App Service to call Function App."
 }
 

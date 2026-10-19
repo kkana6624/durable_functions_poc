@@ -31,6 +31,8 @@ blobOptions.Retry.MaxRetries = 1;
 blobOptions.Retry.NetworkTimeout = TimeSpan.FromSeconds(10);
 var blobServiceClient = new BlobServiceClient(new Uri(Required("BLOB_ENDPOINT")), credential, blobOptions);
 var containerClient = blobServiceClient.GetBlobContainerClient(Required("BLOB_CONTAINER"));
+var inputContainerName = builder.Configuration["WORKFLOW_INPUT_CONTAINER"] ?? "workflow-input";
+var inputContainerClient = blobServiceClient.GetBlobContainerClient(inputContainerName);
 
 var poolUamiResourceId = builder.Configuration["BATCH_POOL_UAMI_RESOURCE_ID"];
 BatchStorageOptions? batchStorageOptions = null;
@@ -59,7 +61,7 @@ if (batchStorageOptions is not null)
 {
     builder.Services.AddSingleton(batchStorageOptions);
 }
-var storageRepo = new BlobStorageRepository(resultRepo, blobServiceClient, containerClient);
+var storageRepo = new BlobStorageRepository(resultRepo, blobServiceClient, containerClient, inputContainerClient);
 builder.Services.AddSingleton<IResultRepository>(resultRepo);
 builder.Services.AddSingleton(storageRepo);
 builder.Services.AddSingleton<IBlobStorageRepository>(storageRepo);

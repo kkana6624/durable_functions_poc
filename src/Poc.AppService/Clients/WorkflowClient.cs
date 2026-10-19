@@ -19,7 +19,8 @@ public sealed class WorkflowClient(
 
     private async Task PrepareRequestAsync(HttpRequestMessage request, WorkflowOwner? owner, CancellationToken cancellationToken)
     {
-        if (string.Equals(clientOptions.AuthMode, "EntraBearer", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(clientOptions.AuthMode, "EntraBearer", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(clientOptions.AuthMode, "EntraEasyAuth", StringComparison.OrdinalIgnoreCase))
         {
             if (tokenCredential is not null)
             {
@@ -28,7 +29,8 @@ public sealed class WorkflowClient(
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokenResult.Token);
             }
         }
-        else if (!string.IsNullOrWhiteSpace(clientOptions.FunctionKey))
+
+        if (!string.IsNullOrWhiteSpace(clientOptions.FunctionKey))
         {
             request.Headers.Add("x-functions-key", clientOptions.FunctionKey);
         }

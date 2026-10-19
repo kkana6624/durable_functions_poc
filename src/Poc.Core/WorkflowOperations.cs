@@ -47,7 +47,7 @@ public sealed class WorkflowOperations(
         ReadyManifest? manifest = null;
         if (!string.IsNullOrEmpty(request.ReadyManifestId))
         {
-            manifest = await TryReadAsync<ReadyManifest>(WorkflowIdentity.ReadyManifestPath(request.ReadyManifestId), cancellationToken);
+            manifest = await storage.TryGetReadyManifestAsync(request.ReadyManifestId, cancellationToken);
         }
         var cancelRequested = cancelRecord is not null || resolution?.Status == "Cancelled";
         return new(request, classification.Classification, classification.Reason, WorkflowIdentity.JobId(request.RequestId),

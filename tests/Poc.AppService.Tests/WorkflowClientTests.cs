@@ -97,6 +97,60 @@ public class WorkflowClientTests
         Assert.NotNull(capturedRequest.Headers.Authorization);
         Assert.Equal("Bearer", capturedRequest.Headers.Authorization.Scheme);
         Assert.Equal("test-bearer-token", capturedRequest.Headers.Authorization.Parameter);
+        Assert.False(capturedRequest.Headers.Contains("x-functions-key"));
+    }
+
+    [Theory]
+    [InlineData("EntraBearer")]
+    [InlineData("EntraEasyAuth")]
+    public async Task StartWorkflowAsync_WithEntraAndFunctionKey_InjectsBothHeaders(string authMode)
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new DelegatingHandlerStub(req =>
+        {
+            capturedRequest = req;
+            var response = new HttpResponseMessage(HttpStatusCode.Accepted)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new { instanceId = "instance-combined" }))
+            };
+            return Task.FromResult(response);
+        });
+
+        var httpClient = new HttpClient(handler);
+        var options = Options.Create(new WorkflowClientOptions
+        {
+            FunctionAppUrl = "https://poc-functions.azurewebsites.net",
+            AuthMode = authMode,
+            EntraAudience = "api://workflow-backend",
+            FunctionKey = "my-secret-key-999"
+        });
+
+        var tokenCredentialMock = new Mock<TokenCredential>();
+        tokenCredentialMock
+            .Setup(c => c.GetTokenAsync(It.IsAny<TokenRequestContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AccessToken("test-combined-bearer-token", DateTimeOffset.UtcNow.AddHours(1)));
+
+        var client = new WorkflowClient(httpClient, options, tokenCredentialMock.Object);
+        var owner = new WorkflowOwner("carol");
+        var request = new WorkflowRequest("req-combined");
+
+        var result = await client.StartWorkflowAsync(request, owner);
+
+        Assert.True(result.Success);
+        Assert.NotNull(capturedRequest);
+
+        // Bearer token must be present
+        Assert.NotNull(capturedRequest.Headers.Authorization);
+        Assert.Equal("Bearer", capturedRequest.Headers.Authorization.Scheme);
+        Assert.Equal("test-combined-bearer-token", capturedRequest.Headers.Authorization.Parameter);
+
+        // Function Key header must also be present
+        Assert.True(capturedRequest.Headers.TryGetValues("x-functions-key", out var keyValues));
+        Assert.Equal("my-secret-key-999", keyValues.First());
+
+        // Owner header must also be present
+        Assert.True(capturedRequest.Headers.TryGetValues("X-Poc-Owner-Id", out var ownerValues));
+        Assert.Equal("carol", ownerValues.First());
     }
 
     [Fact]

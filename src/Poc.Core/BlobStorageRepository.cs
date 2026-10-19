@@ -7,13 +7,53 @@ using Azure.Storage.Blobs.Models;
 
 namespace Poc.Core;
 
-public class BlobStorageRepository(IResultRepository results, BlobServiceClient? blobServiceClient = null, BlobContainerClient? containerClient = null) : IBlobStorageRepository
+public class BlobStorageRepository : IBlobStorageRepository
 {
     private static readonly Regex ContainerNameRegex = new(@"\A[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]\z", RegexOptions.Compiled);
 
-    public BlobStorageRepository(IResultRepository results) : this(results, null, null) { }
-    public BlobStorageRepository(BlobContainerClient containerClient) : this(new BlobResultRepository(containerClient), null, containerClient) { }
-    public BlobStorageRepository(BlobServiceClient blobServiceClient, BlobContainerClient containerClient) : this(new BlobResultRepository(containerClient), blobServiceClient, containerClient) { }
+    private readonly IResultRepository results;
+    private readonly BlobServiceClient? blobServiceClient;
+    private readonly BlobContainerClient? containerClient;
+    private readonly BlobContainerClient? manifestContainerClient;
+    private readonly IResultRepository manifestRepository;
+
+    public BlobContainerClient? ContainerClient => containerClient;
+    public BlobContainerClient? ManifestContainerClient => manifestContainerClient;
+    public IResultRepository ManifestRepository => manifestRepository;
+
+    public BlobStorageRepository(
+        IResultRepository results,
+        BlobServiceClient? blobServiceClient = null,
+        BlobContainerClient? containerClient = null,
+        BlobContainerClient? manifestContainerClient = null,
+        IResultRepository? manifestResults = null)
+    {
+        this.results = results ?? throw new ArgumentNullException(nameof(results));
+        this.blobServiceClient = blobServiceClient;
+        this.containerClient = containerClient;
+        this.manifestContainerClient = manifestContainerClient;
+        this.manifestRepository = manifestResults
+            ?? (manifestContainerClient is not null ? new BlobResultRepository(manifestContainerClient) : results);
+    }
+
+    public BlobStorageRepository(IResultRepository results)
+        : this(results, null, null, null, null) { }
+
+    public BlobStorageRepository(BlobContainerClient containerClient)
+        : this(new BlobResultRepository(containerClient), null, containerClient, containerClient, null) { }
+
+    public BlobStorageRepository(BlobServiceClient blobServiceClient, BlobContainerClient containerClient)
+        : this(new BlobResultRepository(containerClient), blobServiceClient, containerClient, containerClient, null) { }
+
+    public BlobStorageRepository(BlobServiceClient blobServiceClient, BlobContainerClient containerClient, BlobContainerClient manifestContainerClient)
+        : this(new BlobResultRepository(containerClient), blobServiceClient, containerClient, manifestContainerClient, null) { }
+
+    public BlobStorageRepository(
+        IResultRepository results,
+        BlobServiceClient? blobServiceClient,
+        BlobContainerClient? containerClient,
+        BlobContainerClient? manifestContainerClient)
+        : this(results, blobServiceClient, containerClient, manifestContainerClient, null) { }
 
     public Func<ReadyManifest, CancellationToken, Task>? TargetBlobVerifier { get; set; }
     public Func<string, string, CancellationToken, Task<Stream>>? TaskOutputBlobStreamOpener { get; set; }
@@ -31,7 +71,7 @@ public class BlobStorageRepository(IResultRepository results, BlobServiceClient?
         manifest.Validate();
         await VerifyTargetBlobAsync(manifest, cancellationToken);
         var path = WorkflowIdentity.ReadyManifestPath(manifest.ReadyManifestId);
-        return await results.PutIfAbsentAsync(path, manifest, cancellationToken);
+        return await manifestRepository.PutIfAbsentAsync(path, manifest, cancellationToken);
     }
 
     /// <summary>
@@ -45,7 +85,7 @@ public class BlobStorageRepository(IResultRepository results, BlobServiceClient?
         var path = WorkflowIdentity.ReadyManifestPath(readyManifestId);
         try
         {
-            var manifest = await results.ReadAsync<ReadyManifest>(path, cancellationToken);
+            var manifest = await manifestRepository.ReadAsync<ReadyManifest>(path, cancellationToken);
             if (manifest is not null)
             {
                 manifest.Validate();
@@ -130,6 +170,12 @@ public class BlobStorageRepository(IResultRepository results, BlobServiceClient?
             return;
         }
 
+        if (manifestRepository is ITargetBlobVerifier manifestVerifier)
+        {
+            await manifestVerifier.VerifyTargetBlobAsync(manifest, cancellationToken);
+            return;
+        }
+
         if (results is ITargetBlobVerifier verifier)
         {
             await verifier.VerifyTargetBlobAsync(manifest, cancellationToken);
@@ -140,6 +186,10 @@ public class BlobStorageRepository(IResultRepository results, BlobServiceClient?
         if (blobServiceClient is not null)
         {
             blobClient = blobServiceClient.GetBlobContainerClient(manifest.Blob.Container).GetBlobClient(manifest.Blob.BlobKey);
+        }
+        else if (manifestContainerClient is not null && string.Equals(manifestContainerClient.Name, manifest.Blob.Container, StringComparison.OrdinalIgnoreCase))
+        {
+            blobClient = manifestContainerClient.GetBlobClient(manifest.Blob.BlobKey);
         }
         else if (containerClient is not null && string.Equals(containerClient.Name, manifest.Blob.Container, StringComparison.OrdinalIgnoreCase))
         {
@@ -192,6 +242,12 @@ public class BlobStorageRepository(IResultRepository results, BlobServiceClient?
         else if (containerClient is not null && string.Equals(containerClient.Name, container, StringComparison.OrdinalIgnoreCase))
         {
             var blobClient = containerClient.GetBlobClient(blobPath);
+            var response = await blobClient.DownloadStreamingAsync(cancellationToken: cancellationToken);
+            stream = response.Value.Content;
+        }
+        else if (manifestContainerClient is not null && string.Equals(manifestContainerClient.Name, container, StringComparison.OrdinalIgnoreCase))
+        {
+            var blobClient = manifestContainerClient.GetBlobClient(blobPath);
             var response = await blobClient.DownloadStreamingAsync(cancellationToken: cancellationToken);
             stream = response.Value.Content;
         }

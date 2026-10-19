@@ -1,5 +1,25 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘 P1 4件（ReadyManifest保存先統一・Entra認証時Function Key送信・既存Batch Pool UAMI制御・App Service S2S認証設定接続）の改修完了
+
+レビューで指摘された P1 4 件の課題（[P1] ReadyManifest の保存先と読取先不一致による 400 エラー、[P1] Entra 認証時の Function Key 送信漏れによる 401 エラー、[P1] batch_mode=existing 時の未割当 UAMI 指定によるタスク失敗、[P1] App Service S2S 認証設定の未接続による Functions 呼出失敗）を改修し、Terraform テスト（45件全件）、全 .NET 単体テスト（404件全件）、および PowerShell オフライン全テスト（10 スイート 24 グループ全件）の完全合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P1] ReadyManifest の保存先と読取先が異なる問題の解消（BlobStorageRepository.cs / WorkflowAdmission.cs / Program.cs / infra）**:
+     - `src/Poc.Core/BlobStorageRepository.cs`: `manifestContainerClient` および `manifestResults`（`IResultRepository?`）を受け取るコンストラクタを追加。マニフェスト用リポジトリが指定された場合はそちらから `inputs/{readyManifestId}/manifest.json` を読み書きし、未指定時は従来の `results`（後方互換性）を使用。
+     - `src/Poc.Functions/Program.cs`: `WORKFLOW_INPUT_CONTAINER`（既定 `workflow-input`）を読み、`inputContainerClient` を `BlobStorageRepository` に注入。
+     - `src/Poc.Functions/WorkflowAdmission.cs` & `WorkflowOperations.cs`: マニフェスト取得時に `results` を直接読まず、DI の `storage.TryGetReadyManifestAsync` に委譲。App Service が `workflow-input` に保存したマニフェストを Functions も `workflow-input` から正しく読み取れるよう統一。
+     - `infra/main.tf`: Functions の `app_settings` に `WORKFLOW_INPUT_CONTAINER = "workflow-input"` を追加。
+  2. **[P1] Entra 認証時に Function Key が送信されない問題の解消（WorkflowClient.cs）**:
+     - `src/Poc.AppService/Clients/WorkflowClient.cs`: `PrepareRequestAsync` で Bearer トークン設定と Function Key 設定の排他処理（`else if`）を解消し、独立した `if` ブロックに分離。
+     - `AuthMode` が `"EntraBearer"` または `"EntraEasyAuth"` の場合に `Authorization: Bearer <token>` を設定し、かつ `FunctionKey` が指定されていれば独立して `x-functions-key` ヘッダーを同時に付与。Functions 側で EasyAuth と Function Key の両方を要求する構成でも正当に呼び出せるよう是正。
+  3. **[P1] 既存 Batch Pool に未割当の UAMI を指定する問題の解消（infra/main.tf / variables.tf）**:
+     - `infra/variables.tf`: `variable "existing_batch_pool_uami_resource_id"`（default: null）を新設。
+     - `infra/main.tf`: `local.batch_pool_uami_resource_id` を定義し、`var.batch_mode == "new"` の時のみ新規作成した Pool UAMI を設定。`existing` の場合は明示的に既存 UAMI が指定されない限り空文字とし、未割当 UAMI の強制指定を遮断。また UAMI への RBAC ロール割り当ても `count = var.batch_mode == "new" ? 1 : 0` に限定。
+  4. **[P1] App Service の S2S 認証設定が未接続の問題の解消（infra/app-service.tf / variables.tf）**:
+     - `infra/variables.tf`: `variable "app_service_workflow_auth_mode"` および `variable "app_service_workflow_function_key"`（sensitive = true）を追加。
+     - `infra/app-service.tf`: App Service の `app_settings` に `WORKFLOW_INPUT_CONTAINER = "workflow-input"`、`WORKFLOW_AUTH_MODE`（EasyAuth 時は EntraBearer、それ以外は FunctionKey）、`WORKFLOW_AUTH_AUDIENCE`、`WORKFLOW_FUNCTION_KEY` を接続。
+
 ## 2026-10-19 Track 4（App Service 統合テストスクリプト TASK-4.3）の実装完了
 
 作業計画書（`docs/app-service-blob-batch-work-plan.md`）の TASK-4.3（S2S 認証・App Role 認可・所有者マッピング統合テストスクリプト作成 `scripts/Invoke-AppServiceValidation.ps1` & `scripts/tests/AppServiceValidation.Tests.ps1`）を実装し、Pester テスト（全 12 スイート 24 テストグループ全件合格、新規 13 テスト PASS）および全 .NET 単体テスト（400件全件 PASS）の完全合格を確認しました。

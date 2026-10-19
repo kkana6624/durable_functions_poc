@@ -768,6 +768,66 @@ public class ReadyManifestTests
         Assert.Equal(manifest.ReadyManifestId, retrieved.ReadyManifestId);
     }
 
+    [Fact]
+    public async Task BlobStorageRepository_WithSeparateManifestRepository_SavesAndRetrievesFromManifestRepositoryNotResults()
+    {
+        var resultsRepo = new InMemoryResultRepository();
+        var manifestRepo = new InMemoryResultRepository();
+        var manifest = CreateValidManifest("manifest-separate-001");
+        AddValidTestBlob(manifestRepo, manifest);
+
+        var blobStorage = new BlobStorageRepository(resultsRepo, manifestResults: manifestRepo);
+
+        var uri = await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
+        Assert.NotNull(uri);
+
+        // Manifest must be written to manifestRepo (workflow-input), NOT resultsRepo (poc-results)
+        Assert.True(manifestRepo.Documents.ContainsKey(WorkflowIdentity.ReadyManifestPath(manifest.ReadyManifestId)));
+        Assert.False(resultsRepo.Documents.ContainsKey(WorkflowIdentity.ReadyManifestPath(manifest.ReadyManifestId)));
+
+        var retrieved = await blobStorage.GetReadyManifestAsync(manifest.ReadyManifestId, TestContext.Current.CancellationToken);
+        Assert.NotNull(retrieved);
+        Assert.Equal(manifest.ReadyManifestId, retrieved.ReadyManifestId);
+    }
+
+    [Fact]
+    public async Task StartWorkflow_WithSeparateManifestContainer_FunctionsAdmissionReadsFromManifestRepo()
+    {
+        var (client, _) = CreateDurableClient();
+        var resultsRepo = new InMemoryResultRepository(); // poc-results
+        var manifestRepo = new InMemoryResultRepository(); // workflow-input
+        var manifest = CreateValidManifest("manifest-workflow-input-001", ownerId: "alice", orgId: "finance");
+        AddValidTestBlob(manifestRepo, manifest);
+
+        // AppService saves manifest to workflow-input container
+        var appServiceStorage = new BlobStorageRepository(manifestRepo);
+        await appServiceStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
+
+        // Functions has storage configured with resultsRepo and manifestRepo (workflow-input)
+        var functionsStorage = new BlobStorageRepository(resultsRepo, manifestResults: manifestRepo);
+        var admission = new WorkflowAdmission(resultsRepo, functionsStorage);
+        var operations = new WorkflowOperations(new FakeBatchGateway(), resultsRepo, new StubWorkloadClassifier(), new WorkflowSettings(), functionsStorage);
+        var callerResolver = new PocFunctionKeyCallerResolver();
+        var functions = new WorkflowFunctions(operations, admission, callerResolver);
+
+        var workflowReq = new WorkflowRequest("req-workflow-input-test", ReadyManifestId: "manifest-workflow-input-001");
+        var headers = new Dictionary<string, string>
+        {
+            ["X-Poc-Owner-Id"] = "alice",
+            ["X-Poc-Org-Id"] = "finance"
+        };
+        var request = CreateRequest(JsonSerializer.Serialize(workflowReq), headers: headers);
+
+        // Functions StartWorkflow must succeed with 202 Accepted by reading manifest from workflow-input
+        var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        // Verify operations.ClassifyAsync also successfully reads manifest from workflow-input
+        var plan = await operations.ClassifyAsync(workflowReq, TestContext.Current.CancellationToken);
+        Assert.NotNull(plan.Manifest);
+        Assert.Equal("manifest-workflow-input-001", plan.Manifest.ReadyManifestId);
+    }
+
     private static (Mock<DurableTaskClient> Client, Mock<DurableEntityClient> Entities) CreateDurableClient()
     {
         var client = new Mock<DurableTaskClient>("test");
