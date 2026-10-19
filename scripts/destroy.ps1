@@ -67,11 +67,31 @@ try {
     }
 
     & $terraform $destroyArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Terraform destroy failed with exit code $LASTEXITCODE."
+    $destroyExitCode = $LASTEXITCODE
+
+    # Post-destroy cleanup: verify resource group is completely removed
+    if ($variables.ContainsKey('resource_group_name') -and -not [string]::IsNullOrWhiteSpace($variables.resource_group_name)) {
+        $rg = $variables.resource_group_name
+        Write-Host "Verifying resource group deletion: $rg..."
+        $exists = Invoke-AzJson @('group', 'exists', '--name', $rg)
+        if ($exists -eq $true) {
+            Write-Host "Resource group $rg still exists. Deleting directly via Azure CLI..."
+            $null = Invoke-Tool $script:AzPath @('group', 'delete', '--name', $rg, '--yes', '--no-wait')
+            while ((Invoke-AzJson @('group', 'exists', '--name', $rg)) -eq $true) {
+                Write-Host "Waiting for resource group $rg deletion..."
+                Start-Sleep -Seconds 10
+            }
+            Write-Host "Resource group $rg deleted successfully."
+        } else {
+            Write-Host "Resource group $rg has been confirmed deleted."
+        }
     }
 
-    Write-Host "Terraform destroy completed successfully for $Environment."
+    if ($destroyExitCode -ne 0 -and ((Invoke-AzJson @('group', 'exists', '--name', $variables.resource_group_name)) -eq $true)) {
+        throw "Terraform destroy failed with exit code $destroyExitCode and resource group still exists."
+    }
+
+    Write-Host "Environment $Environment destroyed successfully."
 
     if ($DestroyBackend -and $backend.ContainsKey('Create') -and $backend.Create) {
         $bootstrapWork = Join-Path $work 'bootstrap'
@@ -81,15 +101,26 @@ try {
         if ((Test-Path -LiteralPath $bootstrapState) -and (Test-Path -LiteralPath $bootstrapVars)) {
             Write-Host "Destroying dedicated bootstrap backend state ($($backend.resource_group_name))..."
             $env:TF_DATA_DIR = Join-Path $bootstrapWork 'data'
+            $null = Invoke-Tool $terraform @('-chdir=infra/bootstrap', 'init', '-input=false', "-backend-config=path=$bootstrapState", '-reconfigure')
             $bootstrapArgs = @('-chdir=infra/bootstrap', 'destroy', '-input=false', "-var-file=$bootstrapVars")
             if ($Force) {
                 $bootstrapArgs += '-auto-approve'
             }
             & $terraform $bootstrapArgs
-            if ($LASTEXITCODE -ne 0) {
-                throw "Terraform destroy for bootstrap failed with exit code $LASTEXITCODE."
+        }
+
+        if ($backend.ContainsKey('resource_group_name') -and -not [string]::IsNullOrWhiteSpace($backend.resource_group_name)) {
+            $backendRg = $backend.resource_group_name
+            $exists = Invoke-AzJson @('group', 'exists', '--name', $backendRg)
+            if ($exists -eq $true) {
+                Write-Host "Deleting bootstrap backend resource group $backendRg directly via Azure CLI..."
+                $null = Invoke-Tool $script:AzPath @('group', 'delete', '--name', $backendRg, '--yes', '--no-wait')
+                while ((Invoke-AzJson @('group', 'exists', '--name', $backendRg)) -eq $true) {
+                    Write-Host "Waiting for bootstrap resource group $backendRg deletion..."
+                    Start-Sleep -Seconds 10
+                }
+                Write-Host "Bootstrap backend resource group $backendRg deleted successfully."
             }
-            Write-Host "Bootstrap backend destroyed successfully."
         }
     }
 }
