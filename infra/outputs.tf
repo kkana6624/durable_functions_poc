@@ -80,6 +80,10 @@ output "deployment" {
     storage_table_private_ip              = azurerm_private_endpoint.storage_table.private_service_connection[0].private_ip_address
     workflow_auth_mode                    = var.workflow_auth_mode
     workflow_auth_allowed_backend_app_ids = var.workflow_auth_allowed_backend_app_ids
+    enable_app_service                    = var.enable_app_service
+    app_service_name                      = var.enable_app_service ? azurerm_linux_web_app.app_service[0].name : null
+    app_service_url                       = var.enable_app_service ? "https://${azurerm_linux_web_app.app_service[0].default_hostname}" : null
+    app_service_private_ip                = var.enable_app_service ? azurerm_private_endpoint.app_service_inbound[0].private_service_connection[0].private_ip_address : null
   }
 }
 
@@ -116,5 +120,20 @@ output "storage_table_private_ip" {
 output "workflow_auth_allowed_backend_app_ids" {
   value       = var.workflow_auth_allowed_backend_app_ids
   description = "Allowed backend application client IDs for EntraEasyAuth mode."
+}
+
+output "app_service_name" {
+  value       = var.enable_app_service ? azurerm_linux_web_app.app_service[0].name : null
+  description = "Name of the optional business App Service."
+}
+
+output "app_service_url" {
+  value       = var.enable_app_service ? "https://${azurerm_linux_web_app.app_service[0].default_hostname}" : null
+  description = "URL of the optional business App Service."
+}
+
+output "app_service_private_ip" {
+  value       = var.enable_app_service ? azurerm_private_endpoint.app_service_inbound[0].private_service_connection[0].private_ip_address : null
+  description = "Private IP address of the optional business App Service inbound Private Endpoint."
 }
 

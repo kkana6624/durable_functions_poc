@@ -1,5 +1,29 @@
 # プロジェクトメモリ
 
+## 2026-10-19 Track 3（Storage 閉域化 疎通検証スクリプト TASK-3.2）・Track 4（App Service IaC 骨格 TASK-4.1）・Track 5（DTS 独立環境定義 TASK-5.1）の実装完了
+
+作業計画書（`docs/app-service-blob-batch-work-plan.md`）の TASK-3.2（閉域アクセス到達性・疎通テストスクリプト作成）、TASK-4.1（業務 App Service インフラ定義骨格）、TASK-5.1（DTS 独立環境構成ファイル整備）を実装し、Terraform テスト（41件全件）、単体テスト（365件全件）、PowerShell オフライン全テスト（9 スイート全件）の完全合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[TASK-3.2] 閉域アクセス到達性・疎通テストスクリプト作成 (`scripts/Test-PrivateStorageConnectivity.ps1`)**:
+     - `StorageAccountName`, `BlobEndpoint`, `QueueEndpoint`, `TableEndpoint`, `ExpectedPrivateSubnetPrefix`, `SkipAuthorizationCheck`, `TimeoutMs`, `AsJson` をサポート。
+     - **DNS 名前解決検証**: RFC 1918 プライベート IP（`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`）に解決されているかを検証。パブリック IP が含まれる場合は閉域化不完全（漏洩）として失敗フラグを付与。
+     - **サブネット検証**: 指定された CIDR 表記（例: `10.80.2.0/24`）または前方一致プレフィックスとの一致を検証。
+     - **TCP ポート 443 疎通**: `System.Net.Sockets.TcpClient` を用いてクロスプラットフォームでタイムアウト付き非同期 TCP ハンドシェイクを実施。
+     - **秘密情報保護**: `Protect-EndpointUrl` により URL クエリ（SAS トークン、キー等）をサニタイズ（AGENTS.md 準拠）。
+     - `scripts/tests/PrivateStorageConnectivity.Tests.ps1`: 11 件の Pester テスト（正常系、パブリック IP 漏洩検知、DNS 失敗、TCP 接続失敗、CIDR 不一致、秘密情報サニタイズ、JSON 出力）を整備。
+  2. **[TASK-4.1] 業務 App Service インフラ定義骨格 (`infra/app-service.tf`, `infra/variables.tf`, `infra/outputs.tf`)**:
+     - `enable_app_service`（bool, 既定 `false`）により既存構成に影響を与えないオプショナル設計を採用。
+     - `azurerm_service_plan.app_service`（Linux B1 SKU）、`azurerm_user_assigned_identity.app_service`、`azurerm_linux_web_app.app_service`（.NET 10 / ASP.NET Core、`https_only = true`、`public_network_access_enabled = false`）を定義。
+     - アウトバウンド VNet 統合（専用委任サブネット `10.80.5.0/24`）およびインバウンド Private Endpoint（`privatelink.azurewebsites.net` DNS Zone 紐付け）を構成。
+     - 入力用ストレージコンテナ `workflow-input` に対する `Storage Blob Data Contributor` を UAMI に RBAC 付与。
+     - 平文キーや SAS を排除し、Managed Identity（`APP_SERVICE_UAMI_CLIENT_ID`）と Private Endpoint 参照のみを環境変数に公開。
+     - `infra/tests/modes.tftest.hcl`: デフォルト無効、有効時リソース生成、SKU バリデーションの 3 テストを追加（41 テスト PASS）。
+  3. **[TASK-5.1] DTS 独立環境構成ファイル整備 (`environments/dts-isolated.example.psd1`)**:
+     - `durable_backend = 'durableTaskScheduler'` かつ `batch_mode = 'new'`（独立 Windows ノード Pool）を指定した完全隔離環境テンプレートを整備。
+     - 専用 RG、専用 suffix、独立 Task Hub（`DtsIsolatedHub`）、および `deploy.ps1 -Environment dts-isolated` による独立 state key（`dts-isolated.tfstate`）の利用をガイダンス。
+     - 既存 Azure Storage 環境への上書きや履歴移行の不可逆操作を厳格に抑止する運用注意書きを明記。
+
 ## 2026-10-19 レビュー指摘7件（P1 2件・P2 5件: 本番UAMI転送有効化・出力JSON必須ID・ETag版固定検証・コンテナ分離・出力メタデータ検証・BlobKey予約文字エンコード・ストリーミング検証）の改修完了
 
 レビューで指摘された 7 件の課題（[P1] 本番転送処理の有効化と UAMI/RBAC 接続、[P1] 出力 JSON への必須 ID 付与、[P2] ETag のみの入力に対するノード側ハッシュ/サイズ検証による版固定保証、[P2] 出力先と読取先コンテナの分離対応、[P2] 出力メタデータ（Attempt/Sha256/SizeBytes）の厳格検証、[P2] Blob 名予約文字のエスケープ/正準化、[P2] 大容量出力のストリーミング検証と全量メモリ展開廃止）を改修し、単体テスト（365件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。

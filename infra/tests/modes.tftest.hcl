@@ -47,6 +47,7 @@ mock_provider "azurerm" {
     defaults = {
       id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/test-uami"
       principal_id = "77777777-7777-7777-7777-777777777777"
+      client_id    = "88888888-8888-8888-8888-888888888888"
     }
   }
   mock_resource "azurerm_storage_account" {
@@ -73,6 +74,17 @@ mock_provider "azurerm" {
       id               = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Web/sites/test-function"
       default_hostname = "test-function.azurewebsites.net"
       identity         = { principal_id = "11111111-1111-1111-1111-111111111111", tenant_id = "22222222-2222-2222-2222-222222222222" }
+    }
+  }
+  mock_resource "azurerm_linux_web_app" {
+    defaults = {
+      id               = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Web/sites/test-app"
+      default_hostname = "test-app.azurewebsites.net"
+    }
+  }
+  mock_resource "azurerm_app_service_virtual_network_swift_connection" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Web/sites/test-app/networkConfig/virtualNetwork"
     }
   }
   mock_data "azurerm_resource_group" {
@@ -517,7 +529,7 @@ run "new_marketplace_creates_dedicated_resources" {
     error_message = "New mode must grant VM identity both Reader and Contributor on the dedicated Batch account for autoscale operations."
   }
   assert {
-    condition     = azurerm_batch_pool.poc[0].identity[0].type == "UserAssigned" && azurerm_batch_pool.poc[0].identity[0].identity_ids[0] == azurerm_user_assigned_identity.batch_pool.id
+    condition     = azurerm_batch_pool.poc[0].identity[0].type == "UserAssigned" && contains(azurerm_batch_pool.poc[0].identity[0].identity_ids, azurerm_user_assigned_identity.batch_pool.id)
     error_message = "Batch pool must be configured with UserAssigned identity."
   }
   assert {
@@ -673,5 +685,58 @@ run "storage_public_network_access_can_be_disabled" {
     condition     = azurerm_storage_account.poc.public_network_access_enabled == false && output.deployment.storage_public_network_access_enabled == false
     error_message = "Storage public network access must be configurable to false."
   }
+}
+
+run "app_service_disabled_by_default" {
+  command = plan
+  assert {
+    condition     = length(azurerm_service_plan.app_service) == 0 && length(azurerm_linux_web_app.app_service) == 0 && length(azurerm_user_assigned_identity.app_service) == 0 && length(azurerm_private_endpoint.app_service_inbound) == 0 && length(azurerm_app_service_virtual_network_swift_connection.app_service) == 0 && length(azurerm_storage_container.workflow_input) == 0 && output.deployment.enable_app_service == false && output.deployment.app_service_name == null
+    error_message = "App service resources must not be created when enable_app_service is false."
+  }
+}
+
+run "app_service_enabled_provisions_isolated_resources" {
+  command = plan
+  variables {
+    enable_app_service = true
+    app_service_sku    = "B1"
+  }
+  assert {
+    condition     = length(azurerm_service_plan.app_service) == 1 && azurerm_service_plan.app_service[0].sku_name == "B1" && azurerm_service_plan.app_service[0].os_type == "Linux"
+    error_message = "App service plan must be created with specified SKU and Linux os_type."
+  }
+  assert {
+    condition     = length(azurerm_linux_web_app.app_service) == 1 && azurerm_linux_web_app.app_service[0].https_only == true && azurerm_linux_web_app.app_service[0].public_network_access_enabled == false
+    error_message = "App service must be created with https_only and public network access disabled."
+  }
+  assert {
+    condition     = length(azurerm_user_assigned_identity.app_service) == 1 && azurerm_linux_web_app.app_service[0].identity[0].type == "UserAssigned" && length(azurerm_linux_web_app.app_service[0].identity[0].identity_ids) == 1
+    error_message = "App service must be configured with UserAssigned identity."
+  }
+  assert {
+    condition     = length(azurerm_private_endpoint.app_service_inbound) == 1 && contains(azurerm_private_endpoint.app_service_inbound[0].private_service_connection[0].subresource_names, "sites") && contains(azurerm_private_endpoint.app_service_inbound[0].private_dns_zone_group[0].private_dns_zone_ids, azurerm_private_dns_zone.functions.id)
+    error_message = "App service inbound private endpoint must link to sites and privatelink.azurewebsites.net DNS zone."
+  }
+  assert {
+    condition     = length(azurerm_app_service_virtual_network_swift_connection.app_service) == 1 && length(azurerm_subnet.app_service_outbound) == 1
+    error_message = "App service must configure outbound regional VNet integration on dedicated outbound subnet."
+  }
+  assert {
+    condition     = length(azurerm_storage_container.workflow_input) == 1 && azurerm_storage_container.workflow_input[0].name == "workflow-input" && length(azurerm_role_assignment.app_service_blob_contributor) == 1 && azurerm_role_assignment.app_service_blob_contributor[0].role_definition_name == "Storage Blob Data Contributor"
+    error_message = "App service must provision workflow-input container and grant Storage Blob Data Contributor to UAMI."
+  }
+  assert {
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input" && output.deployment.enable_app_service == true
+    error_message = "App service app_settings must reference Function URL and Storage endpoint without secrets."
+  }
+}
+
+run "invalid_app_service_sku_rejected" {
+  command = plan
+  variables {
+    enable_app_service = true
+    app_service_sku    = "INVALID_SKU"
+  }
+  expect_failures = [var.app_service_sku]
 }
 

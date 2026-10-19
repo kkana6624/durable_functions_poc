@@ -294,3 +294,29 @@ variable "storage_public_network_access_enabled" {
   description = "Enable public network access for the storage account."
 }
 
+variable "enable_app_service" {
+  type        = bool
+  default     = false
+  description = "Enable optional ASP.NET Core business App Service."
+}
+
+variable "app_service_sku" {
+  type        = string
+  default     = "B1"
+  description = "SKU for optional App Service Plan (Linux)."
+  validation {
+    condition     = contains(["B1", "B2", "B3", "S1", "S2", "S3", "P1v2", "P2v2", "P3v2", "P1v3", "P2v3", "P3v3"], var.app_service_sku)
+    error_message = "app_service_sku must be a valid supported App Service plan SKU."
+  }
+}
+
+variable "app_service_outbound_subnet_prefix" {
+  type        = string
+  default     = "10.80.5.0/24"
+  description = "Subnet prefix for optional App Service outbound VNet integration."
+  validation {
+    condition     = can(cidrnetmask(var.app_service_outbound_subnet_prefix))
+    error_message = "Use a separate IPv4 App Service outbound subnet CIDR within the validation VNet."
+  }
+}
+
