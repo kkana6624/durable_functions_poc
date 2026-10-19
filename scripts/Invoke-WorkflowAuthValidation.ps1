@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param([string]$DeploymentResultPath,[string]$Resource,[string]$ManagedIdentityClientId,
+    [string]$UnauthorizedManagedIdentityClientId,
     [string]$OwnerId,[string]$OrgId,[string]$EvidenceDirectory,
     [ValidateRange(1,3600)][int]$TimeoutSeconds=900,[ValidateRange(1,60)][int]$PollSeconds=5)
 
@@ -55,14 +56,18 @@ function Invoke-WorkflowAuthHttp([string]$Uri,[string]$Method,[hashtable]$Header
         if ($Body) { $request.Content=[Net.Http.StringContent]::new($Body,[Text.Encoding]::UTF8,'application/json') }
         $response=$client.SendAsync($request).GetAwaiter().GetResult()
         $code=[int]$response.StatusCode
-        $data=$null; $location=$null
+        $data=$null; $location=$null; $packageHeader=$null
+        if ($response.Headers.Contains('X-Poc-Package-Sha256')) {
+            $vals=@($response.Headers.GetValues('X-Poc-Package-Sha256'))
+            if ($vals.Count -gt 0) { $packageHeader=[string]$vals[0] }
+        }
         if ($code -in @(200,202)) {
             $content=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
             if ($content.Length -gt 65536) { Stop-WorkflowAuthValidation 'OversizedResponse' }
             $data=ConvertTo-DeploymentHashtable ($content | ConvertFrom-Json)
             if ($response.Headers.Location) { $location=$response.Headers.Location.ToString() }
         }
-        return @{Code=$code;Data=$data;Location=$location}
+        return @{Code=$code;Data=$data;Location=$location;PackageSha256=$packageHeader}
     } catch { Stop-WorkflowAuthValidation 'HttpRequestFailed' }
     finally { if ($response) {$response.Dispose()}; $request.Dispose(); $client.Dispose(); $handler.Dispose() }
 }
@@ -76,19 +81,22 @@ function Assert-WorkflowAuthUri([string]$Value,[string]$Origin,[string]$Path) {
 
 function Invoke-WorkflowAuthValidation {
     [CmdletBinding()]
-    param([string]$DeploymentResultPath,[string]$Resource,[string]$ManagedIdentityClientId,[string]$OwnerId,[string]$OrgId,
+    param([string]$DeploymentResultPath,[string]$Resource,[string]$ManagedIdentityClientId,
+        [string]$UnauthorizedManagedIdentityClientId,
+        [string]$OwnerId,[string]$OrgId,
         [string]$EvidenceDirectory,[int]$TimeoutSeconds=900,[int]$PollSeconds=5)
     $ErrorActionPreference='Stop'
     $summary=[ordered]@{schemaVersion=1;validationKind='AzureWorkflowAuth';status='Fail';reason='SetupFailed';checks=@();
         configuredDurableBackend=$null;configuredTaskHub=$null;
-        provenance=@{source='deploymentDescriptor';livePackageVerified=$false;gitRevision=$null;gitDirty=$null;sourceSha256=$null;packageSha256=$null};
+        provenance=@{source='deploymentDescriptor';livePackageVerified=$false;livePackageSha256=$null;gitRevision=$null;gitDirty=$null;sourceSha256=$null;packageSha256=$null;assemblySha256=$null};
         completedUtc=$null;exitCode=1}
     $token=$null; $keys=$null; $headers=$null
     try {
         if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 3600 -or $PollSeconds -lt 1 -or $PollSeconds -gt 60) { Stop-WorkflowAuthValidation 'InvalidTiming' }
         if ([string]::IsNullOrWhiteSpace($Resource) -or $Resource -match '[\r\n?#]' -or
             $OwnerId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$' -or $OrgId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$' -or
-            ($ManagedIdentityClientId -and $ManagedIdentityClientId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')) { Stop-WorkflowAuthValidation 'InvalidAuthConfiguration' }
+            ($ManagedIdentityClientId -and $ManagedIdentityClientId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') -or
+            ($UnauthorizedManagedIdentityClientId -and $UnauthorizedManagedIdentityClientId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')) { Stop-WorkflowAuthValidation 'InvalidAuthConfiguration' }
         $deployment=ConvertTo-DeploymentHashtable (Get-Content -LiteralPath $DeploymentResultPath -Raw | ConvertFrom-Json)
         # Descriptor metadata is claimed provenance, not a live deployed-code measurement.
         if ($deployment.ContainsKey('source_provenance') -and $deployment.source_provenance -is [hashtable]) {
@@ -98,6 +106,7 @@ function Invoke-WorkflowAuthValidation {
             if ($provenance.ContainsKey('sourceSha256') -and $provenance.sourceSha256 -is [string] -and $provenance.sourceSha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.sourceSha256=$provenance.sourceSha256.ToLowerInvariant() }
         }
         if ($deployment.ContainsKey('package_sha256') -and $deployment.package_sha256 -is [string] -and $deployment.package_sha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.packageSha256=$deployment.package_sha256.ToLowerInvariant() }
+        if ($deployment.ContainsKey('assembly_sha256') -and $deployment.assembly_sha256 -is [string] -and $deployment.assembly_sha256 -match '\A[0-9a-fA-F]{64}\z') { $summary.provenance.assemblySha256=$deployment.assembly_sha256.ToLowerInvariant() }
         $outputs=$deployment.outputs
         foreach ($field in @('subscription_id','resource_group_name','function_app_name','function_app_url')) {
             if (-not $outputs.ContainsKey($field) -or [string]::IsNullOrWhiteSpace([string]$outputs[$field])) { Stop-WorkflowAuthValidation 'MissingDeploymentOutput' }
@@ -123,6 +132,19 @@ function Invoke-WorkflowAuthValidation {
         $path='/api/workflows/'+$id; $start=$origin+'/api/workflows'
         $body=@{requestId=$id;classification='light';taskCount=1;lightDelaySeconds=1;heavyDelaySeconds=1}|ConvertTo-Json -Compress
         $headers=@{Authorization='Bearer '+$token;'X-Poc-Owner-Id'=$OwnerId;'X-Poc-Org-Id'=$OrgId;'x-functions-key'=$keys.StartWorkflow}
+        $verifyLivePackage = {
+            param($httpResp)
+            if ($httpResp -and $httpResp.ContainsKey('PackageSha256') -and $httpResp.PackageSha256) {
+                $rawSha = ([string]$httpResp.PackageSha256).Trim().ToLowerInvariant()
+                if ($rawSha -match '\A[0-9a-fA-F]{64}\z') {
+                    $summary.provenance.livePackageSha256 = $rawSha
+                    if (($summary.provenance.assemblySha256 -and $rawSha -eq $summary.provenance.assemblySha256) -or
+                        ($summary.provenance.packageSha256 -and $rawSha -eq $summary.provenance.packageSha256)) {
+                        $summary.provenance.livePackageVerified = $true
+                    }
+                }
+            }
+        }
         # No-token probes: the forged header must never establish authentication.
         # EasyAuth may strip/replace it; this probe tests bypass resistance, not raw-header delivery.
         foreach ($probe in @('anonymous','keyOnly','forgedPrincipal','bearerWithoutKey')) {
@@ -135,9 +157,47 @@ function Invoke-WorkflowAuthValidation {
             if ($api -eq 'StartWorkflow') { $uri=$start;$method='Post';$requestBody=$body }
             if ($api -eq 'GetWorkflowResult') { $uri+='/result' }
             $r=Invoke-WorkflowAuthHttp $uri $method $probeHeaders $requestBody
-            if ($r.Code -notin @(401,403)) { Stop-WorkflowAuthValidation 'UnauthenticatedRequestAccepted' }
             $summary.checks+=@{name=$probe+$api;code=$r.Code}
+            if ($r.Code -notin @(401,403)) { Stop-WorkflowAuthValidation 'UnauthenticatedRequestAccepted' }
           }
+        }
+        # Unauthorized audience probe (token for ARM instead of API audience; EasyAuth rejects 401):
+        try {
+            $unauthorizedAudienceToken = Get-WorkflowAuthToken 'https://management.azure.com/' $ManagedIdentityClientId
+            foreach ($api in @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult')) {
+                $probeHeaders = @{
+                    Authorization = 'Bearer ' + $unauthorizedAudienceToken
+                    'X-Poc-Owner-Id' = $OwnerId
+                    'X-Poc-Org-Id' = $OrgId
+                    'x-functions-key' = $keys[$api]
+                }
+                $uri = $origin + $path; $method = 'Get'; $requestBody = $null
+                if ($api -eq 'StartWorkflow') { $uri = $start; $method = 'Post'; $requestBody = $body }
+                if ($api -eq 'GetWorkflowResult') { $uri += '/result' }
+                $r = Invoke-WorkflowAuthHttp $uri $method $probeHeaders $requestBody
+                if ($r.Code -ne 401) { Stop-WorkflowAuthValidation 'UnauthorizedAudienceNotRejected' }
+                $summary.checks += @{name='unauthorizedAudience'+$api;code=$r.Code}
+            }
+        } catch {
+            if ($_.Exception.Data['WorkflowAuthCode']) { throw }
+        }
+        # Missing App Role probe (UAMI in allowed_backend_app_ids but lacking 'Workflow.Execute'; app rejects 403):
+        if ($UnauthorizedManagedIdentityClientId) {
+            $missingRoleToken = Get-WorkflowAuthToken $Resource $UnauthorizedManagedIdentityClientId
+            foreach ($api in @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult')) {
+                $probeHeaders = @{
+                    Authorization = 'Bearer ' + $missingRoleToken
+                    'X-Poc-Owner-Id' = $OwnerId
+                    'X-Poc-Org-Id' = $OrgId
+                    'x-functions-key' = $keys[$api]
+                }
+                $uri = $origin + $path; $method = 'Get'; $requestBody = $null
+                if ($api -eq 'StartWorkflow') { $uri = $start; $method = 'Post'; $requestBody = $body }
+                if ($api -eq 'GetWorkflowResult') { $uri += '/result' }
+                $r = Invoke-WorkflowAuthHttp $uri $method $probeHeaders $requestBody
+                if ($r.Code -ne 403) { Stop-WorkflowAuthValidation 'MissingAppRoleNotRejected' }
+                $summary.checks += @{name='missingAppRole'+$api;code=$r.Code}
+            }
         }
         foreach ($missing in @('X-Poc-Owner-Id','X-Poc-Org-Id')) {
           foreach ($api in @('StartWorkflow','GetWorkflowStatus','GetWorkflowResult')) {
@@ -151,6 +211,7 @@ function Invoke-WorkflowAuthValidation {
           }
         }
         $r=Invoke-WorkflowAuthHttp $start Post $headers $body
+        & $verifyLivePackage $r
         if ($r.Code -ne 202 -or $r.Data.instanceId -cne $jobId) { Stop-WorkflowAuthValidation 'StartRejected' }
         Assert-WorkflowAuthUri $r.Data.statusQueryGetUri $origin $path
         Assert-WorkflowAuthUri $r.Location $origin $path
@@ -173,6 +234,7 @@ function Invoke-WorkflowAuthValidation {
         $headers['x-functions-key']=$keys.GetWorkflowStatus
         do {
             $r=Invoke-WorkflowAuthHttp ($origin+$path) Get $headers $null
+            & $verifyLivePackage $r
             if ($r.Code -eq 200) {
                 if ($r.Data.requestId -cne $id -or $r.Data.instanceId -cne $jobId -or $r.Data.jobId -cne $jobId) { Stop-WorkflowAuthValidation 'StatusIdentityMismatch' }
                 if ($r.Data.status -in @('Failed','TimedOut','Cancelled')) { Stop-WorkflowAuthValidation 'WorkflowFailed' }
@@ -184,6 +246,7 @@ function Invoke-WorkflowAuthValidation {
         } while ($true)
         $headers['x-functions-key']=$keys.GetWorkflowResult
         $r=Invoke-WorkflowAuthHttp ($origin+$path+'/result') Get $headers $null
+        & $verifyLivePackage $r
         if ($r.Code -ne 200) { Stop-WorkflowAuthValidation ("ResultStatus$($r.Code)") }
         if ($r.Data.requestId -cne $id) { Stop-WorkflowAuthValidation 'ResultRequestIdMismatch' }
         if ($r.Data.status -cne 'Succeeded') { Stop-WorkflowAuthValidation 'ResultStateMismatch' }

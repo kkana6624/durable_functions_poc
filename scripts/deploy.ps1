@@ -92,6 +92,9 @@ try {
     $null = Invoke-Tool $dotnet @('test', '--project', 'tests/Poc.Tests/Poc.Tests.csproj', '--no-restore') -LogPath (Join-Path $run 'test.log')
     $publish = Join-Path $run 'publish'
     $null = Invoke-Tool $dotnet @('publish', 'src/Poc.Functions/Poc.Functions.csproj', '-c', 'Release', '--no-restore', '-o', $publish) -LogPath (Join-Path $run 'publish.log')
+    $assemblyDll = Join-Path $publish 'Poc.Functions.dll'
+    $assemblySha = (Get-FileHash -LiteralPath $assemblyDll -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText((Join-Path $publish 'package-sha256.txt'), $assemblySha, [Text.UTF8Encoding]::new($false))
     $zip = Join-Path $run 'functions.zip'
     New-FunctionZip $publish $zip
 
@@ -167,7 +170,8 @@ try {
     Write-Host 'Deploying and checking the private Function from the validation VM...'
     $privateResult = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -EvidenceDirectory (Join-Path $run 'private-vm') -TimeoutSeconds $timeout -Smoke:$Smoke
     $validation = $privateResult.validation
-    $summary = @{ environment = $Environment; completed_utc = [DateTime]::UtcNow.ToString('o'); package_sha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash; outputs = $outputs; validation = $validation; smoke_requested = [bool]$Smoke }
+    $packageSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+    $summary = @{ environment = $Environment; completed_utc = [DateTime]::UtcNow.ToString('o'); package_sha256 = $packageSha; assembly_sha256 = $assemblySha; outputs = $outputs; validation = $validation; smoke_requested = [bool]$Smoke }
     Write-DeploymentJson (Join-Path $run 'deployment-result.json') $summary
     Write-Host "Deployment completed: $($outputs.function_app_name). Logs: $run"
 }

@@ -1,6 +1,26 @@
 # プロジェクトメモリ
 
-## 2026-10-19 最新15関数コード（取消調停・停止再送・停止確認永続化・状態正規化）の Azure 実環境再デプロイおよび全6シナリオ実機回帰全件合格（今回の作業）
+## 2026-10-19 B案フェーズ1: Microsoft Entra ID サービス間認証・認可の実機検証および稼働パッケージ暗号学的同定の完全合格（今回の作業）
+
+B案フェーズ1（Microsoft Entra ID によるサービス間認証・認可および稼働パッケージ同定）の実機実装・検証を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`）において実施し、**全項目完全合格（Pass、終了コード 0）** を確認しました。
+
+- **Azure 実機デプロイ成果**: `.deploy/poc/20261019-092244-0886`
+  - Function App の EasyAuth v2（`active_directory_v2`、`unauthenticated_action: Return401`、`allowed_audiences`、`allowed_applications`）を有効化。
+  - アセンブリ SHA-256: `cdbadf5f313b056f3ebc5d90e565dfc77c22e620af26656ebcbad393feafd150`
+  - パッケージ SHA-256: `d5e64e446d9c2911d6c32112eaf55cb092a35991518a1cdc5f33ba9bf0da6ea8`
+  - 全 API レスポンスに `X-Poc-Package-Sha256` レスポンスヘッダーを付与する稼働パッケージ同定を実装。
+- **実機検証エビデンス**: `artifacts/private-auth-validation/20261019-004913-5659/summary.json`
+  - **未認証遮断（401）**: `anonymous`, `keyOnly`, `forgedPrincipal`, `bearerWithoutKey` の計12プローブすべてで HTTP 401 遮断を確認。
+  - **Audience 不正遮断（401）**: ARM 宛てトークン（`https://management.azure.com/`）に対し、EasyAuth による HTTP 401 遮断を全3 API で確認。
+  - **App Role 不足遮断（403）**: 有効な Entra トークンを取得可能だが `Workflow.Execute` App Role を持たないユーザー割り当てマネージド ID（`poc-unauthorized-id`: `fb03274d-66d2-4f2e-856c-6bf17b142334`）からの要求に対し、`EntraEasyAuthCallerResolver` による **HTTP 403 Forbidden 遮断** を全3 API で確認。
+  - **所有者伝播認可（403）**: 認可トークン存在下での所有者ヘッダー欠落・他者指定に対し HTTP 403 遮断を確認。
+  - **正当マネージド ID 通過（200/202）**: `Workflow.Execute` を持つ VM システム割り当てマネージド ID（`2896f1b6...`）からの要求が 202 受理、同一再送 202、入力競合 409、ステータスポーリングを経て 200 結果取得（全Task整合）まで完走することを確認。
+  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`cdbadf5f...`）とデプロイアセンブリハッシュ（`assemblySha256`）が完全一致し、`livePackageVerified: true` を確認。
+- **Batch ネットワーク調査成果（B案フェーズ2・3の確定）**:
+  - 現行 Batch Account は `publicNetworkAccess: Enabled`、Batch Pool ノードは既定のパブリック送信 NAT を利用していることを確認。
+  - 後続として、Batch Account の Private Endpoint（`batchAccount` サブリソース）化（フェーズ2）、および Batch Pool ノードの VNet サブネット統合・`NoPublicIPAddresses` 構成（フェーズ3）の移行計画を文書化（`batch-networking-and-plan-b.md`）。
+
+## 2026-10-19 最新15関数コード（取消調停・停止再送・停止確認永続化・状態正規化）の Azure 実環境再デプロイおよび全6シナリオ実機回帰全件合格
 
 レビュー指摘（取消確定と成果物公開の排他調停 `resolution.json`、調停レコード整合性検証、Restart モード復旧状態検証 `HostStoppedBatchWallClock`、キャンセル部分書き込み失敗時の余分な Batch 計算抑止、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化 `termination.json` の Activity 再試行・状態反映、Job 作成前取消のステータス正規化、補助 CLI BatchSmoke 修正）を取り込んだ最新の15関数パッケージを実 Azure 環境へ再デプロイし、閉域検証 VM からの全6シナリオ実機回帰試験を実行して**全件合格（Pass、終了コード 0）** を確認しました。
 

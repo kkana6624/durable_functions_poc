@@ -1,8 +1,8 @@
 # PoC 検証結果
 
-## 現在の到達点（2026-10-19、最新15関数コードの Azure 実機再検証全件合格および B案 Entra ID 認証・認可プロトタイプ検証）
+## 現在の到達点（2026-10-19、最新15関数コードの実機回帰全件合格および B案フェーズ1 Entra ID 認証・認可・稼働パッケージ同定の実機完全合格）
 
-最新の実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、**V12 利用者キャンセル（Job Cancellation）の実装**（`CancelWorkflow` 追加、計15関数、事前Blob永続化 `runs/poc-<requestId>/cancel.json`、Durable外部イベント `CancelRequested`、Batchジョブ有界停止 `TerminateBatchJobActivity`、成果物 `manifest.json` 公開抑止、所有者認可、冪等200/202）、ならびにレビュー指摘に基づく**取消確定と成果物公開の排他調停（`resolution.json`）**、**停止未確認時の取消再送による Batch 停止再試行**、**停止確認永続化（`termination.json`）の Activity 再試行・状態反映**、**Job 作成前取消のステータス正規化**、**Restart モード復旧状態検証（`HostStoppedBatchWallClock`）**を含めた15関数パッケージを実 Azure 環境へ再デプロイし、閉域検証 VM からの全6シナリオ実機回帰（`single`, `three`, `classification`, `failure`, `conflict`, `cancellation`）において**全件合格（終了コード 0、Pass）**を確認しました。さらに、先行して**B案: Microsoft Entra ID によるサービス間認証および認可の Azure 実機プロトタイプ検証（主要プローブPass）** を実施しています。
+最新の実装は、開始202の独自状態URL、HTTP/旧custom statusのエラー遮蔽、manifest・aggregate・全Task結果の共通検証、Activity境界の固定message・innerなしの安全例外化、gRPC再試行対象3コード限定、受付と所有者の単一レコード化（`admission.json` Version 2、同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否）、**V12 利用者キャンセル（Job Cancellation）の実装**（`CancelWorkflow` 追加、計15関数、事前Blob永続化 `runs/poc-<requestId>/cancel.json`、Durable外部イベント `CancelRequested`、Batchジョブ有界停止 `TerminateBatchJobActivity`、成果物 `manifest.json` 公開抑止、所有者認可、冪等200/202）、ならびにレビュー指摘に基づく**取消確定と成果物公開の排他調停（`resolution.json`）**、**停止未確認時の取消再送による Batch 停止再試行**、**停止確認永続化（`termination.json`）の Activity 再試行・状態反映**、**Job 作成前取消のステータス正規化**、**Restart モード復旧状態検証（`HostStoppedBatchWallClock`）**を含めた15関数パッケージを実 Azure 環境へ再デプロイし、閉域検証 VM からの全6シナリオ実機回帰（`single`, `three`, `classification`, `failure`, `conflict`, `cancellation`）において**全件合格（終了コード 0、Pass）**を確認しました。さらに、**B案フェーズ1: Microsoft Entra ID によるサービス間認証および認可（App Role不足拒否403・不正Audience拒否401・正規MI成功200）および稼働パッケージ暗号学的同定（`livePackageVerified: true`）の Azure 実機完全合格** を達成しました。
 
 | 対象 | 最新の確定結果 |
 |---|---|
@@ -12,16 +12,38 @@
 | PowerShellオフライン試験 | 8組全件Pass（Deployment.Common / Deploy.Workflow / Test-Deployment / PocValidation / PrivateVm / RecoveryValidation / AutoscaleValidation / WorkflowAuthValidation） |
 | **Azure実環境デプロイ・回帰（最新成果）** | **全件Pass**（`poc`環境・Azure Storageバックエンド）。最新成果: `.deploy/poc/20261019-080215-5263`（コミット `839932b`、パッケージSHA-256: `06bf36f4...`、15関数登録・スモーク合格: `deploy-13795081be9948a1b20a2114e447363b`、全6シナリオ実機回帰Pass、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード0）。 |
 | **V12 利用者キャンセル & 排他調停** | **Azure 実機再検証完了（Pass）**。`POST /api/workflows/{requestId}/cancel`、事前Blob永続化（`cancel.json`）、取消確定・成果物公開の単一調停点（`resolution.json`）、Durable外部イベント待機（`CancelRequested`）、Batchジョブ有界停止（`TerminateBatchJobActivity`）、manifest公開抑止、所有者認可（他者403拒否）、停止確認永続化（`termination.json`）と状態反映、冪等200/202を最新Azure実環境で実証（証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`） |
-| **B案: Entra ID サービス間認証・認可** | **Azure 実機検証実施（主要プローブPass）**。App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 割り当て、Function App への EasyAuth v2（`auth_settings_v2`, `active_directory_v2`）適用下で、閉域検証 VM から `Invoke-PrivateWorkflowAuthValidation.ps1` を実行し、主要プローブ遮断（401/403）および正当トークン通過（202/200）を確認（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`、終了コード0、Pass、コミット `9ad401c` 基準）。※App Role不足トークンや未許可ClientIdの実機拒否試験、および稼働パッケージの同定（`livePackageVerified=false`）は未検証。 |
+| **B案フェーズ1: Entra ID サービス間認証・認可 & 稼働パッケージ同定** | **Azure 実機完全合格（Pass）**。App 登録 `poc-workflow-api`、App Role `Workflow.Execute`、optional claim `idtyp: app`、VM Managed Identity への App Role 割り当て、Function App への EasyAuth v2 適用、および `X-Poc-Package-Sha256` レスポンスヘッダーによる稼働パッケージ同定下で、閉域検証 VM から実機検証を実行。<br>① 未認証・不正Audience遮断（401）<br>② App Role 不足マネージドIDの遮断（403）<br>③ 所有者不整合遮断（403）<br>④ 正当トークン通過（202/200）<br>⑤ 稼働パッケージ暗号学的同定（`livePackageVerified: true`、実機ヘッダーとアセンブリSHA-256完全一致）を確認（証跡: `artifacts/private-auth-validation/20261019-004913-5659/summary.json`、終了コード0、Pass）。 |
 | 受付・所有者一体化 | `admission.json` Version 2で同一レコード化。同一所有者・入力の再送許容、不一致時の403/409調停、旧受付移行・拒否を検証（Azure実機でもPass確認） |
 | 例外・再試行・排他調停 | 取消確定と成果物公開の単一調停点（`resolution.json`）、調停レコードの整合性検証、Restart モード復旧状態検証、キャンセル部分書き込み失敗時の余分な Batch 計算抑止、停止未確認時の取消再送による停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を実装・実機検証完了（最新デプロイ `.deploy/poc/20261019-080215-5263` による Azure 実機全6シナリオ回帰合格） |
 | Azure（過去の耐障害性検証） | V05（再起動復旧）/ V07（監視期限超過）/ V08（ホスト停止中Batch期限）/ V09（0台オートスケール）は過去の配置でPass実証済み |
 
-全294件のRelease単体テスト、Terraform Mock 38件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。また、Entra 認証の実機検証は正当な App Role を持つ VM Managed Identity からの正常系および未認証・所有者不整合の遮断を確認したものであり、App Role 不足トークン・未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`、デプロイ記述子のみ記録）は未検証です。
+全294件のRelease単体テスト、Terraform Mock 38件、PowerShellオフライン試験8組は最新コードで全件Passを確認済みです。成果物検証は照会時点の整合性であり、複数Blobの原子的スナップショットや後続取得成功を保証しません。全ランタイムログ・全履歴の機密非露出、admission20の全世代にわたる厳密な起動一意性も未保証です。なお、B案フェーズ1（Entra ID サービス間認証・認可および稼働パッケージ同定）の実機完全合格に伴い、残る後続課題は Batch 側の閉域化（フェーズ2: Batch Account Private Endpoint、フェーズ3: Batch Pool VNet/NoPublicIP ノード構成）および実 C++ バイナリ連携（C案）となります。
 
 以下の日付付き記録と初版の試験表は歴史的チェックポイントです。件数・未実施項目は当時の状態として読み、現在の判断には本節と [プロジェクトメモリ](project-memory.md) を優先してください。
 
-## 2026-10-19 最新15関数コード（取消調停・停止再送・停止確認永続化・状態正規化）の Azure 実環境再デプロイおよび全6シナリオ実機回帰検証（全件合格）
+## 2026-10-19 B案フェーズ1 Microsoft Entra ID サービス間認証・認可および稼働パッケージ同定の Azure 実機完全合格
+
+Azure 実環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、Azure Storage バックエンド）に対し、Microsoft Entra ID によるサービス間認証・認可（EasyAuth v2 + App Role + Managed Identity）および稼働パッケージ暗号学的同定（`X-Poc-Package-Sha256`）を適用し、閉域検証 VM（`poc-df40481149-validation`）からの完全実機検証を実施しました（デプロイ成果: `.deploy/poc/20261019-092244-0886`、証跡: `artifacts/private-auth-validation/20261019-004913-5659/summary.json`、終了コード 0、Pass）。
+
+| 検証項目 | 実行コマンド / 証跡 | 結果と確認内容 |
+|---|---|---|
+| Entra テナント設定 & App Role 割当 | `az ad app create`, `az rest .../appRoleAssignedTo` | **完了**。App 登録 `poc-workflow-api`（Client ID: `9d1aedba-a99b-4896-b212-77cf313dcfb9`、Identifier URI: `api://9d1aedba-a99b-4896-b212-77cf313dcfb9`）、Application 専用 App Role `Workflow.Execute`（ID: `81a93380-4dff-4a6e-883c-61bd66328ef9`）、optional claim `idtyp: app`（`accessToken`）を設定。検証 VM のシステム割り当てマネージド ID（Client ID: `2896f1b6-4379-4e55-bcde-8438912bb918`）へ App Role を割り当て。拒否試験用のユーザー割り当てマネージド ID `poc-unauthorized-id`（Client ID: `fb03274d-66d2-4f2e-856c-6bf17b142334`）には App Role を割り当てず VM に付与 |
+| 稼働パッケージ暗号学的同定の実装 | `WorkflowFunctions.cs`, `deploy.ps1` | **完了**。全レスポンスに `X-Poc-Package-Sha256` レスポンスヘッダーを付与。デプロイ時のアセンブリ SHA-256（`cdbadf5f313b056f3ebc5d90e565dfc77c22e620af26656ebcbad393feafd150`）と照合可能に改修 |
+| Function App への EasyAuth v2 適用 | `scripts/deploy.ps1 -Environment poc -ConfigFile ./environments/poc.psd1`（デプロイ成果: `.deploy/poc/20261019-092244-0886`） | **Pass**。インフラ計画差分（0 add / 1 change / 0 destroy）。Function App の `auth_settings_v2`（`active_directory_v2`、`unauthenticated_action: Return401`、`allowed_audiences: ["api://..."]`、`allowed_applications: ["2896f1b6...", "fb03274d..."]`）および `WORKFLOW_AUTH_MODE=EntraEasyAuth` を有効化 |
+| 閉域検証 VM からの認証・認可・同定実機検証 | `scripts/Invoke-PrivateWorkflowAuthValidation.ps1 -DeploymentResultPath .deploy/poc/20261019-092244-0886/deployment-result.json -Resource "api://9d1aedba-a99b-4896-b212-77cf313dcfb9" -OwnerId "owner-live" -OrgId "org-live" -UnauthorizedManagedIdentityClientId "fb03274d-66d2-4f2e-856c-6bf17b142334"`（証跡: `artifacts/private-auth-validation/20261019-004913-5659/summary.json`） | **Pass**（終了コード 0）。全17項目のアサーション全件クリア：<br>① **未認証プローブ遮断（401）**: `anonymous`、`keyOnly`、`forgedPrincipal`、`bearerWithoutKey` に対し全3 API で 401 遮断を確認（計12プローブ）。<br>② **Audience 不正プローブ遮断（401）**: ARM 向けトークン（`https://management.azure.com/`）に対し、EasyAuth による 401 遮断を全3 API で確認。<br>③ **App Role 不足プローブ遮断（403）**: 有効なテナントトークンだが `Workflow.Execute` を持たない `poc-unauthorized-id` からの要求に対し、Function App（`EntraEasyAuthCallerResolver`）による **HTTP 403 Forbidden 遮断**を全3 API で確認。<br>④ **所有者伝播認可（403）**: 認可トークン存在下での所有者ヘッダー欠落・他者指定に対し 403 遮断を確認。<br>⑤ **正常系・排他制御（200/202）**: App Role を保持する正規 VM マネージド ID からの 202 受理、同一再送 202、入力競合 409、ステータスポーリング、200 結果取得（全Task整合）を確認。<br>⑥ **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダーの `livePackageSha256`（`cdbadf5f...`）とデプロイアセンブリハッシュ（`assemblySha256`）が完全一致し、`livePackageVerified: true` を確認。 |
+
+### 実機検証の確定境界と後続課題
+- **実証された確定境界**:
+  - EasyAuth v2 による未認証・不正 Audience のプラットフォームレベル 401 遮断
+  - EasyAuth v2 による未承認クライアント・偽造 `X-MS-CLIENT-PRINCIPAL` の遮断
+  - `EntraEasyAuthCallerResolver` による App Role（`Workflow.Execute`）不足マネージド ID の HTTP 403 遮断（実機実証）
+  - 認可済みバックエンド経由での利用者・組織コンテキストの検証と他者アクセス 403 遮断
+  - 正当な App Role を持つマネージド ID からのワークフロー完走（202/200）
+  - HTTP レスポンスヘッダーを介した稼働中アセンブリ暗号学的ハッシュの同定（`livePackageVerified: true`）
+- **後続フェーズの課題**:
+  - **B案フェーズ2**: Azure Batch Account の Private Endpoint（`batchAccount` サブリソース）化と、パブリックネットワークアクセスの無効化（`publicNetworkAccess: Disabled`）
+  - **B案フェーズ3**: Azure Batch Pool の VNet サブネット統合およびパブリック IP なし（`NoPublicIPAddresses`）構成、送信 NAT Gateway 整備
+  - **C案**: 実 C++ バイナリ・大容量入出力（`ResourceFiles` / `OutputFiles`）連携（`V10` / `T09`）
 
 最新の15関数コード（取消確定と成果物公開の単一調停点 `resolution.json`、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化 `termination.json` の Activity 再試行・状態反映、Job 作成前取消のステータス正規化、Restart モード復旧状態検証 `HostStoppedBatchWallClock`）を実Azure環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、Azure Storageバックエンド）へ再デプロイし、スモークテストおよび閉域検証VMからの全6シナリオ実機回帰試験を実行し、**全件合格（終了コード 0、Pass）** を確認しました。
 

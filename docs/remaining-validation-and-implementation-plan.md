@@ -3,7 +3,7 @@
 更新日: 2026-10-19。
 - **実機検証済みの最新デプロイ実績**:
   - **最新 15関数デプロイおよび全6シナリオ実機回帰（合格）**: 実 Azure 環境（`poc` 環境・Azure Storage バックエンド、コミット `839932b`）への最新 15 関数パッケージのデプロイ（`.deploy/poc/20261019-080215-5263`、15 関数全件インデックス登録確認、3 Tasks スモークテスト合格: `deploy-13795081be9948a1b20a2114e447363b`、パッケージ SHA-256: `06bf36f4...`）、および閉域検証 VM 経由での全 6 シナリオ回帰検証（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）を**全件 Pass** で完了。取消確定と成果物公開の排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認永続化（`termination.json`）の Activity 再試行・状態反映、Job 作成前取消のステータス正規化を含む最新版コードの実機成立を実証済み。
-  - **B案 Entra ID サービス間認証・認可プロトタイプ実機検証（合格）**: EasyAuth v2 を有効化した環境（`.deploy/poc/20261019-001001-3480`、コミット `9ad401c` 基準）において、閉域検証 VM からの認証検証（`artifacts/private-auth-validation/20261018-160545-4455/summary.json`、終了コード 0、Pass）を合格。
+  - **B案フェーズ1 Entra ID サービス間認証・認可および稼働パッケージ同定（完全合格）**: EasyAuth v2 を有効化した実機環境（`.deploy/poc/20261019-092244-0886`）において、閉域検証 VM からの完全認証検証（`artifacts/private-auth-validation/20261019-004913-5659/summary.json`、終了コード 0、Pass）を実施し、未認証・不正Audienceの 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合の 403 遮断、正当マネージドIDによる完走（202/200）、および `X-Poc-Package-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）の完全合格を確認。
 - **最新コードとテスト通過状況**:
   - Release 単体テスト全 294 件（`Poc.Tests` 292 件、`DtsProbe` 2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が合格し、実 Azure 環境への再デプロイおよび全 6 シナリオ実機回帰も合格を確認済み。
 - **実機検証に伴う不具合修正と堅牢化**:
@@ -18,16 +18,16 @@
   - `V03`（非ゼロ終了42・Failed確定・成果物マニフェスト非公開Pass）
   - `V04`（別入力409 Conflictおよび同一入力同一所有者の冪等受付・再送Pass）
   - `V12`（利用者キャンセル: 202受理、cancel.json先行永続化、排他調停 resolution.json、Batch completed有界停止、manifest非公開、冪等200応答の実機完全実証Pass）
-  - `V11`（Entra ID サービス間認証・認可プロトタイプ実機検証Pass: EasyAuth v2 401プローブ遮断、認可済みトークン下での所有者/組織不整合403遮断、正当なVM Managed Identityトークンによる202/200完走確認。※App Role不足トークン等の実機拒否試験、および稼働パッケージ同定は未検証、コミット `9ad401c` 基準）
+  - `V11`（Entra ID サービス間認証・認可 & 稼働パッケージ同定Pass: EasyAuth v2 401プローブ遮断、不正Audience 401遮断、App Role不足マネージドID 403遮断、認可済みトークン下での所有者/組織不整合403遮断、正当なVM Managed Identityトークンによる202/200完走確認、`livePackageVerified: true`確認、デプロイ成果 `.deploy/poc/20261019-092244-0886`、証跡 `artifacts/private-auth-validation/20261019-004913-5659/summary.json`）
   - カテゴリ A（追加の耐障害性・運用系検証: `V05` Function App 再起動復旧、`V07` タイムアウト監視停止、`V08` ホスト停止中 Batch MaxWallClockTime 安全網、`V09` 0台オートスケール先行投入）についても過去に実機Pass済み。
 - **残る未完了項目（カテゴリ B・C）**:
-  - **V11 認可境界の追加検証**: 有効だが App Role（`Workflow.Execute`）を持たない Entra トークンや未許可 Client ID による実機 403 拒否試験、稼働パッケージの暗号学的同定（`livePackageVerified: false` の解消）。
+  - **Batch 閉域化（B案フェーズ2・3）**: Azure Batch Account の Private Endpoint（`batchAccount` サブリソース）化とパブリックアクセス遮断、および Batch Pool の VNet サブネット統合／パブリック IP なし（`NoPublicIPAddresses`）構成。
   - **V10（実 C++ バイナリ連携）**: 固定 C++ 計算バイナリの実行、Blob 確定入力（SHA-256/ETag）、計算出力のハッシュ照合・業務アプリ側許容誤差検証（C案）。
   - **T09（大容量出力の Blob 直送）**: Azure Batch `OutputFiles` による Blob Storage 直接アップロード、転送完了とハッシュ整合性確認後のマニフェスト公開（C案）。
   - **V00（全面閉域化・オンプレミス接続）**: Storage / Batch を含む全面閉域化、ExpressRoute/VPN オンプレミス接続。
   - **DTS（Durable Task Scheduler）環境**: 最新 15 関数コード、cancellation、および認証設定の DTS 環境での実機回帰（過去の DTS 検証は 12 関数時点）。
 
-> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。実機デプロイ検証済みの範囲は最新成果（`.deploy/poc/20261019-080215-5263`、コミット `839932b`）および Entra プロトタイプ（`.deploy/poc/20261019-001001-3480`、コミット `9ad401c`）です。App Role不足等の追加拒否試験、Storage / Batchの全面閉域化、実C++ファイル入出力は後続作業です。
+> **注意:** 本書は Azure 実機検証および後続の実装フェーズに関する計画書です。ローカル環境で動作する独立検証ランナー（Fake / Mock）による検証結果と、Azure 実環境への接続を伴う実証試験の合格判定は明確に区別して管理します。実機デプロイ検証済みの範囲は最新成果（`.deploy/poc/20261019-080215-5263`、コミット `839932b`）および Entra 完全認証（`.deploy/poc/20261019-092244-0886`、証跡 `artifacts/private-auth-validation/20261019-004913-5659/summary.json`）です。Storage / Batchの全面閉域化、実C++ファイル入出力は後続作業です。
 
 ---
 
@@ -57,7 +57,7 @@
 | 既存の到達点 | 検証runner、Function受信閉域化・検証VM、主要耐障害性検証 | 過去のAzure実証はV05/V07/V08/V09等。全世代の起動履歴を網羅できないadmission20はNotRunを維持 |
 | 15関数実機合格 | 独自API契約（全15 Functions）、エラー遮蔽、受付・所有者一体化（admission v2）、V12利用者キャンセル実機実証、閉域全6シナリオ実機回帰 | **【Azure 実機検証完了（Pass）】** 15関数コードデプロイ（`.deploy/poc/20261018-211336-1471`、スモーク合格）および閉域検証VM回帰試験（`artifacts/private-validation/20261018-124022-0449/summary.json`、全6シナリオPass）により完全合格 |
 | 1 | V11: 所有者と受付を単一の不変レコードへ統合 | **【ローカル完了・実機回帰Pass】** 条件付き作成で入力・所有者を同時確定し、所有者なし旧受付との並行競合を防止。実機回帰（conflictシナリオ）にて409競合調停・再送を確認 |
-| 2 | V11: Entra/App Role認証境界（B案） | **【Azure 実機プロトタイプ検証完了（Pass）】** 信頼されたバックエンド主体（VM Managed Identity）と利用者・組織の伝播契約、EasyAuth v2 による未認証 401 遮断、所有者不整合 403 遮断、正当トークン通過を実機実証（証跡: `artifacts/private-auth-validation/20261018-160545-4455/summary.json`）。※App Role 不足トークン実機拒否試験および稼働パッケージ同定は未検証 |
+| 2 | V11: Entra/App Role認証境界（B案フェーズ1） | **【Azure 実機完全検証完了（Pass）】** 信頼されたバックエンド主体（VM Managed Identity）と利用者・組織の伝播契約、EasyAuth v2 による未認証・不正Audience 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合 403 遮断、正当トークン通過、および `X-Poc-Package-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）を実機実証（証跡: `artifacts/private-auth-validation/20261019-004913-5659/summary.json`、終了コード0、Pass） |
 | 4 | V12: 利用者取消 | **【Azure 実機検証完了（Pass）】** 要求永続化、投入停止、Batch停止確認、取消とmanifest公開の排他調停、所有者認可、runner cancellationシナリオがAzure実機で完全実証 |
 | 3 | V11/V12: 15関数コードのAzure配置・閉域VM実機回帰（A案） | **【Azure 実機検証完了（Pass）】** 15関数コードのAzure配置、全6シナリオ閉域回帰（single/three/classification/failure/conflict/cancellation）が終了コード0で合格 |
 | 次の焦点 | 発展的検証（C案 / 認証厳格化）または PoC 完了報告 | **【次なる作業候補】**<br>・**C案**: 実 C++ バイナリ連携（`V10`）および Batch `OutputFiles` 大容量出力直送（`T09`）の実機検証<br>・**V11 認可厳格化**: App Role 不足トークンによる実機 403 拒否試験、稼働パッケージ暗号学的同定<br>・**DTS 環境回帰**: 15 関数コードおよびキャンセル・認証の DTS 実機回帰<br>・あるいは、これまでの実機検証成果（V01〜V09, V11, V12）を総括する **PoC 完了報告書・技術評価報告書** の作成 |

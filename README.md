@@ -9,12 +9,12 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 > - **最新コード（15 Functions・V12 利用者キャンセル & 排他調停・Azure 実機再検証全件合格）**: `CancelWorkflow` を追加した計 15 個の Functions を登録するコードで、取消確定とマニフェスト公開の排他調停（`resolution.json`）、停止未確認時の取消再送による Batch 停止再試行、停止確認の永続化（`termination.json`）と Activity 再試行・状態 API 反映、Job 作成前・公開時取消ステータス正規化を含み、Release 単体テスト全 294 件（`Poc.Tests` 292/292 件、`DtsProbe` 2/2 件、失敗・スキップ 0 件）、Terraform Mock 38 件、PowerShell オフライン試験 8 組全件が成功し、実 Azure 環境への再デプロイおよび全 6 シナリオ実機回帰も合格しています。
 > - **Azure 実環境デプロイ・実機回帰の実績（最新成果）**:
 >   - **最新 15 関数デプロイおよび全 6 シナリオ実機回帰（合格）**: 実 Azure 環境（`poc` 環境・Azure Storage バックエンド、コミット `839932b`）への最新 15 関数パッケージのデプロイ（`.deploy/poc/20261019-080215-5263`、15 関数全件インデックス登録確認、3 Tasks スモークテスト合格: `deploy-13795081be9948a1b20a2114e447363b`、パッケージ SHA-256: `06bf36f4...`）、および閉域検証 VM 経由での全 6 シナリオ回帰検証（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）を**全件 Pass** で完了し、取消調停・停止再試行・停止確認永続化を含む V12 利用者キャンセルの最新改善の実機成立を実証済みです。
->   - **B案 Entra ID サービス間認証・認可プロトタイプ実機検証（合格）**: EasyAuth v2 を有効化した環境（`.deploy/poc/20261019-001001-3480`、コミット `9ad401c` 基準）において、閉域検証 VM からの認証検証（`artifacts/private-auth-validation/20261018-160545-4455/summary.json`、終了コード 0、Pass）を合格しました。
+>   - **B案フェーズ1 Entra ID サービス間認証・認可および稼働パッケージ同定（完全合格）**: EasyAuth v2 を有効化した実機環境（`.deploy/poc/20261019-092244-0886`）において、閉域検証 VM からの完全認証検証（`artifacts/private-auth-validation/20261019-004913-5659/summary.json`、終了コード 0、Pass）を実施し、未認証・不正Audienceの 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合の 403 遮断、正当マネージドIDによる完走（202/200）、および `X-Poc-Package-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）の完全合格を確認しました。
 > - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、15 関数の初版登録・全 6 シナリオ回帰（`.deploy/poc/20261018-211336-1471`、コミット `b7ad854`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での 0 台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
 > - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の 12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
 > - **未実証・未再検証の範囲**:
->   - **認証境界・稼働パッケージ同定**: App Role 不足トークン等による実機 403 拒否試験および稼働パッケージ暗号学的同定（`livePackageVerified: false` の解消）。
->   - **アプリ・基盤連携**: 実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、全面閉域化（`V00`）、Spot 回収復旧、ならびに DTS バックエンド環境での最新 15 関数・キャンセル・認証回帰が残っています。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
+>   - **Batch 閉域化（B案フェーズ2・3）**: Azure Batch Account の Private Endpoint 化（`batchAccount` サブリソース）および Batch Pool の VNet サブネット / パブリック IP なし（`NoPublicIPAddresses`）構成。
+>   - **アプリ・基盤連携（C案）**: 実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、全面閉域化（`V00`）、Spot 回収復旧、ならびに DTS バックエンド環境での最新 15 関数・キャンセル・認証回帰が残っています。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
 
 ---
 

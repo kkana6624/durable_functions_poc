@@ -156,10 +156,26 @@ exit $LASTEXITCODE
     } elseif ($request.operation -eq 'WorkflowAuth') {
         $stage='validation_runner'
         $deployment=Join-Path $PSScriptRoot 'deployment-result.json'
-        Write-DeploymentJson $deployment @{ outputs=$outputs; source_provenance=$request.source_provenance; package_sha256=$request.package_sha256 }
+        $deploymentObj=@{ outputs=$outputs; source_provenance=$request.source_provenance; package_sha256=$request.package_sha256 }
+        if ($request.PSObject.Properties['assembly_sha256'] -and $request.assembly_sha256) { $deploymentObj.assembly_sha256 = $request.assembly_sha256 }
+        Write-DeploymentJson $deployment $deploymentObj
         $runner=@'
 $r=Get-Content -LiteralPath ./request.json -Raw | ConvertFrom-Json
-& ./Invoke-WorkflowAuthValidation.ps1 -DeploymentResultPath ./deployment-result.json -Resource ([string]$r.auth_resource) -OwnerId ([string]$r.auth_owner_id) -OrgId ([string]$r.auth_org_id) -EvidenceDirectory ./evidence -TimeoutSeconds ([int]$r.timeout_seconds)
+$authParams = @{
+    DeploymentResultPath = './deployment-result.json'
+    Resource = [string]$r.auth_resource
+    OwnerId = [string]$r.auth_owner_id
+    OrgId = [string]$r.auth_org_id
+    EvidenceDirectory = './evidence'
+    TimeoutSeconds = [int]$r.timeout_seconds
+}
+if ($r.PSObject.Properties['auth_unauthorized_client_id'] -and $r.auth_unauthorized_client_id) {
+    $authParams['UnauthorizedManagedIdentityClientId'] = [string]$r.auth_unauthorized_client_id
+}
+if ($r.PSObject.Properties['auth_managed_identity_client_id'] -and $r.auth_managed_identity_client_id) {
+    $authParams['ManagedIdentityClientId'] = [string]$r.auth_managed_identity_client_id
+}
+& ./Invoke-WorkflowAuthValidation.ps1 @authParams
 exit $LASTEXITCODE
 '@
         Push-Location $PSScriptRoot

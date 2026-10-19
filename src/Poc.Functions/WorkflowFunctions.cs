@@ -22,6 +22,39 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     private const string StatusUnavailableMessage = "Workflow status could not be verified. Retry later.";
     private const string ResultUnavailableMessage = "Workflow result could not be verified. Retry later.";
 
+    public const string PackageSha256Header = "X-Poc-Package-Sha256";
+    private static readonly string PackageSha256 = ComputePackageSha256();
+
+    private static string ComputePackageSha256()
+    {
+        try
+        {
+            var basePath = AppContext.BaseDirectory;
+            var path = Path.Combine(basePath, "package-sha256.txt");
+            if (File.Exists(path))
+            {
+                var content = File.ReadAllText(path).Trim();
+                if (content.Length == 64) return content.ToLowerInvariant();
+            }
+            var dllPath = typeof(WorkflowFunctions).Assembly.Location;
+            if (!string.IsNullOrEmpty(dllPath) && File.Exists(dllPath))
+            {
+                using var sha = System.Security.Cryptography.SHA256.Create();
+                using var stream = File.OpenRead(dllPath);
+                return Convert.ToHexString(sha.ComputeHash(stream)).ToLowerInvariant();
+            }
+        }
+        catch { }
+        return "unknown";
+    }
+
+    private static HttpResponseData CreateWorkflowResponse(HttpRequestData request, HttpStatusCode statusCode)
+    {
+        var response = request.CreateResponse(statusCode);
+        response.Headers.Add(PackageSha256Header, PackageSha256);
+        return response;
+    }
+
     [Function(nameof(StartWorkflow))]
     public async Task<HttpResponseData> StartWorkflow(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "workflows")] HttpRequestData request,
@@ -42,7 +75,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
         catch (Exception ex) when (ex is JsonException or ArgumentException)
         {
-            var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
+            var badRequest = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
             await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
         }
@@ -53,19 +86,19 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
         catch (WorkflowForbiddenException)
         {
-            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            var forbidden = CreateWorkflowResponse(request, HttpStatusCode.Forbidden);
             await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
             return forbidden;
         }
         catch (WorkflowConflictException)
         {
-            var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+            var conflict = CreateWorkflowResponse(request, HttpStatusCode.Conflict);
             await conflict.WriteAsJsonAsync(new { error = "requestId already has different configuration.", instanceId = WorkflowIdentity.InstanceId(input.RequestId) });
             return conflict;
         }
         catch (Exception ex) when (IsTransientRequestFailure(ex, cancellationToken))
         {
-            var unavailable = request.CreateResponse(HttpStatusCode.ServiceUnavailable);
+            var unavailable = CreateWorkflowResponse(request, HttpStatusCode.ServiceUnavailable);
             unavailable.Headers.Add("Retry-After", "10");
             await unavailable.WriteAsJsonAsync(new { error = "Admission could not be confirmed. Retry with the same requestId and input." });
             return unavailable;
@@ -196,7 +229,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
         catch (ArgumentException)
         {
-            var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
+            var badRequest = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
             await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
         }
@@ -205,7 +238,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         {
             if (!await admission.ExistsAsync(requestId, client, cancellationToken))
             {
-                var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+                var notFound = CreateWorkflowResponse(request, HttpStatusCode.NotFound);
                 await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
                 return notFound;
             }
@@ -236,14 +269,14 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 }
             }
 
-            var response = request.CreateResponse(HttpStatusCode.OK);
+            var response = CreateWorkflowResponse(request, HttpStatusCode.OK);
             await response.WriteAsJsonAsync(normalized);
             return response;
         }
 
         catch (WorkflowForbiddenException)
         {
-            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            var forbidden = CreateWorkflowResponse(request, HttpStatusCode.Forbidden);
             await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
             return forbidden;
         }
@@ -280,7 +313,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
         catch (ArgumentException)
         {
-            var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
+            var badRequest = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
             await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
         }
@@ -289,7 +322,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         {
             if (!await admission.ExistsAsync(requestId, client, cancellationToken))
             {
-                var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+                var notFound = CreateWorkflowResponse(request, HttpStatusCode.NotFound);
                 await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
                 return notFound;
             }
@@ -313,18 +346,18 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                         };
                     }
                 }
-                var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                var conflict = CreateWorkflowResponse(request, HttpStatusCode.Conflict);
                 await conflict.WriteAsJsonAsync(new { error = "Workflow result is not available.", requestId, status = normalized.Status });
                 return conflict;
             }
 
-            var response = request.CreateResponse(HttpStatusCode.OK);
+            var response = CreateWorkflowResponse(request, HttpStatusCode.OK);
             await response.WriteAsJsonAsync(result);
             return response;
         }
         catch (WorkflowForbiddenException)
         {
-            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            var forbidden = CreateWorkflowResponse(request, HttpStatusCode.Forbidden);
             await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
             return forbidden;
         }
@@ -360,7 +393,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
 
     private static async Task<HttpResponseData> CreateUnavailableResponseAsync(HttpRequestData request, string message)
     {
-        var response = request.CreateResponse(HttpStatusCode.ServiceUnavailable);
+        var response = CreateWorkflowResponse(request, HttpStatusCode.ServiceUnavailable);
         response.Headers.Add("Retry-After", "10");
         await response.WriteAsJsonAsync(new { error = message });
         return response;
@@ -368,7 +401,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
 
     private static async Task<HttpResponseData> CreateErrorResponseAsync(HttpRequestData request, HttpStatusCode statusCode, string message)
     {
-        var response = request.CreateResponse(statusCode);
+        var response = CreateWorkflowResponse(request, statusCode);
         await response.WriteAsJsonAsync(new { error = message });
         return response;
     }
@@ -389,7 +422,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     private static async Task<HttpResponseData> AcceptedAsync(HttpRequestData request, string instanceId, string requestId)
     {
         var statusUrl = BuildStatusUrl(request.Url, requestId);
-        var response = request.CreateResponse(HttpStatusCode.Accepted);
+        var response = CreateWorkflowResponse(request, HttpStatusCode.Accepted);
         response.Headers.Add("Location", statusUrl);
         response.Headers.Add("Retry-After", "10");
         await response.WriteAsJsonAsync(new { id = instanceId, instanceId, statusQueryGetUri = statusUrl });
@@ -415,7 +448,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
         catch (ArgumentException)
         {
-            var badRequest = request.CreateResponse(HttpStatusCode.BadRequest);
+            var badRequest = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
             await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
         }
@@ -424,7 +457,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         {
             if (!await admission.ExistsAsync(requestId, client, cancellationToken))
             {
-                var notFound = request.CreateResponse(HttpStatusCode.NotFound);
+                var notFound = CreateWorkflowResponse(request, HttpStatusCode.NotFound);
                 await notFound.WriteAsJsonAsync(new { error = "Workflow not found.", requestId });
                 return notFound;
             }
@@ -434,7 +467,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             var publishedResult = await operations.TryGetPublishedResultAsync(requestId, cancellationToken);
             if (publishedResult is not null)
             {
-                var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                var conflict = CreateWorkflowResponse(request, HttpStatusCode.Conflict);
                 await conflict.WriteAsJsonAsync(new { error = "Workflow is already completed and cannot be cancelled.", requestId, status = "Succeeded" });
                 return conflict;
             }
@@ -459,19 +492,19 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 }
                 if (normalized.Status == "Succeeded")
                 {
-                    var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                    var conflict = CreateWorkflowResponse(request, HttpStatusCode.Conflict);
                     await conflict.WriteAsJsonAsync(new { error = "Workflow is already completed and cannot be cancelled.", requestId, status = "Succeeded" });
                     return conflict;
                 }
                 if (normalized.Status is "Failed" or "TimedOut")
                 {
-                    var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+                    var conflict = CreateWorkflowResponse(request, HttpStatusCode.Conflict);
                     await conflict.WriteAsJsonAsync(new { error = $"Workflow is already {normalized.Status.ToLowerInvariant()} and cannot be cancelled.", requestId, status = normalized.Status });
                     return conflict;
                 }
                 if (normalized.Status == "Cancelled")
                 {
-                    var ok = request.CreateResponse(HttpStatusCode.OK);
+                    var ok = CreateWorkflowResponse(request, HttpStatusCode.OK);
                     await ok.WriteAsJsonAsync(normalized);
                     return ok;
                 }
@@ -508,7 +541,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                         var confirmedResponse = new WorkflowStatusResponse(
                             requestId, instanceId, plan.JobId, "Cancelled", ResultAvailable: false,
                             TerminationConfirmed: true, Error: WorkflowCancelledMessage);
-                        var ok = request.CreateResponse(HttpStatusCode.OK);
+                        var ok = CreateWorkflowResponse(request, HttpStatusCode.OK);
                         await ok.WriteAsJsonAsync(confirmedResponse);
                         return ok;
                     }
@@ -520,7 +553,7 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             }
 
             var statusUrl = BuildStatusUrl(request.Url, requestId);
-            var response = request.CreateResponse(HttpStatusCode.Accepted);
+            var response = CreateWorkflowResponse(request, HttpStatusCode.Accepted);
             response.Headers.Add("Location", statusUrl);
             response.Headers.Add("Retry-After", "10");
             await response.WriteAsJsonAsync(new
@@ -535,13 +568,13 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         }
         catch (WorkflowConflictException ex)
         {
-            var conflict = request.CreateResponse(HttpStatusCode.Conflict);
+            var conflict = CreateWorkflowResponse(request, HttpStatusCode.Conflict);
             await conflict.WriteAsJsonAsync(new { error = ex.Message, requestId, status = "Succeeded" });
             return conflict;
         }
         catch (WorkflowForbiddenException)
         {
-            var forbidden = request.CreateResponse(HttpStatusCode.Forbidden);
+            var forbidden = CreateWorkflowResponse(request, HttpStatusCode.Forbidden);
             await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this workflow." });
             return forbidden;
         }

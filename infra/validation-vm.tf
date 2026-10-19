@@ -152,6 +152,9 @@ resource "azurerm_linux_virtual_machine" "validation" {
     azurerm_subnet_nat_gateway_association.validation,
     azurerm_subnet_network_security_group_association.validation_vm,
   ]
+  lifecycle {
+    ignore_changes = [identity]
+  }
 }
 
 # Deployment and validation execute through Azure VM Run Command; no SSH ingress.

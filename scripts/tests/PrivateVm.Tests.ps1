@@ -153,8 +153,8 @@ try {
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation RecoveryComplete -RecoveryContext $badContext -EvidenceDirectory $evidence } 'InvalidRecoveryContext'
     $script:transportInvalidId=$false
     $script:transportDownloads=@()
-    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation WorkflowAuth -AuthResource 'api://res' -AuthOwnerId 'owner1' -AuthOrgId 'org1' -EvidenceDirectory $evidence
-    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.auth_resource -eq 'api://res' -and $script:transportRequest.auth_owner_id -eq 'owner1') 'WorkflowAuth must transfer resource and owner arguments'
+    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation WorkflowAuth -AuthResource 'api://res' -AuthOwnerId 'owner1' -AuthOrgId 'org1' -AuthUnauthorizedClientId '11111111-2222-3333-4444-555555555555' -EvidenceDirectory $evidence
+    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.auth_resource -eq 'api://res' -and $script:transportRequest.auth_owner_id -eq 'owner1' -and $script:transportRequest.auth_unauthorized_client_id -eq '11111111-2222-3333-4444-555555555555') 'WorkflowAuth must transfer resource and owner arguments'
     Assert-True ('summary.json' -in $script:transportDownloads) 'WorkflowAuth must download sanitized summary.json'
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation WorkflowAuth -EvidenceDirectory $evidence } 'WorkflowAuth requires AuthResource, AuthOwnerId, and AuthOrgId'
     $script:transportInvalidId=$true
