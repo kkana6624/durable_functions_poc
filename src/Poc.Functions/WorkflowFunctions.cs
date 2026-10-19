@@ -22,11 +22,25 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
     private const string StatusUnavailableMessage = "Workflow status could not be verified. Retry later.";
     private const string ResultUnavailableMessage = "Workflow result could not be verified. Retry later.";
 
+    /// <summary>
+    /// Response header carrying the deterministic package content fingerprint calculated at publish/deploy time
+    /// across all published files manifest (package-sha256.txt). Verifies that the running worker was deployed from
+    /// the expected whole package, but does not perform dynamic per-request full-disk rescanning.
+    /// </summary>
     public const string PackageSha256Header = "X-Poc-Package-Sha256";
+
+    /// <summary>
+    /// Response header carrying the entry assembly SHA-256 fingerprint (assembly-sha256.txt or dll hash).
+    /// </summary>
     public const string AssemblySha256Header = "X-Poc-Assembly-Sha256";
+
     private static readonly string PackageSha256 = ComputePackageSha256();
     private static readonly string AssemblySha256 = ComputeAssemblySha256();
 
+    /// <summary>
+    /// Reads the build/deploy-time entry assembly hash from assembly-sha256.txt or hashes Poc.Functions.dll.
+    /// Loaded once at process startup; represents the binary identity of the entry assembly in memory.
+    /// </summary>
     private static string ComputeAssemblySha256()
     {
         try
@@ -50,6 +64,12 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         return "unknown";
     }
 
+    /// <summary>
+    /// Reads the build/deploy-time whole-package fingerprint from package-sha256.txt (SHA-256 of sorted file manifest).
+    /// Loaded once at process startup; represents the deploy-time package contents manifest embedded into the artifact.
+    /// Callers verify this against deployment descriptors to confirm the running worker process identity.
+    /// This is an embedded artifact fingerprint, distinct from dynamic full-disk runtime file rescanning.
+    /// </summary>
     private static string ComputePackageSha256()
     {
         try

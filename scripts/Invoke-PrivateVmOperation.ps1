@@ -19,7 +19,7 @@ function Invoke-PrivateVmOperation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Outputs,
-        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete','WorkflowAuth')][string]$Operation,
+        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','FunctionValidation')][string]$Operation,
         [Parameter(Mandatory)][string]$EvidenceDirectory,
         [string]$PackagePath,
         [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$PackageSha256='',
@@ -164,7 +164,7 @@ echo 'Private VM operation completed; sanitized results are in the control conta
         if ($result.operation_id -ne $id -or $result.operation -ne $Operation -or [int]$result.exit_code -notin @(0,1,2)) { throw 'Private VM returned an invalid operation result.' }
         $failureStage=$null
         if ($result.PSObject.Properties['failure_stage'] -and $null -ne $result.failure_stage) {
-            if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','function_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
+            if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','function_connectivity','function_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
             $failureStage=[string]$result.failure_stage
         }
         if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth') -and $result.summary_available) {
@@ -173,7 +173,7 @@ echo 'Private VM operation completed; sanitized results are in the control conta
                 $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',(Join-Path $EvidenceDirectory $name),'--overwrite','true','--auth-mode','login','--no-progress')
             }
         }
-        if ($commandFailed -or ($Operation -eq 'Deploy' -and [int]$result.exit_code -ne 0)) { throw "Private VM operation $id failed ($($result.error_code)); stage=$failureStage; raw output suppressed." }
+        if ($commandFailed -or ($Operation -in @('Deploy','FunctionValidation') -and [int]$result.exit_code -ne 0)) { throw "Private VM operation $id failed ($($result.error_code)); stage=$failureStage; raw output suppressed." }
         return $result
     }
     finally {

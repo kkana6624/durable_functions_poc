@@ -31,9 +31,9 @@ function Invoke-ValidationHttp {
     @'
 # The isolated workflow tests exercise orchestration; transport is tested separately.
 function Invoke-PrivateVmOperation {
-    param([hashtable]$Outputs,[string]$Operation,[string]$PackagePath,[string]$EvidenceDirectory,[int]$TimeoutSeconds,[switch]$Smoke)
-    if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) { throw 'Missing Function package' }
-    [IO.File]::AppendAllText($env:POC_FAKE_TRACE,"vm-operation $Operation package smoke=$([bool]$Smoke) timeout=$TimeoutSeconds`n")
+    param([hashtable]$Outputs,[string]$Operation,[string]$PackagePath,[string]$EvidenceDirectory,[int]$TimeoutSeconds,[switch]$Smoke,[string]$PackageSha256,[string]$AssemblySha256,[string]$PackageContentSha256)
+    if ($Operation -eq 'Deploy' -and (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf))) { throw 'Missing Function package' }
+    [IO.File]::AppendAllText($env:POC_FAKE_TRACE,"vm-operation $Operation smoke=$([bool]$Smoke) timeout=$TimeoutSeconds`n")
     return [pscustomobject]@{ validation=@{Ready=$true;Smoke='Pass'} }
 }
 '@ | Add-Content -LiteralPath (Join-Path $temporary 'scripts/Invoke-PrivateVmOperation.ps1') -Encoding UTF8
@@ -116,9 +116,11 @@ exit 0
     $joined=$trace -join "`n"
     $apply=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match 'terraform .* apply ' })
     $pool=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^az rest ' })
-    $vm=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation Deploy ' })
-    Assert-True ($apply -ge 0 -and $pool -gt $apply -and $vm -gt $pool) 'Expected apply -> pool readiness -> deployment on private VM'
-    Assert-True ($trace[$vm] -match 'smoke=False timeout=60') 'Default deployment must pass timeout and omit VM smoke'
+    $deploy=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation Deploy ' })
+    $restart=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^az functionapp restart ' })
+    $validate=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation FunctionValidation ' })
+    Assert-True ($apply -ge 0 -and $pool -gt $apply -and $deploy -gt $pool -and $restart -gt $deploy -and $validate -gt $restart) 'Expected apply -> pool readiness -> deployment on private VM -> restart -> post-restart validation on private VM'
+    Assert-True ($trace[$validate] -match 'smoke=False timeout=60') 'Default deployment must pass timeout and omit VM smoke in post-restart validation'
     Assert-True (@($trace | Where-Object { $_ -match 'config-zip|^http |dotnet run --project tools/BatchSmoke' }).Count -eq 0) 'Deployment must not call the private endpoints or Batch smoke locally'
     $resultFile=Get-ChildItem -LiteralPath (Join-Path $temporary '.deploy/offline') -Filter deployment-result.json -Recurse | Select-Object -First 1
     $result=Get-Content -LiteralPath $resultFile.FullName -Raw | ConvertFrom-Json
@@ -128,8 +130,8 @@ exit 0
     Clear-Content -LiteralPath $env:POC_FAKE_TRACE
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath -Smoke
     $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
-    $vm=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation Deploy ' })
-    Assert-True ($vm -ge 0 -and $trace[$vm] -match 'smoke=True timeout=60') 'Smoke switch and configured timeout must survive dot-sourcing and reach the VM'
+    $validate=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation FunctionValidation ' })
+    Assert-True ($validate -ge 0 -and $trace[$validate] -match 'smoke=True timeout=60') 'Smoke switch and configured timeout must survive dot-sourcing and reach the VM'
     Assert-True (@($trace | Where-Object { $_ -match '^az rest .*?/nodes\?' }).Count -eq 0) 'Existing pool smoke must submit tasks without a node-allocation precondition'
     Assert-True (($trace -join "`n") -notmatch 'PRIVATE-FUNCTION-KEY|code=PRIVATE') 'Trace must not contain Function or Durable status keys'
     $bootstrapConfigPath=Join-Path $temporary 'bootstrap-config.psd1'

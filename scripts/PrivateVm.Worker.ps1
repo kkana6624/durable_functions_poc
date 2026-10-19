@@ -33,6 +33,30 @@ function Assert-PrivateFunctionDns([hashtable]$Outputs) {
     }
 }
 
+function Assert-PrivateFunctionConnectivity([hashtable]$Outputs, [int]$TimeoutSeconds) {
+    $workflowUri = [string]$Outputs.function_app_url.TrimEnd('/') + '/api/workflows'
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false
+    $client = [Net.Http.HttpClient]::new($handler); $client.Timeout = [TimeSpan]::FromSeconds(10)
+    try {
+        do {
+            try {
+                $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $workflowUri)
+                try {
+                    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+                    $code = [int]$response.StatusCode
+                    if ($code -in @(200, 401, 403, 404, 405)) { return }
+                } finally { $request.Dispose() }
+            } catch { }
+            $remaining = $TimeoutSeconds - $watch.Elapsed.TotalSeconds
+            if ($remaining -le 0) { break }
+            Start-Sleep -Seconds ([Math]::Min(5, [Math]::Max(1, [Math]::Ceiling($remaining))))
+        } while ($watch.Elapsed.TotalSeconds -lt $TimeoutSeconds)
+        throw "Function private HTTP endpoint did not respond successfully within $TimeoutSeconds seconds."
+    } finally { $client.Dispose(); $handler.Dispose() }
+}
+
 function Publish-PrivateFunctionPackage([hashtable]$Outputs,[string]$Path,[int]$TimeoutSeconds) {
     $script:PrivateVmScmDiagnostics=@{ stage='scm_host'; http_status=$null }
     $hostName=Get-PrivateScmHost $Outputs
@@ -103,14 +127,19 @@ try {
         $stage='package_integrity'
         $package=Join-Path $PSScriptRoot 'functions.zip'
         if ((Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash -ne $request.package_sha256) { throw 'Package hash mismatch.' }
-        $watch=[Diagnostics.Stopwatch]::StartNew()
         $stage='scm_publish'
         Publish-PrivateFunctionPackage $outputs $package ([int]$request.timeout_seconds)
+        $result.package_sha256=$request.package_sha256
+        $result.exit_code=0
+    } elseif ($request.operation -eq 'FunctionValidation') {
+        $watch=[Diagnostics.Stopwatch]::StartNew()
+        $remaining=[Math]::Max(1,[Math]::Floor([int]$request.timeout_seconds-$watch.Elapsed.TotalSeconds))
+        $stage='function_connectivity'
+        Assert-PrivateFunctionConnectivity $outputs ([Math]::Min(120, $remaining))
         $remaining=[Math]::Max(1,[Math]::Floor([int]$request.timeout_seconds-$watch.Elapsed.TotalSeconds))
         $stage='function_validation'
         $validation=Invoke-DeploymentValidation -Outputs $outputs -Phase Functions -TimeoutSeconds $remaining -Smoke:([bool]$request.smoke)
         $result.validation=$validation
-        $result.package_sha256=$request.package_sha256
         $result.exit_code=0
     } elseif ($request.operation -eq 'Validate') {
         $stage='validation_runner'

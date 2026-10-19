@@ -179,11 +179,14 @@ try {
     $outputs = ConvertTo-DeploymentHashtable (Invoke-Tool $terraform @('-chdir=infra', 'output', '-json', 'deployment') | ConvertFrom-Json)
     $null = Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $timeout
 
-    Write-Host 'Deploying and checking the private Function from the validation VM...'
-    $privateResult = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -PackageSha256 $packageSha -AssemblySha256 $assemblySha -PackageContentSha256 $packageContentSha -EvidenceDirectory (Join-Path $run 'private-vm') -TimeoutSeconds $timeout -Smoke:$Smoke
-    $validation = $privateResult.validation
+    Write-Host 'Deploying the private Function package from the validation VM...'
+    $null = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -PackageSha256 $packageSha -AssemblySha256 $assemblySha -PackageContentSha256 $packageContentSha -EvidenceDirectory (Join-Path $run 'private-vm-deploy') -TimeoutSeconds $timeout
     Write-Host "Restarting Function App to ensure newly published assembly is loaded..."
     $null = Invoke-AzJson @('functionapp', 'restart', '--name', $outputs.function_app_name, '--resource-group', $outputs.resource_group_name)
+    Start-Sleep -Seconds 10
+    Write-Host 'Verifying Function registration and connectivity after restart from the validation VM...'
+    $postRestartResult = Invoke-PrivateVmOperation -Outputs $outputs -Operation FunctionValidation -PackageSha256 $packageSha -AssemblySha256 $assemblySha -PackageContentSha256 $packageContentSha -EvidenceDirectory (Join-Path $run 'private-vm-validation') -TimeoutSeconds $timeout -Smoke:$Smoke
+    $validation = $postRestartResult.validation
     $summary = @{ environment = $Environment; completed_utc = [DateTime]::UtcNow.ToString('o'); package_sha256 = $packageSha; assembly_sha256 = $assemblySha; package_content_sha256 = $packageContentSha; outputs = $outputs; validation = $validation; smoke_requested = [bool]$Smoke }
     Write-DeploymentJson (Join-Path $run 'deployment-result.json') $summary
     Write-Host "Deployment completed: $($outputs.function_app_name). Logs: $run"

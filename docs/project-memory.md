@@ -1,6 +1,33 @@
 # プロジェクトメモリ
 
-## 2026-10-19 B案フェーズ1: Microsoft Entra ID サービス間認証・認可の実機検証および稼働パッケージ暗号学的同定の完全合格（レビュー修正反映・最新成果）
+## 2026-10-19 レビュー指摘2件（P2再起動後復旧確認・P3同定保証境界と設計書整合）の改修および Azure 実機完全合格
+
+全体レビューで指摘された 2 件の課題（[P2] `deploy.ps1` が再起動後の復旧・疎通を確認せず完了を記録する問題、[P3] `WorkflowFunctions.cs` の稼働中ファイル同定保証境界と `docs/workflow-authentication-design.md` の記述齟齬）を改修し、実 Azure 環境への再デプロイおよび閉域検証 VM（`poc-df40481149-validation`）からの完全実機検証を実施し、**全項目完全合格（Pass、終了コード 0）** を確認しました。
+
+- **対応内容詳細**:
+  1. **[P2] 再起動後の復旧・疎通確認プロセスの導入**:
+     - `scripts/PrivateVm.Worker.ps1` / `scripts/Invoke-PrivateVmOperation.ps1` に新オペレーション `FunctionValidation` を新設。
+     - `scripts/deploy.ps1` のフローを改修：プライベート SCM への ZIP 配置完了後、`az functionapp restart` を発行し、非同期再起動の安定化待機（10秒）を挟んだ上で、閉域検証 VM から `FunctionValidation` を実行。
+     - `FunctionValidation` 内でプライベート DNS 解決（`Assert-PrivateFunctionDns`）、エンドポイント応答疎通確認（`Assert-PrivateFunctionConnectivity` による `/api/workflows` への非 5xx 応答待機）、および ARM 上での 15 関数全件インデックス登録確認（`Invoke-DeploymentValidation -Phase Functions`）を**再起動後に実施・成功確認した上で `deployment-result.json` に完了記録**を保存するよう改修。
+     - オフライン試験 `Deploy.Workflow.Tests.ps1` / `PrivateVm.Tests.ps1` も改修シーケンスに合わせて更新・全件 Pass。
+  2. **[P3] 同定方式の保証境界の明文化および設計書整合**:
+     - `src/Poc.Functions/WorkflowFunctions.cs` のヘッダー定数およびハッシュ取得メソッド（`ComputePackageSha256`, `ComputeAssemblySha256`）に XML ドキュメントコメントを整備。
+     - 本方式が発行・デプロイ時に算出し同梱されたマニフェスト暗号学的指紋（全101ファイルのソート済み SHA-256 マニフェスト `package-sha256.txt`、および `Poc.Functions.dll` の `assembly-sha256.txt`）をプロセス起動時にメモリに保持して返却するものであり、リクエスト毎のディスク全走査・動的再計算ではない旨の保証境界を明示。
+     - `docs/workflow-authentication-design.md` から旧記述（`livePackageVerified=false 固定`）を完全改定し、ラッチング不変保護（途中の不一致・欠落で恒久的に false 化）および前提確認（`unauthorizedClientConfirmedInAllowedList = true`）を明文化。
+- **Azure 実機デプロイ成果**: `.deploy/poc/20261019-112704-9949`
+  - Function パッケージ SHA-256: `54aa7b1980db50d6d43bd40fb3d6571863d587f997d0290155dfbfccfbd82ae0`
+  - エントリアセンブリ SHA-256: `a0be58b70585cbf28d7d7cfbbe2a2733161cec20537e37bc82b7b77907f658dd`
+  - パッケージコンテンツ SHA-256: `ff5291b221b9cb3b08a829cad511a16ab405763a6910ecb3682545df0f51ddbe`
+  - 再起動後の 15 関数全件登録・HTTP 疎通確認を実機検証して完了記録を保存。
+- **実機検証エビデンス**: `artifacts/private-auth-validation/20261019-023554-2683/summary.json`（終了コード 0、Pass）
+  - **未認証プローブ遮断（401）**: `anonymous`, `keyOnly`, `forgedPrincipal`, `bearerWithoutKey` の計12プローブすべてで HTTP 401 遮断を確認。
+  - **Audience 不正遮断（401）**: ARM 宛てトークン（`https://management.azure.com/`）に対し、EasyAuth による HTTP 401 遮断を全3 API で確認。
+  - **App Role 不足遮断（403）**: EasyAuth 許可リスト確認済み（`unauthorizedClientConfirmedInAllowedList = true`）の条件下で、`Workflow.Execute` を持たない `poc-unauthorized-id` からの要求に対し、`EntraEasyAuthCallerResolver` による HTTP 403 Forbidden 遮断を全3 API で厳密に確認。
+  - **所有者伝播認可（403）**: 認可トークン存在下での所有者ヘッダー欠落・他者指定に対し HTTP 403 遮断を確認。
+  - **正当マネージド ID 通過（200/202）**: `Workflow.Execute` を持つ正規マネージド ID からの要求が 202 受理、同一再送 202、入力競合 409、ステータスポーリングを経て 200 結果取得（全Task整合）まで完走。
+  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`ff5291b2...`）とデプロイコンテンツ指紋（`packageContentSha256`）、および `liveAssemblySha256`（`a0be58b7...`）とデプロイアセンブリハッシュ（`assemblySha256`）が完全一致し、`livePackageVerified: true` を確認。
+
+## 2026-10-19 B案フェーズ1: Microsoft Entra ID サービス間認証・認可の実機検証および稼働パッケージ暗号学的同定の完全合格（レビュー修正反映）
 
 B案フェーズ1（Microsoft Entra ID によるサービス間認証・認可および稼働パッケージ同定）の実機実装・検証を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`）において実施し、レビュー指摘3件（P2 後続不一致での同定無効化、P3 パッケージ全体コンテンツ指紋測定 `package_content_sha256`、P3 App Role 不足拒否前提確認 `unauthorizedClientConfirmedInAllowedList`）の修正を適用した上で、**全項目完全合格（Pass、終了コード 0）** を確認しました。
 

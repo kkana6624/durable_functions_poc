@@ -133,6 +133,15 @@ try {
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $package -EvidenceDirectory $evidence } '^Private VM returned an invalid failure stage\.$'
     $script:transportFailureStage=$null
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $package -EvidenceDirectory $evidence } 'failed .*raw output suppressed'
+    $script:transportExit=0
+    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation FunctionValidation -EvidenceDirectory $evidence -Smoke -TimeoutSeconds 60
+    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.smoke -and $result.validation.Ready) 'FunctionValidation should transfer smoke and return validation'
+    $script:transportExit=1
+    $script:transportFailureStage='function_connectivity'
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation FunctionValidation -EvidenceDirectory $evidence } 'stage=function_connectivity; raw output suppressed'
+    $script:transportFailureStage='function_validation'
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation FunctionValidation -EvidenceDirectory $evidence } 'stage=function_validation; raw output suppressed'
+    $script:transportFailureStage=$null
     $script:transportExit=2
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('admission20') -EvidenceDirectory $evidence
     Assert-True ($result.exit_code -eq 2) 'Validate must preserve NotRun exit code 2'

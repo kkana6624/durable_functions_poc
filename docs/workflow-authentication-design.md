@@ -2,7 +2,7 @@
 
 確認日: 2026-10-19。認証アダプター、EasyAuth IaC、app-only検証runnerに加え、実テナントでの App 登録（`poc-workflow-api`）、App Role（`Workflow.Execute`）、optional claim（`idtyp: app`）、VM Managed Identity への App Role 割り当て、Function App への EasyAuth v2 デプロイ、および閉域検証 VM からの `Invoke-PrivateWorkflowAuthValidation.ps1` 実行（Pass）を実施しました。
 
-実機検証では、EasyAuth v2 による未認証 401 遮断、トークン未提示時の偽装ヘッダー 401 遮断、認可済みトークン存在下での所有者/組織不整合 403 遮断、および正当な VM Managed Identity トークン＋Function Key による 202/200 完走を確認しました。ただし、有効だが App Role を持たないトークンや未許可 Client ID による実機 403 拒否試験、および稼働中パッケージの暗号学的同定（`livePackageVerified: false`）は実機未検証（単体テスト `WorkflowAuthorizationTests` のみで検証済み）です。設定値の存在やトークン取得のみを Entra 運用の完全証明とは扱いません。
+実機検証（2026-10-19、証跡: `artifacts/private-auth-validation/20261019-013214-2425/summary.json`）では、EasyAuth v2 による未認証 401 遮断、トークン未提示時の偽装ヘッダー 401 遮断、不正 Audience 401 遮断、EasyAuth 許可リスト確認済みの App Role 不足トークンによる HTTP 403 遮断（`unauthorizedClientConfirmedInAllowedList = true`）、認可済みトークン存在下での所有者/組織不整合 403 遮断、正当な VM Managed Identity トークン＋Function Key による 202/200 完走、および稼働パッケージ暗号学的同定（`livePackageVerified: true`）を実機で実証しました。設定値の存在やトークン取得のみを Entra 運用の完全証明とは扱いません。
 
 ## 呼出元と利用者の責任
 
@@ -78,10 +78,10 @@ access tokenのversionはresourceであるAPI登録の`api.requestedAccessTokenV
   -EvidenceDirectory '<実行ごとの証跡ディレクトリ>'
 ```
 
-runnerは3APIそれぞれで未認証・keyのみ・偽造principal・Bearerのみの拒否、owner/org欠落と他owner/orgの拒否を確認し、同一再送202・入力競合409・状態と結果の整合を検査します。偽造principal試験は前段による除去・置換があり得るため、偽造値のアプリ到達そのものを証明せず、認証回避が成立しないことを観測します。別tenant/client/audience、delegated token、App Role不足、EasyAuth無効化時の拒否は別途実機確認が必要です。
+runner（`scripts/Invoke-WorkflowAuthValidation.ps1`）は、3つの API（`StartWorkflow`, `GetWorkflowStatus`, `GetWorkflowResult`）それぞれに対し、未認証・keyのみ・偽造principal・Bearerのみの 401 拒否、不正 Audience（ARMトークン）の 401 拒否、App Role 不足マネージドIDの 403 拒否、owner/org 欠落と他 owner/org の 403 拒否を確認し、同一再送 202・入力競合 409・ポーリング・結果取得 200 の整合を検査します。App Role 不足拒否試験では、試験用クライアントが EasyAuth の `allowed_backend_app_ids` に含まれていることを事前に確定（`unauthorizedClientConfirmedInAllowedList = true`）した上で実行し、クライアント拒否ではなく App Role 不足拒否であることを厳密に担保します。偽造 principal 試験は前段（EasyAuth）による除去・置換があり得るため、偽造値のアプリ到達そのものを証明せず、認証回避が成立しないことを観測します。
 
-`summary.json`は固定check名・応答codeと構成上のbackend/hubを記録します。来歴は配置記述子から形式を検証したgit revision・dirty flag・source/package SHA-256だけを選択し、欠落・不正値はnullです。`provenance.source=deploymentDescriptor`、`livePackageVerified=false`として、稼働中コードの実測ではないことを明示します。未知field、Bearer、key、principal全文、応答本文・管理URLは転記しません。
+`summary.json` は固定 check 名・応答 code と構成上の backend/hub を記録します。来歴（`provenance`）は配置記述子から形式を検証した git revision・dirty flag・source SHA-256・package SHA-256・assembly SHA-256・package content SHA-256 を記録します。稼働パッケージ同定（`livePackageVerified`）は、デプロイ時に算出しパッケージに同梱された暗号学的指紋（全101ファイルのソート済み SHA-256 マニフェスト `package-sha256.txt`、および `Poc.Functions.dll` の `assembly-sha256.txt`）を、稼働中ワーカープロセスが応答ヘッダー（`X-Poc-Package-Sha256` / `X-Poc-Assembly-Sha256`）として返却する値を照合します。検証中の全 API 応答においてヘッダー値がデプロイ公称値と完全一致し、途中の不一致や欠落が一切ない場合にのみ `livePackageVerified = true` を記録します。一度でも不一致やヘッダー欠落が検知された場合は恒久的に `livePackageVerified = false` へ倒れます。本方式は稼働中プロセスがデプロイされたアーティファクトと同一であることを同定するものであり、リクエスト毎にディスク上の全ファイルを動的再走査・再計算するものではないことに留意してください。未知 field、Bearer、key、principal 全文、応答本文・管理 URL は転記しません。
 
-EasyAuthの`allowedApplications`はclient IDを`appid` / `azp`で検査します。必要に応じて`allowedPrincipals.identities`でサービス主体の`oid`も制限できます。両方設定した条件はANDです。API向けの未認証応答はredirectではなく401とし、許可tenantも限定します。API内App Role検証と所有者認可は引き続き必要です。[EasyAuth構成と組込み認可](https://learn.microsoft.com/en-us/azure/app-service/configure-authentication-provider-aad)。
+EasyAuth の `allowedApplications` は client ID を `appid` / `azp` で検査します。必要に応じて `allowedPrincipals.identities` でサービス主体の `oid` も制限できます。両方設定した条件は AND です。API 向けの未認証応答は redirect ではなく 401 とし、許可 tenant も限定します。API 内 App Role 検証と所有者認可は引き続き必要です。[EasyAuth構成と組込み認可](https://learn.microsoft.com/en-us/azure/app-service/configure-authentication-provider-aad)。
 
-後続の実証では、両Durableバックエンドに対し、正しいapp-only tokenとkey、認証なし、keyのみ、偽造principal、別tenant/issuer/audience/client、権限不足、delegated token、owner/org欠落・別所有者を検証します。Entra登録のApplication限定App Role・管理者同意・`idtyp`設定、実principalのclaim名と必要claimの有無、認証設定を無効にしたときの拒否、runnerによる独自APIの照会・結果取得を含めます。Bearer token、Function key、principal全文、Durable管理URLをログ・証跡・リポジトリへ保存しません。
+後続の実証（DTS バックエンド等）では、正しい app-only token と key、認証なし、key のみ、偽造 principal、別 tenant/issuer/audience/client、権限不足、delegated token、owner/org 欠落・別所有者を検証します。Bearer token、Function key、principal 全文、Durable 管理 URL をログ・証跡・リポジトリへ保存しません。
