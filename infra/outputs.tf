@@ -69,6 +69,8 @@ output "deployment" {
     validation_vm_principal_id            = azurerm_linux_virtual_machine.validation.identity[0].principal_id
     vm_control_container_name             = azurerm_storage_container.vm_control.name
     function_private_ip                   = azurerm_private_endpoint.functions.private_service_connection[0].private_ip_address
+    batch_private_ip                      = var.batch_mode == "new" ? azurerm_private_endpoint.batch_account[0].private_service_connection[0].private_ip_address : null
+    batch_node_management_private_ip      = var.batch_mode == "new" ? azurerm_private_endpoint.batch_node_management[0].private_service_connection[0].private_ip_address : null
     workflow_auth_mode                    = var.workflow_auth_mode
     workflow_auth_allowed_backend_app_ids = var.workflow_auth_allowed_backend_app_ids
   }

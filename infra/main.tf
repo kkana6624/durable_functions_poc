@@ -101,6 +101,7 @@ resource "azurerm_linux_function_app" "poc" {
   functions_extension_version                    = "~4"
   https_only                                     = true
   public_network_access_enabled                  = false
+  virtual_network_subnet_id                      = azurerm_subnet.functions_outbound.id
   ftp_publish_basic_authentication_enabled       = false
   webdeploy_publish_basic_authentication_enabled = false
   tags                                           = local.tags
@@ -143,6 +144,7 @@ resource "azurerm_linux_function_app" "poc" {
     always_on                              = true
     ftps_state                             = "Disabled"
     minimum_tls_version                    = "1.2"
+    vnet_route_all_enabled                 = true
     application_insights_connection_string = azurerm_application_insights.poc.connection_string
     application_stack {
       dotnet_version              = "10.0"

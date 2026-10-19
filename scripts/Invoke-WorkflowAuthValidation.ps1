@@ -6,9 +6,10 @@ param([string]$DeploymentResultPath,[string]$Resource,[string]$ManagedIdentityCl
 
 . (Join-Path $PSScriptRoot 'Deployment.Common.ps1')
 
-function Stop-WorkflowAuthValidation([string]$Code) {
+function Stop-WorkflowAuthValidation([string]$Code, [string]$Message = $null) {
     $errorObject=[InvalidOperationException]::new($Code)
     $errorObject.Data['WorkflowAuthCode']=$Code
+    if ($Message) { $errorObject.Data['WorkflowAuthMessage']=$Message }
     throw $errorObject
 }
 
@@ -47,33 +48,44 @@ function Get-WorkflowAuthKeys([hashtable]$Outputs) {
 function Invoke-WorkflowAuthHttp([string]$Uri,[string]$Method,[hashtable]$Headers,[string]$Body) {
     # HttpClient avoids PowerShell HTTP error records containing URLs/headers/bodies.
     Add-Type -AssemblyName System.Net.Http
-    $handler=[Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect=$false
-    $client=[Net.Http.HttpClient]::new($handler); $client.Timeout=[TimeSpan]::FromSeconds(60)
-    $request=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method),$Uri)
-    $response=$null
-    try {
-        foreach ($name in $Headers.Keys) { $null=$request.Headers.TryAddWithoutValidation($name,[string]$Headers[$name]) }
-        if ($Body) { $request.Content=[Net.Http.StringContent]::new($Body,[Text.Encoding]::UTF8,'application/json') }
-        $response=$client.SendAsync($request).GetAwaiter().GetResult()
-        $code=[int]$response.StatusCode
-        $data=$null; $location=$null; $packageHeader=$null; $assemblyHeader=$null
-        if ($response.Headers.Contains('X-Poc-Package-Sha256')) {
-            $vals=@($response.Headers.GetValues('X-Poc-Package-Sha256'))
-            if ($vals.Count -gt 0) { $packageHeader=[string]$vals[0] }
+    $maxAttempts = 5
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $handler=[Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect=$false
+        $client=[Net.Http.HttpClient]::new($handler); $client.Timeout=[TimeSpan]::FromSeconds(60)
+        $request=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method),$Uri)
+        $response=$null
+        try {
+            foreach ($name in $Headers.Keys) { $null=$request.Headers.TryAddWithoutValidation($name,[string]$Headers[$name]) }
+            if ($Body) { $request.Content=[Net.Http.StringContent]::new($Body,[Text.Encoding]::UTF8,'application/json') }
+            $response=$client.SendAsync($request).GetAwaiter().GetResult()
+            $code=[int]$response.StatusCode
+            $data=$null; $location=$null; $packageHeader=$null; $assemblyHeader=$null
+            if ($response.Headers.Contains('X-Poc-Package-Sha256')) {
+                $vals=@($response.Headers.GetValues('X-Poc-Package-Sha256'))
+                if ($vals.Count -gt 0) { $packageHeader=[string]$vals[0] }
+            }
+            if ($response.Headers.Contains('X-Poc-Assembly-Sha256')) {
+                $vals=@($response.Headers.GetValues('X-Poc-Assembly-Sha256'))
+                if ($vals.Count -gt 0) { $assemblyHeader=[string]$vals[0] }
+            }
+            if ($code -in @(200,202)) {
+                $content=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                if ($content.Length -gt 65536) { Stop-WorkflowAuthValidation 'OversizedResponse' }
+                $data=ConvertTo-DeploymentHashtable ($content | ConvertFrom-Json)
+                if ($response.Headers.Location) { $location=$response.Headers.Location.ToString() }
+            }
+            return @{Code=$code;Data=$data;Location=$location;PackageSha256=$packageHeader;AssemblySha256=$assemblyHeader}
+        } catch {
+            if ($_.Exception.Data['WorkflowAuthCode']) { throw }
+            if ($attempt -lt $maxAttempts) {
+                Start-Sleep -Seconds 2
+                continue
+            }
+            $cleanMsg = [regex]::Replace($_.Exception.Message, 'https?://[^\s/$.?#].[^\s]*', '<sanitized-url>')
+            Stop-WorkflowAuthValidation 'HttpRequestFailed' ($_.Exception.GetType().Name + ': ' + $cleanMsg)
         }
-        if ($response.Headers.Contains('X-Poc-Assembly-Sha256')) {
-            $vals=@($response.Headers.GetValues('X-Poc-Assembly-Sha256'))
-            if ($vals.Count -gt 0) { $assemblyHeader=[string]$vals[0] }
-        }
-        if ($code -in @(200,202)) {
-            $content=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-            if ($content.Length -gt 65536) { Stop-WorkflowAuthValidation 'OversizedResponse' }
-            $data=ConvertTo-DeploymentHashtable ($content | ConvertFrom-Json)
-            if ($response.Headers.Location) { $location=$response.Headers.Location.ToString() }
-        }
-        return @{Code=$code;Data=$data;Location=$location;PackageSha256=$packageHeader;AssemblySha256=$assemblyHeader}
-    } catch { Stop-WorkflowAuthValidation 'HttpRequestFailed' }
-    finally { if ($response) {$response.Dispose()}; $request.Dispose(); $client.Dispose(); $handler.Dispose() }
+        finally { if ($response) {$response.Dispose()}; $request.Dispose(); $client.Dispose(); $handler.Dispose() }
+    }
 }
 
 function Assert-WorkflowAuthUri([string]$Value,[string]$Origin,[string]$Path) {
@@ -326,7 +338,10 @@ function Invoke-WorkflowAuthValidation {
         }
         $summary.checks+=@{name='ownerReplayConflictStatusResult';code=200}
         $summary.status='Pass'; $summary.reason='CustomApiChecksPassed'; $summary.exitCode=0
-    } catch { if ($_.Exception.Data['WorkflowAuthCode']) { $summary.reason=[string]$_.Exception.Data['WorkflowAuthCode'] } }
+    } catch {
+        if ($_.Exception.Data['WorkflowAuthCode']) { $summary.reason=[string]$_.Exception.Data['WorkflowAuthCode'] }
+        if ($_.Exception.Data['WorkflowAuthMessage']) { $summary.message=[string]$_.Exception.Data['WorkflowAuthMessage'] }
+    }
     finally {
         $token=$null; $keys=$null; $headers=$null
         $summary.completedUtc=[DateTime]::UtcNow.ToString('o')

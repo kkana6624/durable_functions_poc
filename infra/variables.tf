@@ -105,6 +105,22 @@ variable "validation_private_endpoint_subnet_prefix" {
     error_message = "Use a separate IPv4 Private Endpoint subnet CIDR within the validation VNet."
   }
 }
+variable "functions_outbound_subnet_prefix" {
+  type    = string
+  default = "10.80.3.0/24"
+  validation {
+    condition     = can(cidrnetmask(var.functions_outbound_subnet_prefix))
+    error_message = "Use a separate IPv4 Functions outbound subnet CIDR within the validation VNet."
+  }
+}
+variable "batch_nodes_subnet_prefix" {
+  type    = string
+  default = "10.80.4.0/24"
+  validation {
+    condition     = can(cidrnetmask(var.batch_nodes_subnet_prefix))
+    error_message = "Use a separate IPv4 Batch nodes subnet CIDR within the validation VNet."
+  }
+}
 variable "resource_group_name" {
   type        = string
   description = "Existing RG by default; new poc- RG when create_resource_group=true."

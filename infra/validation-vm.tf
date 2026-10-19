@@ -75,6 +75,38 @@ resource "azurerm_subnet_nat_gateway_association" "validation" {
   nat_gateway_id = azurerm_nat_gateway.validation.id
 }
 
+resource "azurerm_subnet" "functions_outbound" {
+  name                 = "functions-outbound"
+  resource_group_name  = local.resource_group_name
+  virtual_network_name = azurerm_virtual_network.validation.name
+  address_prefixes     = [var.functions_outbound_subnet_prefix]
+  delegation {
+    name = "functions-delegation"
+    service_delegation {
+      name    = "Microsoft.Web/serverFarms"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+    }
+  }
+}
+
+resource "azurerm_subnet_nat_gateway_association" "functions_outbound" {
+  subnet_id      = azurerm_subnet.functions_outbound.id
+  nat_gateway_id = azurerm_nat_gateway.validation.id
+}
+
+resource "azurerm_subnet" "batch_nodes" {
+  name                            = "batch-nodes"
+  resource_group_name             = local.resource_group_name
+  virtual_network_name            = azurerm_virtual_network.validation.name
+  address_prefixes                = [var.batch_nodes_subnet_prefix]
+  default_outbound_access_enabled = false
+}
+
+resource "azurerm_subnet_nat_gateway_association" "batch_nodes" {
+  subnet_id      = azurerm_subnet.batch_nodes.id
+  nat_gateway_id = azurerm_nat_gateway.validation.id
+}
+
 resource "azurerm_private_dns_zone" "functions" {
   name                = "privatelink.azurewebsites.net"
   resource_group_name = local.resource_group_name

@@ -381,6 +381,10 @@ run "private_function_and_validation_vm" {
     condition     = azurerm_linux_virtual_machine.validation.source_image_reference[0].publisher == "RedHat" && azurerm_linux_virtual_machine.validation.source_image_reference[0].offer == "RHEL" && azurerm_linux_virtual_machine.validation.source_image_reference[0].sku == "9-lvm-gen2" && strcontains(base64decode(azurerm_linux_virtual_machine.validation.custom_data), "packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm") && strcontains(base64decode(azurerm_linux_virtual_machine.validation.custom_data), "dnf install -y azure-cli powershell") && strcontains(base64decode(azurerm_linux_virtual_machine.validation.custom_data), "poc-tools-ready") && output.deployment.vm_control_container_name == "poc-vm-control"
     error_message = "RHEL 9 Gen2 VM cloud-init must install official Microsoft RPM tools and expose the completion marker."
   }
+  assert {
+    condition     = azurerm_linux_function_app.poc.virtual_network_subnet_id == azurerm_subnet.functions_outbound.id && azurerm_linux_function_app.poc.site_config[0].vnet_route_all_enabled == true && azurerm_subnet.functions_outbound.delegation[0].service_delegation[0].name == "Microsoft.Web/serverFarms" && azurerm_subnet.batch_nodes.default_outbound_access_enabled == false
+    error_message = "Functions must integrate with outbound subnet, route all traffic through VNet, and batch nodes subnet must have default outbound disabled."
+  }
 }
 
 run "nvme_only_validation_vm" {
@@ -481,6 +485,10 @@ run "new_marketplace_creates_dedicated_resources" {
   assert {
     condition     = output.deployment.batch_endpoint == "https://testbatch.test-region.batch.azure.com" && output.deployment.batch_node_count == 2 && output.deployment.batch_node_type == "dedicated" && output.deployment.batch_dedicated_node_count == 2 && output.deployment.batch_spot_node_count == 0
     error_message = "New deployment metadata must expose the actual account endpoint and target count."
+  }
+  assert {
+    condition     = length(azurerm_private_dns_zone.batch) == 1 && azurerm_private_dns_zone.batch[0].name == "privatelink.batch.azure.com" && length(azurerm_private_endpoint.batch_account) == 1 && length(azurerm_private_endpoint.batch_node_management) == 1 && contains(azurerm_private_endpoint.batch_account[0].private_service_connection[0].subresource_names, "batchAccount") && contains(azurerm_private_endpoint.batch_node_management[0].private_service_connection[0].subresource_names, "nodeManagement")
+    error_message = "New mode must provision Batch private DNS and private endpoints for batchAccount and nodeManagement."
   }
 }
 

@@ -1,5 +1,34 @@
 # プロジェクトメモリ
 
+## 2026-10-19 B案フェーズ2: Azure Functions Regional VNet Integration & Azure Batch Private Endpoints 実機完全合格
+
+B案フェーズ2（Azure Functions の Regional VNet 統合および Azure Batch Account の Private Endpoint 化）を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`）に適用し、再デプロイおよび閉域検証 VM からの完全実機検証を実施して、**全項目完全合格（Pass、終了コード 0）** を確認しました。
+
+- **対応内容詳細**:
+  1. **Azure Functions Regional VNet Integration**:
+     - `azurerm_subnet.functions_outbound`（CIDR: `10.80.3.0/24`、`Microsoft.Web/serverFarms` 委任、NAT Gateway 関連付け）を新設。
+     - `azurerm_linux_function_app.poc`（Basic B1 Linux）に `virtual_network_subnet_id` を設定し、`site_config.vnet_route_all_enabled = true` を適用して Function App の全アウトバウンド通信を VNet 経由にルーティング。
+  2. **Azure Batch Account Private Endpoints & Private DNS**:
+     - `azurerm_private_dns_zone.batch`（`privatelink.batch.azure.com`）を作成し、検証 VNet（`poc-df40481149-vnet`）へリンク。
+     - `private-endpoints` サブネット（`10.80.2.0/24`）内に、Batch REST API データプレーン用 `batchAccount`（IP: `10.80.2.5`）およびノード管理用 `nodeManagement`（IP: `10.80.2.6`）の Private Endpoint を作成。
+     - `azurerm_subnet.batch_nodes`（CIDR: `10.80.4.0/24`、`default_outbound_access_enabled = false`、NAT Gateway 関連付け）を新設し、フェーズ3（ノードの VNet 移行）に備えたネットワーク基盤を整備。
+  3. **IaC & テスト網羅**:
+     - `infra/outputs.tf` に `batch_private_ip` および `batch_node_management_private_ip` を追加。
+     - `infra/tests/modes.tftest.hcl` に Function App の VNet 統合、Outbound サブネット委任、Batch Private DNS / Endpoints のアサーションを追加（Terraform Test 37/37 Pass、`terraform fmt -check` Pass、`validate` Pass）。
+  4. **閉域検証スクリプトの接続性・回復性向上**:
+     - `scripts/PrivateVm.Worker.ps1` において、`WorkflowAuth` オペレーション実行前に `Assert-PrivateFunctionConnectivity` によるエンドポイント疎通（ウォームアップ待機）を挿入。
+     - `scripts/Invoke-WorkflowAuthValidation.ps1` の `Invoke-WorkflowAuthHttp` に一時的なネットワーク例外に対する指数バックオフリトライ（最大5回）と、サニタイズされたエラー詳細記録を追加。
+- **Azure 実機デプロイ成果**: `.deploy/poc/20261019-120416-8533`
+  - インフラ差分: 8 to add / 1 to change / 0 to destroy。
+  - Function App 再起動後、閉域検証 VM からエンドポイント疎通および 15 関数全件のインデックス登録を確認して完了記録を保存。
+- **実機検証エビデンス**: `artifacts/private-auth-validation/20261019-031916-1137/summary.json`（終了コード 0、Pass）
+  - **未認証遮断（401）**: `anonymous`, `keyOnly`, `forgedPrincipal`, `bearerWithoutKey` の計12プローブすべてで HTTP 401 遮断を確認。
+  - **Audience 不正遮断（401）**: ARM 向けトークンに対し EasyAuth による HTTP 401 遮断を全3 API で確認。
+  - **App Role 不足遮断（403）**: `Workflow.Execute` を持たないユーザー割り当てマネージド ID からの要求に対し、`EntraEasyAuthCallerResolver` による HTTP 403 Forbidden 遮断を全3 API で厳密に確認。
+  - **所有者伝播認可（403）**: 認可トークン存在下での所有者ヘッダー欠落・他者指定に対し HTTP 403 遮断を確認。
+  - **正常系・閉域完走（202/200）**: VNet 統合された Function App から Batch Private Endpoint を経由して Batch Job 作成・Task 実行・結果回収・マニフェスト集約を完走し、200 結果取得を確認。
+  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`15b78402...`）とデプロイコンテンツ指紋（`packageContentSha256`）、および `liveAssemblySha256`（`ca3b1382...`）とデプロイアセンブリハッシュ（`assemblySha256`）が完全一致し、`livePackageVerified: true` を確認。
+
 ## 2026-10-19 レビュー指摘2件（P2再起動後復旧確認・P3同定保証境界と設計書整合）の改修および Azure 実機完全合格
 
 全体レビューで指摘された 2 件の課題（[P2] `deploy.ps1` が再起動後の復旧・疎通を確認せず完了を記録する問題、[P3] `WorkflowFunctions.cs` の稼働中ファイル同定保証境界と `docs/workflow-authentication-design.md` の記述齟齬）を改修し、実 Azure 環境への再デプロイおよび閉域検証 VM（`poc-df40481149-validation`）からの完全実機検証を実施し、**全項目完全合格（Pass、終了コード 0）** を確認しました。

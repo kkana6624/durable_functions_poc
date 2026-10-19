@@ -65,3 +65,58 @@ resource "azurerm_monitor_diagnostic_setting" "batch" {
   enabled_log { category_group = "allLogs" }
   enabled_metric { category = "AllMetrics" }
 }
+
+resource "azurerm_private_dns_zone" "batch" {
+  count               = var.batch_mode == "new" ? 1 : 0
+  name                = "privatelink.batch.azure.com"
+  resource_group_name = local.resource_group_name
+  tags                = local.tags
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "batch" {
+  count                = var.batch_mode == "new" ? 1 : 0
+  name                 = "${local.prefix}-batch-dns"
+  private_dns_zone_id  = azurerm_private_dns_zone.batch[0].id
+  virtual_network_id   = azurerm_virtual_network.validation.id
+  registration_enabled = false
+  tags                 = local.tags
+}
+
+resource "azurerm_private_endpoint" "batch_account" {
+  count               = var.batch_mode == "new" ? 1 : 0
+  name                = "${local.prefix}-batch-account-pe"
+  location            = local.location
+  resource_group_name = local.resource_group_name
+  subnet_id           = azurerm_subnet.private_endpoints.id
+  tags                = local.tags
+  private_service_connection {
+    name                           = "batchAccount"
+    private_connection_resource_id = azurerm_batch_account.poc[0].id
+    subresource_names              = ["batchAccount"]
+    is_manual_connection           = false
+  }
+  private_dns_zone_group {
+    name                 = "batch"
+    private_dns_zone_ids = [azurerm_private_dns_zone.batch[0].id]
+  }
+}
+
+resource "azurerm_private_endpoint" "batch_node_management" {
+  count               = var.batch_mode == "new" ? 1 : 0
+  name                = "${local.prefix}-batch-node-pe"
+  location            = local.location
+  resource_group_name = local.resource_group_name
+  subnet_id           = azurerm_subnet.private_endpoints.id
+  tags                = local.tags
+  private_service_connection {
+    name                           = "nodeManagement"
+    private_connection_resource_id = azurerm_batch_account.poc[0].id
+    subresource_names              = ["nodeManagement"]
+    is_manual_connection           = false
+  }
+  private_dns_zone_group {
+    name                 = "batch"
+    private_dns_zone_ids = [azurerm_private_dns_zone.batch[0].id]
+  }
+}
+

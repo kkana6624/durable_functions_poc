@@ -183,6 +183,10 @@ exit $LASTEXITCODE
             $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',(Join-Path $evidence $file),'--auth-mode','login','--overwrite','false','--no-progress')
         }
     } elseif ($request.operation -eq 'WorkflowAuth') {
+        $watch=[Diagnostics.Stopwatch]::StartNew()
+        $remaining=[Math]::Max(1,[Math]::Floor([int]$request.timeout_seconds-$watch.Elapsed.TotalSeconds))
+        $stage='function_connectivity'
+        Assert-PrivateFunctionConnectivity $outputs ([Math]::Min(120, $remaining))
         $stage='validation_runner'
         $deployment=Join-Path $PSScriptRoot 'deployment-result.json'
         $deploymentObj=@{ outputs=$outputs; source_provenance=$request.source_provenance; package_sha256=$request.package_sha256 }
