@@ -162,6 +162,23 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
                 await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this ready manifest." });
                 return forbidden;
             }
+
+            try
+            {
+                await admission.VerifyReadyManifestBlobAsync(readyManifest, cancellationToken);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or ArgumentException or FileNotFoundException)
+            {
+                var badBlob = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                await badBlob.WriteAsJsonAsync(new { error = $"Ready target blob is invalid or not found: {ex.Message}" });
+                return badBlob;
+            }
+            catch (Azure.RequestFailedException ex) when (ex.Status is 404 or 412)
+            {
+                var badBlob = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                await badBlob.WriteAsJsonAsync(new { error = $"Ready target blob is not accessible or version condition failed (HTTP {ex.Status})." });
+                return badBlob;
+            }
         }
 
         try

@@ -1,5 +1,20 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘2件（P2旧受付データ再送500回避・P2Ready入力実体検証の受付接続）の改修完了
+
+レビューで指摘された 2 件の課題（[P2] 旧 admission.json v2 再シリアライズによる不一致と 500 エラーの解消、[P2] Ready 入力実体検証の受付経路接続およびバージョン固定必須化）を改修し、単体テスト（350件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P2] 旧受付データに対する同一要求の再送が500になる問題の解消**:
+     - `src/Poc.Core/Contracts.cs`: `WorkflowRequest` の新規追加フィールド（`ReadyManifestId`, `SchemaVersion`, `AlgorithmVersion`, `Mode`, `InputPayloadJson`）に `[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]` を適用し、`SchemaVersion` は `int? SchemaVersion = null` として省略可能に定義。`Equals` / `GetHashCode` では `SchemaVersion ?? 1` として比較することで、新旧レコード間のセマンティック等価性を保証。
+     - `src/Poc.Core/BlobResultRepository.cs`: `PutIfAbsentAsync` の競合検出時（409/412）、従来の完全バイト一致（`SequenceEqual`）が失敗した場合でも、JSON デシリアライズによるセマンティック等価性（`EqualityComparer<T>.Default.Equals`）フォールバック判定を追加。スキーマ進化による旧保存データの再送時に誤った 500 / Conflict を回避。
+     - `tests/Poc.Tests/TestDoubles.cs`: テスト用 InMemory リポジトリにおいて `JsonSerializerDefaults.Web` を使用したキャメルケース一致を徹底。
+     - `tests/Poc.Tests/ReadyManifestTests.cs`: 旧形式の `admission.json` v2 生 JSON に対する同一要求の再送試験（`AdmitAsync` / `StartWorkflow` で 202 が返ること）を追加。
+  2. **[P2] Ready 入力実体検証の受付経路接続およびバージョン固定の必須化**:
+     - `src/Poc.Core/Contracts.cs`: `ReadyManifestBlob.Validate()` において、`VersionId` および `Etag` の双方が未設定（null / 空白）の場合に即時バリデーションエラーとする不変性固定ガードを追加。
+     - `src/Poc.Core/BlobStorageRepository.cs`: `SaveReadyManifestAsync` 実行時に、事前に `VerifyTargetBlobAsync` を呼び出して参照先 Blob の存在・サイズ・SHA-256 ストリーミングハッシュを検証してからマニフェストを保存するよう改修。
+     - `src/Poc.Functions/WorkflowAdmission.cs` / `WorkflowFunctions.cs`: `StartWorkflow` の受付経路において、`ReadyManifestId` 受理時にマニフェスト取得・所有者検証だけでなく、`admission.VerifyReadyManifestBlobAsync` を呼び出して実体 Blob の存在・サイズ・SHA-256 を検証。実体欠損時は 400（Not Found）、ハッシュ/サイズ不一致時は 400（Invalid Data）、ETag 不一致時は 412（Precondition Failed）を返却し、202 応答前の実体保証を確立。
+
 ## 2026-10-19 Track 1（Input Ready パイプライン・契約拡張）および Track 3（Storage 閉域化 IaC）の実装完了
 
 - サブエージェント並列作業により、作業計画書（`docs/app-service-blob-batch-work-plan.md`）の Track 1（TASK-0.1, TASK-1.1〜1.3）および Track 3（TASK-3.1）を実装し、全単体・統合・IaC テストに合格しました。

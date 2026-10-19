@@ -31,8 +31,12 @@ blobOptions.Retry.MaxRetries = 1;
 blobOptions.Retry.NetworkTimeout = TimeSpan.FromSeconds(10);
 builder.Services.AddSingleton<IBatchGateway>(new AzureBatchGateway(
     new BatchClient(new Uri(Required("BATCH_ENDPOINT")), credential, batchOptions), Required("BATCH_POOL_ID")));
-builder.Services.AddSingleton<IResultRepository>(new BlobResultRepository(
-    new BlobServiceClient(new Uri(Required("BLOB_ENDPOINT")), credential, blobOptions).GetBlobContainerClient(Required("BLOB_CONTAINER"))));
+var blobServiceClient = new BlobServiceClient(new Uri(Required("BLOB_ENDPOINT")), credential, blobOptions);
+var containerClient = blobServiceClient.GetBlobContainerClient(Required("BLOB_CONTAINER"));
+var resultRepo = new BlobResultRepository(containerClient);
+var storageRepo = new BlobStorageRepository(resultRepo, blobServiceClient, containerClient);
+builder.Services.AddSingleton<IResultRepository>(resultRepo);
+builder.Services.AddSingleton(storageRepo);
 builder.Services.AddSingleton<IWorkloadClassifier, StubWorkloadClassifier>();
 builder.Services.AddSingleton(new WorkflowSettings(Positive("BATCH_POLL_SECONDS", 10), Positive("WORKFLOW_TIMEOUT_MIN", 15)));
 builder.Services.AddSingleton<WorkflowOperations>();

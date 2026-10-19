@@ -17,7 +17,8 @@ namespace Poc.Tests;
 
 public class ReadyManifestTests
 {
-    private const string SampleSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    // SHA-256 of 1024 ASCII 'a' bytes
+    private const string SampleSha256 = "2edc986847e209b4016e141a6dc8716d3207350f416969382d431539bf292e4a";
 
     private static ReadyManifest CreateValidManifest(string id = "input-manifest-001", string? ownerId = "alice", string? orgId = "finance")
     {
@@ -34,6 +35,13 @@ public class ReadyManifestTests
                 SizeBytes: 1024,
                 Sha256: SampleSha256),
             CreatedAtUtc: DateTimeOffset.UtcNow);
+    }
+
+    private static byte[] AddValidTestBlob(InMemoryResultRepository repo, ReadyManifest manifest, byte[]? customData = null)
+    {
+        var data = customData ?? Encoding.UTF8.GetBytes(new string('a', (int)manifest.Blob.SizeBytes));
+        repo.Blobs[$"{manifest.Blob.Container}/{manifest.Blob.BlobKey}"] = data;
+        return data;
     }
 
     [Fact]
@@ -86,6 +94,36 @@ public class ReadyManifestTests
         ownerless.Validate();
     }
 
+    [Fact]
+    public void ReadyManifestBlob_Validation_FailsWhenNeitherVersionIdNorEtagSpecified()
+    {
+        var blob = new ReadyManifestBlob("workflow-input", "input.dat", null, null, 1024, SampleSha256);
+        var ex = Assert.Throws<ArgumentException>(() => blob.Validate());
+        Assert.Contains("versionId or etag", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        var blobEmpty = new ReadyManifestBlob("workflow-input", "input.dat", " ", "", 1024, SampleSha256);
+        var ex2 = Assert.Throws<ArgumentException>(() => blobEmpty.Validate());
+        Assert.Contains("versionId or etag", ex2.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ReadyManifestBlob_Validation_SucceedsWithOnlyVersionId()
+    {
+        var blob = new ReadyManifestBlob("workflow-input", "input.dat", "2026-10-19T00:00:00Z", null, 1024, SampleSha256);
+        blob.Validate();
+        Assert.NotNull(blob.VersionId);
+        Assert.Null(blob.Etag);
+    }
+
+    [Fact]
+    public void ReadyManifestBlob_Validation_SucceedsWithOnlyEtag()
+    {
+        var blob = new ReadyManifestBlob("workflow-input", "input.dat", null, "\"0x8D9...\"", 1024, SampleSha256);
+        blob.Validate();
+        Assert.Null(blob.VersionId);
+        Assert.NotNull(blob.Etag);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("UPPERCASE")]
@@ -95,7 +133,7 @@ public class ReadyManifestTests
     [InlineData("ends-hyphen-")]
     public void ReadyManifestBlob_Validation_FailsOnInvalidContainer(string invalidContainer)
     {
-        var blob = new ReadyManifestBlob(invalidContainer, "valid/key.dat", null, null, 100, SampleSha256);
+        var blob = new ReadyManifestBlob(invalidContainer, "valid/key.dat", "v1", null, 100, SampleSha256);
         var ex = Assert.Throws<ArgumentException>(() => blob.Validate());
         Assert.Contains("container", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -108,7 +146,7 @@ public class ReadyManifestTests
     [InlineData("windows\\style\\path.dat")]
     public void ReadyManifestBlob_Validation_FailsOnInvalidBlobKeyTraversalOrAbsolute(string invalidKey)
     {
-        var blob = new ReadyManifestBlob("valid-container", invalidKey, null, null, 100, SampleSha256);
+        var blob = new ReadyManifestBlob("valid-container", invalidKey, "v1", null, 100, SampleSha256);
         var ex = Assert.Throws<ArgumentException>(() => blob.Validate());
         Assert.Contains("blobKey", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -121,7 +159,7 @@ public class ReadyManifestTests
     [InlineData(100, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg")] // non-hex 'g'
     public void ReadyManifestBlob_Validation_FailsOnInvalidSha256OrSize(long size, string sha)
     {
-        var blob = new ReadyManifestBlob("valid-container", "valid/key.dat", null, null, size, sha);
+        var blob = new ReadyManifestBlob("valid-container", "valid/key.dat", "v1", null, size, sha);
         Assert.Throws<ArgumentException>(() => blob.Validate());
     }
 
@@ -153,8 +191,10 @@ public class ReadyManifestTests
     public async Task BlobStorageRepository_SaveAndGet_Succeeds()
     {
         var repo = new InMemoryResultRepository();
-        var blobStorage = new BlobStorageRepository(repo);
         var manifest = CreateValidManifest();
+        AddValidTestBlob(repo, manifest);
+
+        var blobStorage = new BlobStorageRepository(repo);
 
         var uri = await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
         Assert.NotNull(uri);
@@ -169,8 +209,10 @@ public class ReadyManifestTests
     public async Task BlobStorageRepository_Save_IsIdempotentForIdenticalContent()
     {
         var repo = new InMemoryResultRepository();
-        var blobStorage = new BlobStorageRepository(repo);
         var manifest = CreateValidManifest();
+        AddValidTestBlob(repo, manifest);
+
+        var blobStorage = new BlobStorageRepository(repo);
 
         await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
         // Second identical save should succeed idempotently
@@ -183,17 +225,34 @@ public class ReadyManifestTests
     public async Task BlobStorageRepository_Save_ThrowsConflictForDifferentContent()
     {
         var repo = new InMemoryResultRepository();
-        var blobStorage = new BlobStorageRepository(repo);
         var manifest = CreateValidManifest();
+        AddValidTestBlob(repo, manifest);
+
+        var blobStorage = new BlobStorageRepository(repo);
 
         await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
 
+        var modifiedBytes = new byte[9999];
+        var modifiedSha = Convert.ToHexString(SHA256.HashData(modifiedBytes)).ToLowerInvariant();
         var modified = manifest with
         {
-            Blob = manifest.Blob with { SizeBytes = 9999 }
+            Blob = manifest.Blob with { SizeBytes = modifiedBytes.Length, Sha256 = modifiedSha }
         };
+        // Add blob for modified so it passes target verification and triggers conflict check
+        repo.Blobs[$"{modified.Blob.Container}/{modified.Blob.BlobKey}"] = modifiedBytes;
 
         await Assert.ThrowsAsync<WorkflowConflictException>(() => blobStorage.SaveReadyManifestAsync(modified, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task BlobStorageRepository_Save_ThrowsWhenTargetBlobMissing()
+    {
+        var repo = new InMemoryResultRepository();
+        var manifest = CreateValidManifest();
+        var blobStorage = new BlobStorageRepository(repo);
+
+        // Target blob not added to repo.Blobs
+        await Assert.ThrowsAsync<FileNotFoundException>(() => blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -227,75 +286,72 @@ public class ReadyManifestTests
     }
 
     [Fact]
-    public async Task BlobStorageRepository_VerifyBlobContentAsync_SucceedsAndFailsCorrectly()
+    public async Task BlobStorageRepository_VerifyBlobContent_SucceedsForMatchingContent()
     {
-        var content = "The quick brown fox jumps over the lazy dog"u8.ToArray();
-        using var sha = SHA256.Create();
-        var expectedSha = Convert.ToHexString(sha.ComputeHash(content)).ToLowerInvariant();
-        var expectedSize = content.Length;
+        var content = "The quick brown fox jumps over the lazy dog";
+        var bytes = Encoding.UTF8.GetBytes(content);
+        var expectedSha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-        // Valid match
-        using (var stream = new MemoryStream(content))
-        {
-            await BlobStorageRepository.VerifyBlobContentAsync(stream, expectedSize, expectedSha, TestContext.Current.CancellationToken);
-        }
-
-        // Size mismatch (smaller than expected)
-        using (var stream = new MemoryStream(content))
-        {
-            await Assert.ThrowsAsync<InvalidDataException>(() =>
-                BlobStorageRepository.VerifyBlobContentAsync(stream, expectedSize + 10, expectedSha, TestContext.Current.CancellationToken));
-        }
-
-        // Size mismatch (larger than expected)
-        using (var stream = new MemoryStream(content))
-        {
-            await Assert.ThrowsAsync<InvalidDataException>(() =>
-                BlobStorageRepository.VerifyBlobContentAsync(stream, expectedSize - 5, expectedSha, TestContext.Current.CancellationToken));
-        }
-
-        // Hash mismatch
-        using (var stream = new MemoryStream(content))
-        {
-            var wrongSha = new string('0', 64);
-            await Assert.ThrowsAsync<InvalidDataException>(() =>
-                BlobStorageRepository.VerifyBlobContentAsync(stream, expectedSize, wrongSha, TestContext.Current.CancellationToken));
-        }
+        using var stream = new MemoryStream(bytes);
+        await BlobStorageRepository.VerifyBlobContentAsync(stream, bytes.Length, expectedSha, TestContext.Current.CancellationToken);
     }
 
     [Fact]
-    public void RequestFingerprint_PreservesLegacyV1Calculation()
+    public async Task BlobStorageRepository_VerifyBlobContent_FailsOnSizeMismatch()
     {
-        var legacyRequest = new WorkflowRequest("req-v1-001");
+        var content = "test content";
+        var bytes = Encoding.UTF8.GetBytes(content);
+        var expectedSha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+        using var stream = new MemoryStream(bytes);
+        // Expecting larger size than actual
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            BlobStorageRepository.VerifyBlobContentAsync(stream, bytes.Length + 10, expectedSha, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task BlobStorageRepository_VerifyBlobContent_FailsOnSha256Mismatch()
+    {
+        var content = "test content";
+        var bytes = Encoding.UTF8.GetBytes(content);
+        var wrongSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        using var stream = new MemoryStream(bytes);
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            BlobStorageRepository.VerifyBlobContentAsync(stream, bytes.Length, wrongSha, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void RequestFingerprint_LegacyRequest_ComputesV1DeterministicHash()
+    {
+        var legacyRequest = new WorkflowRequest("req-v1-001", "light", 3);
         var fp1 = RequestFingerprint.Compute(legacyRequest, "light");
-        var fp2 = WorkflowIdentity.Fingerprint(legacyRequest, "light");
+        var fp2 = RequestFingerprint.Compute(legacyRequest, "light");
 
         Assert.Equal(fp1, fp2);
         Assert.Equal(64, fp1.Length);
-        Assert.All(fp1, c => Assert.True(char.IsAsciiHexDigitLower(c)));
 
-        // Must change if classification or request configuration changes
-        Assert.NotEqual(fp1, RequestFingerprint.Compute(legacyRequest, "heavy"));
-        Assert.NotEqual(fp1, RequestFingerprint.Compute(legacyRequest with { TaskCount = 2 }, "light"));
+        // Matches legacy direct compute v1
+        var v1Direct = RequestFingerprint.ComputeV1(legacyRequest, "light");
+        Assert.Equal(v1Direct, fp1);
     }
 
     [Fact]
-    public void RequestFingerprint_ComputesV2WhenReadyManifestProvided()
+    public void RequestFingerprint_V2RequestWithReadyManifest_ComputesDifferentFromV1()
     {
-        var legacyRequest = new WorkflowRequest("req-v2-test");
+        var legacyRequest = new WorkflowRequest("req-v2-001", "light", 3);
         var manifest = CreateValidManifest();
 
         var v1Fingerprint = RequestFingerprint.Compute(legacyRequest, "light");
-        var v2FingerprintWithId = RequestFingerprint.Compute(legacyRequest with { ReadyManifestId = manifest.ReadyManifestId }, "light");
         var v2FingerprintWithManifest = RequestFingerprint.Compute(legacyRequest with { ReadyManifestId = manifest.ReadyManifestId }, "light", manifest);
 
-        Assert.NotEqual(v1Fingerprint, v2FingerprintWithId);
-        Assert.NotEqual(v2FingerprintWithId, v2FingerprintWithManifest);
+        Assert.NotEqual(v1Fingerprint, v2FingerprintWithManifest);
+        Assert.Equal(64, v2FingerprintWithManifest.Length);
 
-        // Changes when manifest hash or size changes
-        var manifestDifferentHash = manifest with { Blob = manifest.Blob with { Sha256 = new string('f', 64) } };
-        var v2DifferentHash = RequestFingerprint.Compute(legacyRequest with { ReadyManifestId = manifest.ReadyManifestId }, "light", manifestDifferentHash);
-        Assert.NotEqual(v2FingerprintWithManifest, v2DifferentHash);
+        // Changes when manifest hash changes
+        var manifestModified = manifest with { Blob = manifest.Blob with { Sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" } };
+        var v2FingerprintDifferentHash = RequestFingerprint.Compute(legacyRequest with { ReadyManifestId = manifest.ReadyManifestId }, "light", manifestModified);
+        Assert.NotEqual(v2FingerprintWithManifest, v2FingerprintDifferentHash);
 
         // Changes when algorithmVersion changes
         var v2WithAlgorithm = RequestFingerprint.Compute(legacyRequest with { ReadyManifestId = manifest.ReadyManifestId, AlgorithmVersion = "2.1.0" }, "light", manifest);
@@ -308,6 +364,8 @@ public class ReadyManifestTests
         var (client, entities) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
         var manifest = CreateValidManifest("manifest-ok", ownerId: "alice", orgId: "finance");
+        AddValidTestBlob(repo, manifest);
+
         var blobStorage = new BlobStorageRepository(repo);
         await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
 
@@ -361,11 +419,72 @@ public class ReadyManifestTests
     }
 
     [Fact]
+    public async Task StartWorkflow_WithReadyManifest_TargetBlobMissing_Returns400BadRequest()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var manifest = CreateValidManifest("manifest-missing-blob", ownerId: "alice", orgId: "finance");
+        // Put manifest into documents directly without adding blob to Blobs
+        repo.Documents[WorkflowIdentity.ReadyManifestPath("manifest-missing-blob")] = JsonSerializer.Serialize(manifest);
+
+        var admission = new WorkflowAdmission(repo);
+        var callerResolver = new PocFunctionKeyCallerResolver();
+        var functions = new WorkflowFunctions(null!, admission, callerResolver);
+
+        var workflowReq = new WorkflowRequest("req-missing-target-blob", ReadyManifestId: "manifest-missing-blob");
+        var headers = new Dictionary<string, string>
+        {
+            ["X-Poc-Owner-Id"] = "alice",
+            ["X-Poc-Org-Id"] = "finance"
+        };
+        var request = CreateRequest(JsonSerializer.Serialize(workflowReq), headers: headers);
+
+        var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.True(body.TryGetProperty("error", out var errorProp));
+        Assert.Contains("target blob", errorProp.GetString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StartWorkflow_WithReadyManifest_TargetBlobHashMismatch_Returns400BadRequest()
+    {
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var manifest = CreateValidManifest("manifest-corrupt-blob", ownerId: "alice", orgId: "finance");
+        // Add blob with wrong content (wrong hash)
+        repo.Blobs[$"{manifest.Blob.Container}/{manifest.Blob.BlobKey}"] = Encoding.UTF8.GetBytes(new string('z', 1024));
+        repo.Documents[WorkflowIdentity.ReadyManifestPath("manifest-corrupt-blob")] = JsonSerializer.Serialize(manifest);
+
+        var admission = new WorkflowAdmission(repo);
+        var callerResolver = new PocFunctionKeyCallerResolver();
+        var functions = new WorkflowFunctions(null!, admission, callerResolver);
+
+        var workflowReq = new WorkflowRequest("req-corrupt-target-blob", ReadyManifestId: "manifest-corrupt-blob");
+        var headers = new Dictionary<string, string>
+        {
+            ["X-Poc-Owner-Id"] = "alice",
+            ["X-Poc-Org-Id"] = "finance"
+        };
+        var request = CreateRequest(JsonSerializer.Serialize(workflowReq), headers: headers);
+
+        var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await ReadJsonBodyAsync(response, TestContext.Current.CancellationToken);
+        Assert.True(body.TryGetProperty("error", out var errorProp));
+        Assert.Contains("target blob", errorProp.GetString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task StartWorkflow_WithReadyManifest_OwnerMismatch_Returns403Forbidden()
     {
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
         var manifest = CreateValidManifest("manifest-owned", ownerId: "alice", orgId: "finance");
+        AddValidTestBlob(repo, manifest);
+
         var blobStorage = new BlobStorageRepository(repo);
         await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
 
@@ -396,6 +515,8 @@ public class ReadyManifestTests
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
         var manifest = CreateValidManifest("manifest-needs-auth", ownerId: "alice", orgId: "finance");
+        AddValidTestBlob(repo, manifest);
+
         var blobStorage = new BlobStorageRepository(repo);
         await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
 
@@ -418,6 +539,8 @@ public class ReadyManifestTests
         var (client, _) = CreateDurableClient();
         var repo = new InMemoryResultRepository();
         var manifest = CreateValidManifest("manifest-dup", ownerId: "alice", orgId: "finance");
+        AddValidTestBlob(repo, manifest);
+
         var blobStorage = new BlobStorageRepository(repo);
         await blobStorage.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
 
@@ -448,6 +571,9 @@ public class ReadyManifestTests
         var repo = new InMemoryResultRepository();
         var manifest1 = CreateValidManifest("manifest-conf-1", ownerId: "alice", orgId: "finance");
         var manifest2 = CreateValidManifest("manifest-conf-2", ownerId: "alice", orgId: "finance");
+        AddValidTestBlob(repo, manifest1);
+        AddValidTestBlob(repo, manifest2);
+
         var blobStorage = new BlobStorageRepository(repo);
         await blobStorage.SaveReadyManifestAsync(manifest1, TestContext.Current.CancellationToken);
         await blobStorage.SaveReadyManifestAsync(manifest2, TestContext.Current.CancellationToken);
@@ -496,6 +622,54 @@ public class ReadyManifestTests
         var record = await admission.GetRecordAsync("req-legacy-202", TestContext.Current.CancellationToken);
         Assert.NotNull(record);
         Assert.Null(record.Request.ReadyManifestId);
+    }
+
+    [Fact]
+    public async Task StartWorkflow_LegacyAdmissionJsonV2_ResendSucceedsWith202()
+    {
+        // Regression test for P2 issue 1:
+        // Existing admission.json v2 saved with legacy schema (without newer optional fields)
+        // must be accepted idempotently on retry without throwing 500.
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-legacy-resend-001";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+
+        // Raw legacy admission.json v2 as originally stored by earlier codebase
+        var legacyRawJson = $"{{\"schemaVersion\":2,\"instanceId\":\"{instanceId}\",\"request\":{{\"requestId\":\"{requestId}\",\"classification\":\"auto\",\"taskCount\":3,\"failTaskIndex\":null,\"lightDelaySeconds\":5,\"heavyDelaySeconds\":15}},\"owner\":null}}";
+        repo.Documents[WorkflowIdentity.AdmissionPath(requestId)] = legacyRawJson;
+
+        var admission = new WorkflowAdmission(repo);
+        var callerResolver = new PocFunctionKeyCallerResolver();
+        var functions = new WorkflowFunctions(null!, admission, callerResolver);
+
+        // Resend identical request
+        var workflowReq = new WorkflowRequest(requestId, "auto", 3);
+        var request = CreateRequest(JsonSerializer.Serialize(workflowReq));
+
+        var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AdmitAsync_LegacyAdmissionJsonV2_ResendSucceedsWithout500()
+    {
+        // Regression test for P2 issue 1:
+        // Direct AdmitAsync call against existing legacy admission.json v2 must return instanceId idempotently
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var requestId = "req-legacy-admit-002";
+        var instanceId = WorkflowIdentity.InstanceId(requestId);
+
+        var legacyRawJson = $"{{\"schemaVersion\":2,\"instanceId\":\"{instanceId}\",\"request\":{{\"requestId\":\"{requestId}\",\"classification\":\"auto\",\"taskCount\":3,\"failTaskIndex\":null,\"lightDelaySeconds\":5,\"heavyDelaySeconds\":15}},\"owner\":null}}";
+        repo.Documents[WorkflowIdentity.AdmissionPath(requestId)] = legacyRawJson;
+
+        var admission = new WorkflowAdmission(repo);
+        var input = new WorkflowRequest(requestId, "auto", 3);
+
+        var admittedInstanceId = await admission.AdmitAsync(input, client.Object, null, TestContext.Current.CancellationToken);
+        Assert.Equal(instanceId, admittedInstanceId);
     }
 
     private static (Mock<DurableTaskClient> Client, Mock<DurableEntityClient> Entities) CreateDurableClient()

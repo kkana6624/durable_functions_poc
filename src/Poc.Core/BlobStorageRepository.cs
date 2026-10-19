@@ -14,8 +14,11 @@ public sealed class BlobStorageRepository(IResultRepository results, BlobService
     public BlobStorageRepository(BlobContainerClient containerClient) : this(new BlobResultRepository(containerClient), null, containerClient) { }
     public BlobStorageRepository(BlobServiceClient blobServiceClient, BlobContainerClient containerClient) : this(new BlobResultRepository(containerClient), blobServiceClient, containerClient) { }
 
+    public Func<ReadyManifest, CancellationToken, Task>? TargetBlobVerifier { get; set; }
+
     /// <summary>
-    /// Saves a validated ReadyManifest conditionally to inputs/{readyManifestId}/manifest.json.
+    /// Saves a validated ReadyManifest conditionally to inputs/{readyManifestId}/manifest.json
+    /// after verifying that the referenced target blob exists and matches size and SHA-256.
     /// If an identical manifest already exists, succeeds idempotently.
     /// If a different manifest exists, throws WorkflowConflictException.
     /// </summary>
@@ -23,6 +26,7 @@ public sealed class BlobStorageRepository(IResultRepository results, BlobService
     {
         ArgumentNullException.ThrowIfNull(manifest);
         manifest.Validate();
+        await VerifyTargetBlobAsync(manifest, cancellationToken);
         var path = WorkflowIdentity.ReadyManifestPath(manifest.ReadyManifestId);
         return await results.PutIfAbsentAsync(path, manifest, cancellationToken);
     }
@@ -116,6 +120,18 @@ public sealed class BlobStorageRepository(IResultRepository results, BlobService
         ArgumentNullException.ThrowIfNull(manifest);
         manifest.Validate();
         ValidateTargetBlobLocation(manifest.Blob.Container, manifest.Blob.BlobKey);
+
+        if (TargetBlobVerifier is not null)
+        {
+            await TargetBlobVerifier(manifest, cancellationToken);
+            return;
+        }
+
+        if (results is ITargetBlobVerifier verifier)
+        {
+            await verifier.VerifyTargetBlobAsync(manifest, cancellationToken);
+            return;
+        }
 
         BlobClient blobClient;
         if (blobServiceClient is not null)

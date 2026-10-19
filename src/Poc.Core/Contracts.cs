@@ -23,6 +23,8 @@ public sealed record ReadyManifestBlob(
             throw new ArgumentException("container must be a valid Azure Storage container name (3–63 lowercase letters, digits, and hyphens).");
         if (string.IsNullOrWhiteSpace(BlobKey) || BlobKey.StartsWith('/') || BlobKey.StartsWith('\\') || BlobKey.Contains("..", StringComparison.Ordinal) || BlobKey.Contains('\\'))
             throw new ArgumentException("blobKey must be a valid relative blob path without directory traversal or leading slashes.");
+        if (string.IsNullOrWhiteSpace(VersionId) && string.IsNullOrWhiteSpace(Etag))
+            throw new ArgumentException("Either versionId or etag (or both) must be specified to pin an immutable blob version.");
         if (SizeBytes < 0)
             throw new ArgumentException("sizeBytes must be non-negative.");
         if (string.IsNullOrWhiteSpace(Sha256) || !Sha256Pattern.IsMatch(Sha256))
@@ -68,11 +70,11 @@ public sealed record WorkflowRequest(
     [property: JsonPropertyName("failTaskIndex")] int? FailTaskIndex = null,
     [property: JsonPropertyName("lightDelaySeconds")] int LightDelaySeconds = 5,
     [property: JsonPropertyName("heavyDelaySeconds")] int HeavyDelaySeconds = 15,
-    [property: JsonPropertyName("readyManifestId")] string? ReadyManifestId = null,
-    [property: JsonPropertyName("schemaVersion")] int SchemaVersion = 1,
-    [property: JsonPropertyName("algorithmVersion")] string? AlgorithmVersion = null,
-    [property: JsonPropertyName("mode")] string? Mode = null,
-    [property: JsonPropertyName("inputPayloadJson")] string? InputPayloadJson = null)
+    [property: JsonPropertyName("readyManifestId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ReadyManifestId = null,
+    [property: JsonPropertyName("schemaVersion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? SchemaVersion = null,
+    [property: JsonPropertyName("algorithmVersion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? AlgorithmVersion = null,
+    [property: JsonPropertyName("mode"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Mode = null,
+    [property: JsonPropertyName("inputPayloadJson"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? InputPayloadJson = null)
 {
     public void Validate()
     {
@@ -82,13 +84,47 @@ public sealed record WorkflowRequest(
         if (TaskCount is < 1 or > 3) throw new ArgumentException("taskCount must be 1–3.");
         if (FailTaskIndex.HasValue && (FailTaskIndex < 0 || FailTaskIndex >= TaskCount)) throw new ArgumentException("failTaskIndex is outside the task range.");
         if (LightDelaySeconds is < 1 or > 3600 || HeavyDelaySeconds is < 1 or > 3600) throw new ArgumentException("Delays must be 1–3600 seconds.");
-        if (SchemaVersion < 1) throw new ArgumentException("schemaVersion must be positive.");
+        if (SchemaVersion.HasValue && SchemaVersion.Value < 1) throw new ArgumentException("schemaVersion must be positive.");
         if (ReadyManifestId is not null && (string.IsNullOrWhiteSpace(ReadyManifestId) || !Regex.IsMatch(ReadyManifestId, @"\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}\z")))
             throw new ArgumentException("readyManifestId must contain 1–128 ASCII letters, digits, hyphens or underscores and start with a letter or digit.");
         if (AlgorithmVersion is not null && (string.IsNullOrWhiteSpace(AlgorithmVersion) || !Regex.IsMatch(AlgorithmVersion, @"\A[a-zA-Z0-9._-]{1,64}\z")))
             throw new ArgumentException("algorithmVersion must contain 1–64 ASCII letters, digits, dots, hyphens or underscores.");
         if (Mode is not null && (string.IsNullOrWhiteSpace(Mode) || !Regex.IsMatch(Mode, @"\A[a-zA-Z0-9_-]{1,64}\z")))
             throw new ArgumentException("mode must contain 1–64 ASCII letters, digits, hyphens or underscores.");
+    }
+
+    public bool Equals(WorkflowRequest? other)
+    {
+        if (other is null) return false;
+        if (ReferenceEquals(this, other)) return true;
+        return RequestId == other.RequestId &&
+               Classification == other.Classification &&
+               TaskCount == other.TaskCount &&
+               FailTaskIndex == other.FailTaskIndex &&
+               LightDelaySeconds == other.LightDelaySeconds &&
+               HeavyDelaySeconds == other.HeavyDelaySeconds &&
+               (SchemaVersion ?? 1) == (other.SchemaVersion ?? 1) &&
+               ReadyManifestId == other.ReadyManifestId &&
+               AlgorithmVersion == other.AlgorithmVersion &&
+               Mode == other.Mode &&
+               InputPayloadJson == other.InputPayloadJson;
+    }
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(RequestId);
+        hash.Add(Classification);
+        hash.Add(TaskCount);
+        hash.Add(FailTaskIndex);
+        hash.Add(LightDelaySeconds);
+        hash.Add(HeavyDelaySeconds);
+        hash.Add(SchemaVersion ?? 1);
+        hash.Add(ReadyManifestId);
+        hash.Add(AlgorithmVersion);
+        hash.Add(Mode);
+        hash.Add(InputPayloadJson);
+        return hash.ToHashCode();
     }
 }
 public sealed record WorkflowSettings(int PollSeconds = 10, int TimeoutMinutes = 15);
@@ -165,6 +201,10 @@ public interface IResultRepository
     Task<T> ReadAsync<T>(string path, CancellationToken cancellationToken = default);
     string GetUri(string path);
 }
+public interface ITargetBlobVerifier
+{
+    Task VerifyTargetBlobAsync(ReadyManifest manifest, CancellationToken cancellationToken = default);
+}
 public interface IWorkloadClassifier
 {
     Task<WorkloadClassification> ClassifyAsync(WorkflowRequest request, CancellationToken cancellationToken = default);
@@ -179,7 +219,7 @@ public static class RequestFingerprint
 {
     public static string Compute(WorkflowRequest request, string classification, string? blobSha256 = null, long? blobSizeBytes = null)
     {
-        if (!string.IsNullOrEmpty(request.ReadyManifestId) || request.SchemaVersion > 1 || !string.IsNullOrEmpty(request.AlgorithmVersion) || !string.IsNullOrEmpty(blobSha256))
+        if (!string.IsNullOrEmpty(request.ReadyManifestId) || (request.SchemaVersion ?? 1) > 1 || !string.IsNullOrEmpty(request.AlgorithmVersion) || !string.IsNullOrEmpty(blobSha256))
         {
             return ComputeV2(request, classification, blobSha256, blobSizeBytes);
         }

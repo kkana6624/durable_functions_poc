@@ -38,18 +38,32 @@ internal sealed class FakeBatchGateway : IBatchGateway
     }
 }
 
-internal sealed class InMemoryResultRepository : IResultRepository
+internal sealed class InMemoryResultRepository : IResultRepository, ITargetBlobVerifier
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     public Dictionary<string, string> Documents { get; } = [];
+    public Dictionary<string, byte[]> Blobs { get; } = [];
     public int Creates { get; private set; }
     public string GetUri(string path) => "https://test.invalid/poc-results/" + path;
 
     public Task<string> PutIfAbsentAsync<T>(string path, T value, CancellationToken cancellationToken = default)
     {
-        var json = JsonSerializer.Serialize(value);
+        var json = JsonSerializer.Serialize(value, JsonOptions);
         if (Documents.TryGetValue(path, out var existing))
         {
-            if (existing != json) throw new WorkflowConflictException("Existing document differs.");
+            if (existing != json)
+            {
+                bool semanticallyEqual = false;
+                try
+                {
+                    var existingObj = JsonSerializer.Deserialize<T>(existing, JsonOptions);
+                    semanticallyEqual = EqualityComparer<T>.Default.Equals(existingObj, value);
+                }
+                catch { }
+
+                if (!semanticallyEqual)
+                    throw new WorkflowConflictException("Existing document differs.");
+            }
         }
         else
         {
@@ -59,8 +73,19 @@ internal sealed class InMemoryResultRepository : IResultRepository
         return Task.FromResult(GetUri(path));
     }
 
+    public async Task VerifyTargetBlobAsync(ReadyManifest manifest, CancellationToken cancellationToken = default)
+    {
+        var key = $"{manifest.Blob.Container}/{manifest.Blob.BlobKey}";
+        if (!Blobs.TryGetValue(key, out var bytes))
+        {
+            throw new FileNotFoundException($"Target blob '{manifest.Blob.BlobKey}' not found in container '{manifest.Blob.Container}'.");
+        }
+        using var stream = new MemoryStream(bytes);
+        await BlobStorageRepository.VerifyBlobContentAsync(stream, manifest.Blob.SizeBytes, manifest.Blob.Sha256, cancellationToken);
+    }
+
     public Task<T> ReadAsync<T>(string path, CancellationToken cancellationToken = default) =>
         Documents.TryGetValue(path, out var json)
-            ? Task.FromResult(JsonSerializer.Deserialize<T>(json)!)
+            ? Task.FromResult(JsonSerializer.Deserialize<T>(json, JsonOptions)!)
             : Task.FromException<T>(new FileNotFoundException(path));
 }

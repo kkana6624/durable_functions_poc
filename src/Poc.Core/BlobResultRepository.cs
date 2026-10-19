@@ -29,7 +29,23 @@ public sealed class BlobResultRepository(BlobContainerClient container) : IResul
             var existing = await blob.DownloadContentAsync(cancellationToken);
             // Documents are deterministic; byte equality also catches unexpected fields/tampering.
             if (!existing.Value.Content.ToMemory().Span.SequenceEqual(content.ToMemory().Span))
-                throw new WorkflowConflictException($"Existing blob has different content: {path}");
+            {
+                // Fallback: Check semantic equality when byte equality differs (e.g. legacy schema evolution
+                // where optional/default fields were omitted in stored JSON).
+                bool semanticallyEqual = false;
+                try
+                {
+                    var existingRecord = existing.Value.Content.ToObjectFromJson<T>(JsonOptions);
+                    semanticallyEqual = EqualityComparer<T>.Default.Equals(existingRecord, value);
+                }
+                catch
+                {
+                    semanticallyEqual = false;
+                }
+
+                if (!semanticallyEqual)
+                    throw new WorkflowConflictException($"Existing blob has different content: {path}");
+            }
         }
         return blob.Uri.AbsoluteUri;
     }

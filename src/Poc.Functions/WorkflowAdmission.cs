@@ -6,8 +6,19 @@ namespace Poc.Functions;
 
 // Both owned and ownerless admissions compete for the same immutable Blob.
 // Retain the claim after an uncertain signal so an identical retry can recover.
-public sealed class WorkflowAdmission(IResultRepository results)
+public sealed class WorkflowAdmission
 {
+    private readonly IResultRepository results;
+    private readonly BlobStorageRepository storage;
+
+    public WorkflowAdmission(IResultRepository results, BlobStorageRepository? storage = null)
+    {
+        this.results = results ?? throw new ArgumentNullException(nameof(results));
+        this.storage = storage ?? new BlobStorageRepository(results);
+    }
+
+    public BlobStorageRepository Storage => storage;
+
     public Task<string> AdmitAsync(WorkflowRequest input, DurableTaskClient client,
         CancellationToken cancellationToken = default) =>
         AdmitAsync(input, client, owner: null, cancellationToken);
@@ -44,8 +55,6 @@ public sealed class WorkflowAdmission(IResultRepository results)
             var winner = await ReadRecordAsync(input.RequestId, cancellationToken)
                 ?? throw new InvalidDataException("Admission winner is missing.");
             VerifyCallerAndInput(winner, owner, input);
-            // Equivalent typed values with different serialized bytes are not a valid replay.
-            throw new InvalidDataException("Admission content is not canonical.");
         }
         if (existing is not null) return instanceId;
 
@@ -169,6 +178,9 @@ public sealed class WorkflowAdmission(IResultRepository results)
     public async Task<ReadyManifest> GetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
         await TryGetReadyManifestAsync(readyManifestId, cancellationToken)
             ?? throw new FileNotFoundException($"Ready manifest '{readyManifestId}' not found.");
+
+    public Task VerifyReadyManifestBlobAsync(ReadyManifest manifest, CancellationToken cancellationToken = default) =>
+        storage.VerifyTargetBlobAsync(manifest, cancellationToken);
 
     public Task<WorkflowAdmissionRecord?> GetRecordAsync(string requestId, CancellationToken cancellationToken = default) =>
         ReadRecordAsync(requestId, cancellationToken);
