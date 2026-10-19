@@ -239,6 +239,43 @@ exit $LASTEXITCODE
         if (-not $result.summary_available) { throw 'Missing sanitized workflow auth summary.' }
         $stage='summary_upload'
         $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/summary.json",'--file',(Join-Path $evidence 'summary.json'),'--auth-mode','login','--overwrite','false','--no-progress')
+    } elseif ($request.operation -eq 'AutoscaleValidation') {
+        $stage='autoscale_validation'
+        Assert-PrivateBatchDns $outputs
+        $deployment=Join-Path $PSScriptRoot 'deployment-result.json'
+        Write-DeploymentJson $deployment @{ outputs=$outputs; source_provenance=$request.source_provenance; package_sha256=$request.package_sha256 }
+        $runner=@'
+$r=Get-Content -LiteralPath ./request.json -Raw | ConvertFrom-Json
+$autoscaleParams = @{
+    DeploymentResultPath = './deployment-result.json'
+    ExpectedFunctionAppName = [string]$r.expected_function_app_name
+    ExpectedPoolId = [string]$r.expected_pool_id
+    AllowPoolAutoscaleTransition = [bool]$r.allow_pool_autoscale_transition
+    DedicatedEnvironment = [bool]$r.dedicated_environment
+    EvidenceDirectory = './evidence'
+    TimeoutSeconds = [int]$r.timeout_seconds
+    AsGuest = $true
+}
+& ./Invoke-PocAutoscaleValidation.ps1 @autoscaleParams
+exit $LASTEXITCODE
+'@
+        Push-Location $PSScriptRoot
+        try {
+            $null=& (Join-Path $PSHOME 'pwsh') -NoLogo -NoProfile -NonInteractive -Command $runner 2>&1
+            $result.exit_code=[int]$LASTEXITCODE
+        } finally { Pop-Location }
+        if ($result.exit_code -notin @(0,1,2)) { $result.exit_code=1 }
+        if ($result.exit_code -eq 1) { $result.failure_stage='autoscale_validation' }
+        $stage='validation_summary'
+        $result.summary_available=(Test-Path -LiteralPath (Join-Path $evidence 'autoscale-result.json')) -or (Test-Path -LiteralPath (Join-Path $evidence 'summary.json'))
+        if (-not $result.summary_available) { throw 'Missing sanitized autoscale summary.' }
+        $stage='summary_upload'
+        foreach ($file in @('autoscale-result.json','summary.json','summary.txt')) {
+            $sourceFile=Join-Path $evidence $file
+            if (Test-Path -LiteralPath $sourceFile) {
+                $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$outputs.storage_account_name,'--container-name',$outputs.vm_control_container_name,'--name',"operations/$($request.operation_id)/$file",'--file',$sourceFile,'--auth-mode','login','--overwrite','false','--no-progress')
+            }
+        }
     } else { $stage='operation'; throw 'Unknown private VM operation.' }
     $result.error_code=$(if ($result.exit_code -eq 1) { 'ValidationFailed' } else { $null })
 } catch {

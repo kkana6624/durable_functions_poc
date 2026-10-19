@@ -1,5 +1,24 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘4件（P2閉域オートスケールVM委譲・P2パイプラインpipefail・P3 README到達点整合・P3指紋誤記訂正）の改修完了
+
+全体レビューで指摘された 4 件の課題（[P2] Batch 閉域化後のオートスケール検証 V09 の閉域委譲、[P2] `branch-protection-guard.yml` の pipefail 欠落によるレビュー取得失敗時の承認漏れ防止、[P3] `README.md` の到達点記述と最新 IaC / 検証実績の整合、[P3] `project-memory.md` のフェーズ3稼働パッケージ指紋誤記訂正）を改修し、オフライン全テストおよび IaC 検証の合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P2] 閉域化後のオートスケール検証（V09）の閉域委譲と RBAC 拡充**:
+     - `infra/validation-vm.tf`: 検証 VM（`poc-df40481149-validation`）の Managed Identity に対する Batch Account ロールを `Azure Batch Account Reader` から `Azure Batch Account Contributor` に昇格（Pool の縮小、Autoscale 式有効化、リサイズ復元等のデータプレーン変更操作を許可）。
+     - `infra/tests/modes.tftest.hcl`: アサーションを更新し、Terraform Test 37/37 全件 Pass を確認。
+     - `scripts/Invoke-PrivateVmOperation.ps1` & `scripts/PrivateVm.Worker.ps1`: 新オペレーション `AutoscaleValidation` を追加し、`Invoke-PocAutoscaleValidation.ps1` をバンドルして閉域検証 VM 上でゲスト実行（`-AsGuest`）。VM 内部から Private Endpoint（`10.80.2.5`）経由で Pool 操作・0 台待機・ワークフロー投入・自動拡張検知・固定スケール復元を実行し、サニタイズされた証跡（`autoscale-result.json`, `summary.json`, `summary.txt`）を回収するフローを確立。
+     - `scripts/Invoke-PocAutoscaleValidation.ps1`: `batch_private_ip` が存在する環境（パブリックアクセス遮断環境）では、ホスト側からの直接 API 呼び出しを行わず `Invoke-PrivateVmOperation -Operation AutoscaleValidation` へ自動委譲する分岐を追加。ゲスト VM 内では直接 `Invoke-PocValidation`（またはスクリプト）を呼び出してワークフローを実行。
+     - `scripts/tests/AutoscaleValidation.Tests.ps1` & `PrivateVm.Tests.ps1`: 閉域委譲テストおよびゲスト実行テストを追加し、オフライン検証合格。
+  2. **[P2] PR 承認ガードにおける `pipefail` 明示と取得分離**:
+     - `.github/workflows/branch-protection-guard.yml`: 各ステップに `shell: bash` を明示し、`set -eo pipefail` を追加。
+     - `RAW_REVIEWS=$(gh api --paginate ...)` による API 取得と、その後の `jq` パイプラインを分離し、ページネーション取得途中のネットワークエラーや API エラー発生時に即座にチェックを失敗させ、部分的な承認情報による誤通過を確実に防止。
+  3. **[P3] README.md の到達点・境界表の整合**:
+     - `README.md`: B案フェーズ2 & 3（Function VNet Integration、Batch Private Endpoints、Batch Account パブリックアクセス完全遮断、Batch Pool ノード VNet 統合 & NoPublicIPAddresses）の完了と Azure 実機完全合格実績を反映。「未実証・未再検証の範囲」から Batch 閉域化を削除し、責務境界表および前提条件記述を最新 IaC と同期。
+  4. **[P3] project-memory.md のパッケージ指紋誤記訂正**:
+     - `docs/project-memory.md`: フェーズ3完了記録における `livePackageSha256` / `liveAssemblySha256` を、参照先証跡（`artifacts/private-auth-validation/20261019-042651-0796/summary.json`）の実際のデプロイ指紋（`9d6a957b...` / `00112c7f...`）に訂正。
+
 ## 2026-10-19 B案フェーズ3: Azure Batch Pool VNet 統合（NoPublicIPAddresses）& Batch Account パブリックアクセス完全遮断の Azure 実機完全合格（B案 100% 完遂）
 
 B案フェーズ3（Azure Batch Pool の VNet サブネット統合／パブリック IP なし構成、および Azure Batch Account のパブリックネットワークアクセス完全遮断）を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`、Batch Account: `pocdf40481149batch`）に適用し、再デプロイおよび閉域検証 VM からの完全実機検証を実施して、**全項目完全合格（Pass、終了コード 0）** を確認しました。これにより **B案（フェーズ1・2・3）が 100% 完遂** しました。
@@ -34,7 +53,7 @@ B案フェーズ3（Azure Batch Pool の VNet サブネット統合／パブリ�
   - **App Role 不足遮断（403）**: `Workflow.Execute` を持たないユーザー割り当てマネージド ID からの要求に対し、`EntraEasyAuthCallerResolver` による HTTP 403 Forbidden 遮断を全3 API で厳密に確認。
   - **所有者伝播認可（403）**: 認可トークン存在下での所有者ヘッダー欠落・他者指定に対し HTTP 403 遮断を確認。
   - **正常系・完全閉域完走（202/200）**: VNet 統合された Function App から Batch Private Endpoint を経由してパブリックアクセス遮断下の Batch Account に Job を作成し、`NoPublicIPAddresses` の閉域ノード上で Task 実行・結果回収・マニフェスト集約を完走し、200 結果取得を確認。
-  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`15b78402...`）とデプロイコンテンツ指紋、および `liveAssemblySha256`（`ca3b1382...`）とデプロイアセンブリハッシュが完全一致し、`livePackageVerified: true` を確認。
+  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`9d6a957b...`）とデプロイコンテンツ指紋、および `liveAssemblySha256`（`00112c7f...`）とデプロイアセンブリハッシュが完全一致し、`livePackageVerified: true` を確認。
 
 ## 2026-10-19 B案フェーズ2: Azure Functions Regional VNet Integration & Azure Batch Private Endpoints 実機完全合格
 

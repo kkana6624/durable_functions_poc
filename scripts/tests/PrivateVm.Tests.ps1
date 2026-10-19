@@ -82,7 +82,7 @@ function Invoke-AzJson {
         $script:transportDownloads+=$name
         if ($name -eq 'vm-operation.json') {
             $id=if ($script:transportInvalidId) { 'wrong-id' } else { $script:transportRequest.operation_id }
-            @{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth'));validation=@{Ready=$true} } |
+            @{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','AutoscaleValidation'));validation=@{Ready=$true} } |
                 ConvertTo-Json | Set-Content -LiteralPath $file -Encoding UTF8
         } elseif ($name -eq 'summary.json') { '{"status":"NotRun"}' | Set-Content -LiteralPath $file -Encoding UTF8 }
         else { 'NotRun fixture' | Set-Content -LiteralPath $file -Encoding UTF8 }
@@ -148,6 +148,15 @@ try {
     $script:transportExit=1
     $script:transportFailureStage='pool_validation'
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation PoolValidation -EvidenceDirectory $evidence } 'stage=pool_validation; raw output suppressed'
+    $script:transportFailureStage=$null
+    $script:transportExit=0
+    $script:transportDownloads=@()
+    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence -ExpectedFunctionAppName 'app' -ExpectedPoolId 'pool' -AllowPoolAutoscaleTransition -DedicatedEnvironment
+    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.operation -eq 'AutoscaleValidation' -and $script:transportRequest.expected_function_app_name -eq 'app' -and $script:transportRequest.expected_pool_id -eq 'pool' -and $script:transportRequest.allow_pool_autoscale_transition) 'AutoscaleValidation should transfer parameters and execute successfully'
+    Assert-True ('autoscale-result.json' -in $script:transportDownloads -and 'summary.json' -in $script:transportDownloads -and 'summary.txt' -in $script:transportDownloads) 'AutoscaleValidation must retrieve autoscale-result and summaries'
+    $script:transportExit=1
+    $script:transportFailureStage='autoscale_validation'
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence } 'stage=autoscale_validation; raw output suppressed'
     $script:transportFailureStage=$null
     $script:transportExit=2
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('admission20') -EvidenceDirectory $evidence

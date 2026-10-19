@@ -6,14 +6,16 @@ param(
     [switch]$AllowPoolAutoscaleTransition,
     [switch]$DedicatedEnvironment,
     [ValidateRange(300,3600)][int]$TimeoutSeconds=1800,
-    [string]$EvidenceDirectory
+    [string]$EvidenceDirectory,
+    [switch]$AsGuest
 )
 $autoscaleEntryArguments=@{}
-foreach ($autoscaleArgumentName in @('DeploymentResultPath','ExpectedFunctionAppName','ExpectedPoolId','AllowPoolAutoscaleTransition','DedicatedEnvironment','TimeoutSeconds','EvidenceDirectory')) {
+foreach ($autoscaleArgumentName in @('DeploymentResultPath','ExpectedFunctionAppName','ExpectedPoolId','AllowPoolAutoscaleTransition','DedicatedEnvironment','TimeoutSeconds','EvidenceDirectory','AsGuest')) {
     $autoscaleEntryArguments[$autoscaleArgumentName]=Get-Variable -Name $autoscaleArgumentName -ValueOnly
 }
 if (-not (Get-Command Write-DeploymentJson -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Deployment.Common.ps1') }
 if (-not (Get-Command Invoke-DeploymentValidation -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'Test-Deployment.ps1') }
+if (-not (Get-Command Invoke-PocValidation -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Invoke-PocValidation.ps1') -PathType Leaf)) { . (Join-Path $PSScriptRoot 'Invoke-PocValidation.ps1') }
 if (-not (Get-Command Invoke-PrivateVmOperation -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Invoke-PrivateVmOperation.ps1') -PathType Leaf)) { . (Join-Path $PSScriptRoot 'Invoke-PrivateVmOperation.ps1') }
 foreach ($autoscaleArgumentName in $autoscaleEntryArguments.Keys) { Set-Variable -Name $autoscaleArgumentName -Value $autoscaleEntryArguments[$autoscaleArgumentName] }
 
@@ -98,7 +100,8 @@ function Wait-PocAutoscaleIdleEvaluation {
 
 function Invoke-PocAutoscaleValidation {
     param([string]$DeploymentResultPath,[string]$ExpectedFunctionAppName,[string]$ExpectedPoolId,
-        [switch]$AllowPoolAutoscaleTransition,[switch]$DedicatedEnvironment,[int]$TimeoutSeconds=1800,[string]$EvidenceDirectory)
+        [switch]$AllowPoolAutoscaleTransition,[switch]$DedicatedEnvironment,[int]$TimeoutSeconds=1800,[string]$EvidenceDirectory,
+        [switch]$AsGuest)
     $ErrorActionPreference='Stop'
     if (-not $AllowPoolAutoscaleTransition -or -not $DedicatedEnvironment -or -not $ExpectedFunctionAppName -or -not $ExpectedPoolId) {
         throw 'Explicit AllowPoolAutoscaleTransition, DedicatedEnvironment, ExpectedFunctionAppName and ExpectedPoolId are required.'
@@ -112,6 +115,24 @@ function Invoke-PocAutoscaleValidation {
         throw 'Shared existing Batch pools must never be modified by the autoscale transition runner.'
     }
     $null=New-Item -ItemType Directory -Path $EvidenceDirectory -Force
+    if (-not $AsGuest -and $outputs.ContainsKey('batch_private_ip') -and -not [string]::IsNullOrEmpty([string]$outputs.batch_private_ip)) {
+        # Azure Batch data-plane public network access is disabled.
+        # Delegate the entire autoscale transition (pool manipulation, workflow execution, verification, and restoration) to the validation VM.
+        $vmResult=Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation `
+            -EvidenceDirectory $EvidenceDirectory `
+            -TimeoutSeconds $TimeoutSeconds `
+            -DedicatedEnvironment:$DedicatedEnvironment `
+            -ExpectedFunctionAppName $ExpectedFunctionAppName `
+            -ExpectedPoolId $ExpectedPoolId `
+            -AllowPoolAutoscaleTransition:$AllowPoolAutoscaleTransition
+        $summaryFile=Join-Path $EvidenceDirectory 'autoscale-result.json'
+        if (-not (Test-Path -LiteralPath $summaryFile)) { $summaryFile=Join-Path $EvidenceDirectory 'summary.json' }
+        if (Test-Path -LiteralPath $summaryFile) {
+            $summary=Get-Content -LiteralPath $summaryFile -Raw | ConvertFrom-Json
+            return $summary
+        }
+        return [pscustomobject]@{ ExitCode=[int]$vmResult.exit_code; Status=$(if ($vmResult.exit_code -eq 0) { 'Pass' } else { 'Fail' }) }
+    }
     $script:AzPath=Resolve-DeploymentTool -Name az -RepositoryRoot (Split-Path $PSScriptRoot -Parent)
     $script:DeploymentSubscriptionId=$outputs.subscription_id
     $siteId='/subscriptions/'+$outputs.subscription_id+'/resourceGroups/'+$outputs.resource_group_name+'/providers/Microsoft.Web/sites/'+$outputs.function_app_name
@@ -186,9 +207,29 @@ function Invoke-PocAutoscaleValidation {
         $summary.autoscaleEnabledObservedUtc=[DateTime]::UtcNow.ToString('o')
         $summary.zeroNodesVerifiedBeforeSubmission=$true
         $summary.stage='SubmitSingleWorkflowOnZeroNodePool'
-        $vmResult=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('single') -EvidenceDirectory (Join-Path $EvidenceDirectory 'workflow') -TimeoutSeconds $TimeoutSeconds
-        $summary.workflowExitCode=[int]$vmResult.exit_code
-        if ($vmResult.exit_code -ne 0) { throw 'Single workflow validation on 0-node autoscale pool did not pass.' }
+        if ($AsGuest) {
+            $workflowArgs=@{
+                DeploymentResultPath = $DeploymentResultPath
+                EvidenceDirectory = (Join-Path $EvidenceDirectory 'workflow')
+                TimeoutSeconds = $TimeoutSeconds
+                Scenarios = @('single')
+                DedicatedEnvironment = [bool]$DedicatedEnvironment
+            }
+            if (Get-Command Invoke-PocValidation -ErrorAction SilentlyContinue) {
+                $validationSummary=Invoke-PocValidation @workflowArgs
+                $summary.workflowExitCode=[int]$validationSummary.ExitCode
+            } else {
+                $runnerCmd=@((Join-Path $PSScriptRoot 'Invoke-PocValidation.ps1'),'-DeploymentResultPath',$DeploymentResultPath,'-EvidenceDirectory',(Join-Path $EvidenceDirectory 'workflow'),'-TimeoutSeconds',$TimeoutSeconds,'-Scenarios','single')
+                if ($DedicatedEnvironment) { $runnerCmd += '-DedicatedEnvironment' }
+                & @runnerCmd
+                $summary.workflowExitCode=[int]$LASTEXITCODE
+            }
+            if ($summary.workflowExitCode -ne 0) { throw 'Single workflow validation on 0-node autoscale pool did not pass.' }
+        } else {
+            $vmResult=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('single') -EvidenceDirectory (Join-Path $EvidenceDirectory 'workflow') -TimeoutSeconds $TimeoutSeconds
+            $summary.workflowExitCode=[int]$vmResult.exit_code
+            if ($vmResult.exit_code -ne 0) { throw 'Single workflow validation on 0-node autoscale pool did not pass.' }
+        }
         $summary.stage='VerifyAutoscaleExpansion'
         $postPool=Invoke-PocBatchPoolRest -Method get -Uri "$endpoint/pools/$poolId`?api-version=2025-06-01"
         $summary.postRunCurrentDedicatedNodes=[int]$postPool.currentDedicatedNodes
@@ -235,6 +276,7 @@ function Invoke-PocAutoscaleValidation {
         } finally {
             $summary.completedUtc=[DateTime]::UtcNow.ToString('o')
             Write-DeploymentJson (Join-Path $EvidenceDirectory 'autoscale-result.json') $summary
+            Write-DeploymentJson (Join-Path $EvidenceDirectory 'summary.json') $summary
             [IO.File]::WriteAllLines((Join-Path $EvidenceDirectory 'summary.txt'),[string[]]@("Autoscale V09: $($summary.Status) ($($summary.Reason))","Zero nodes verified before submission: $($summary.zeroNodesVerifiedBeforeSubmission)","Scaled up observed: $($summary.scaledUpObserved)","Restored fixed scale: $($summary.restoredFixedScaleSucceeded) (ready=$($summary.restoredPoolReadyVerified))"),[Text.UTF8Encoding]::new($false))
         }
     }
@@ -244,7 +286,7 @@ function Invoke-PocAutoscaleValidation {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         if (-not $EvidenceDirectory) { $EvidenceDirectory=Join-Path (Split-Path $PSScriptRoot -Parent) ('artifacts/autoscale/'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-ffff')) }
-        $result=Invoke-PocAutoscaleValidation -DeploymentResultPath $DeploymentResultPath -ExpectedFunctionAppName $ExpectedFunctionAppName -ExpectedPoolId $ExpectedPoolId -AllowPoolAutoscaleTransition:$AllowPoolAutoscaleTransition -DedicatedEnvironment:$DedicatedEnvironment -TimeoutSeconds $TimeoutSeconds -EvidenceDirectory $EvidenceDirectory
+        $result=Invoke-PocAutoscaleValidation -DeploymentResultPath $DeploymentResultPath -ExpectedFunctionAppName $ExpectedFunctionAppName -ExpectedPoolId $ExpectedPoolId -AllowPoolAutoscaleTransition:$AllowPoolAutoscaleTransition -DedicatedEnvironment:$DedicatedEnvironment -TimeoutSeconds $TimeoutSeconds -EvidenceDirectory $EvidenceDirectory -AsGuest:$AsGuest
         Write-Host "Zero-node autoscale validation completed. Sanitized evidence: $EvidenceDirectory"
         exit ([int]$result.ExitCode)
     } catch { Write-Error 'Autoscale validation failed; raw output suppressed. Inspect sanitized evidence and verify Batch pool state.'; exit 1 }

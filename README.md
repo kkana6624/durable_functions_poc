@@ -10,11 +10,11 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 > - **Azure 実環境デプロイ・実機回帰の実績（最新成果）**:
 >   - **最新 15 関数デプロイおよび全 6 シナリオ実機回帰（合格）**: 実 Azure 環境（`poc` 環境・Azure Storage バックエンド、コミット `839932b`）への最新 15 関数パッケージのデプロイ（`.deploy/poc/20261019-080215-5263`、15 関数全件インデックス登録確認、3 Tasks スモークテスト合格: `deploy-13795081be9948a1b20a2114e447363b`、パッケージ SHA-256: `06bf36f4...`）、および閉域検証 VM 経由での全 6 シナリオ回帰検証（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`、証跡: `artifacts/private-validation/20261018-230722-4253/summary.json`、終了コード 0）を**全件 Pass** で完了し、取消調停・停止再試行・停止確認永続化を含む V12 利用者キャンセルの最新改善の実機成立を実証済みです。
 >   - **B案フェーズ1 Entra ID サービス間認証・認可および稼働パッケージ同定（完全合格・レビュー修正反映）**: EasyAuth v2 を有効化した実機環境（`.deploy/poc/20261019-102131-6222`）において、レビュー指摘3件（P2 後続不一致での同定無効化、P3 パッケージ全体コンテンツ指紋測定 `package_content_sha256`、P3 App Role 不足拒否前提確認 `unauthorizedClientConfirmedInAllowedList`）を反映した閉域検証 VM からの完全認証検証（`artifacts/private-auth-validation/20261019-013214-2425/summary.json`、終了コード 0、Pass）を実施し、未認証・不正Audienceの 401 遮断、App Role 不足マネージドIDの 403 遮断、所有者不整合の 403 遮断、正当マネージドIDによる完走（202/200）、および `X-Poc-Package-Sha256` / `X-Poc-Assembly-Sha256` による稼働パッケージ暗号学的同定（`livePackageVerified: true`）の完全合格を確認しました。
+>   - **B案フェーズ2 & フェーズ3（完全達成・Azure実機検証完全合格）**: Azure Functions の Regional VNet Integration（`functions_outbound` サブネット `10.80.3.0/24`、`vnet_route_all_enabled = true`）、Azure Batch Account の Private Endpoint（`batchAccount` `10.80.2.5`、`nodeManagement` `10.80.2.6`）およびパブリックアクセス完全遮断（`publicNetworkAccess: Disabled`）、ならびに Batch Pool の VNet サブネット統合（`batch_nodes` `10.80.4.0/24`）とパブリック IP なし構成（`NoPublicIPAddresses`）を実 Azure 環境へ適用（デプロイ成果: `.deploy/poc/20261019-131731-6874`）。閉域検証 VM からの完全認証・認可・ワークフロー実機検証（証跡: `artifacts/private-auth-validation/20261019-042651-0796/summary.json`、終了コード 0、Pass）により、401/403 遮断、閉域ノード上での Job/Task 完走、および稼働パッケージ同定（`livePackageVerified: true`）の全 19 プローブ完全合格を確認しました。
 > - **過去の Azure Storage バックエンド環境（`poc`）**: インフラ配置、RHEL 9 検証 VM の初期設定、Private SCM 配置、15 関数の初版登録・全 6 シナリオ回帰（`.deploy/poc/20261018-211336-1471`、コミット `b7ad854`）、Function App 再起動復旧（`V05`）、および専用 Pool（`batch_mode='new'`）での 0 台オートスケール先行投入・自動拡張完走・固定スケール復元（`V09`）を実機確認済みです（`admission20` は全世代の起動履歴取得制限により `NotRun`、summary 終了コード `2`）。
 > - **過去の Durable Task Scheduler（DTS）バックエンド環境（`dts-poc`）**: 当時の 12 個の Functions 登録、3 Task スモークテスト（`Sum=3`）、標準 6 シナリオ、Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch `MaxWallClockTime` による自動終了（`V08`）、および SDK（`tools/DtsProbe`）による履歴イベント集計を実機確認済みです（`admission20` は `NotRun`）。
 > - **未実証・未再検証の範囲**:
->   - **Batch 閉域化（B案フェーズ2・3）**: Azure Batch Account の Private Endpoint 化（`batchAccount` サブリソース）および Batch Pool の VNet サブネット / パブリック IP なし（`NoPublicIPAddresses`）構成。
->   - **アプリ・基盤連携（C案）**: 実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、全面閉域化（`V00`）、Spot 回収復旧、ならびに DTS バックエンド環境での最新 15 関数・キャンセル・認証回帰が残っています。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
+>   - **アプリ・基盤連携（C案）**: 実 C++ バイナリと入出力連携（`V10`）、大容量出力（`T09`）、全面閉域化（`V00`：Storage アカウントの Private Endpoint 化およびパブリックアクセス遮断）、Spot 回収復旧、ならびに DTS バックエンド環境での最新 15 関数・キャンセル・認証回帰が残っています。証跡は [検証結果](docs/test-results.md)、[実現性評価](docs/feasibility-matrix.md)、[信頼性の追加検証](docs/reliability-validation.md) を参照してください。
 
 ---
 
@@ -28,7 +28,7 @@ Windows Batch Pool への Task 投入から、Durable Functions（子オーケ�
 | **受付排他・再試行** | ・同一 `requestId` の二重起動防止（不変な `admission.json` Blob ＋ Durable Entity 直列化）<br>・同一 `requestId` で異なるパラメータが送られた際の `409 Conflict` 拒否<br>・一時的な通信障害に対する有界リトライ（最大 3 回）と監視期限超過時の Batch Job 強制停止（`V07`）および Function ホスト停止中の Batch `MaxWallClockTime` 安全網（`V08`） | ・履歴保持期限経過後や手動パージ後の `requestId` 再利用保証<br>・外部管理 API から全世代（全 `executionId`）の起動履歴を網羅取得して厳密な 1 回起動を証明すること |
 | **計算処理・入出力** | ・Windows Batch Pool（専用ノードまたは Spot ノード、固定台数または 0 台 Autoscale）への Job / Task 投入と終了コード判定<br>・PoC 用ダミー処理（指定秒数スリープ後に `result.txt` へ整数 `1` を出力）の回収と合計値（`sum`）集計 | ・**本番 C++ バイナリ（`.exe` / `.dll`）の同梱・配布**（現在は PowerShell ダミーコマンドを実行）<br>・**大容量の入力シナリオファイル転送（`ResourceFiles`）および計算ノードから Blob への大容量結果直接保存（`OutputFiles`）**（※現行は 4 KB 以下・整数 `1` 専用の File API 回収のため、実バイナリ試験時は差し替えが必要）<br>・Spot ノードが結果回収前に Azure へ回収（Evict）された場合のノードローカル結果の保護 |
 | **スケジューラ機能** | ・Azure Batch 標準のキューイング、空きノードへの Task 割り当て、Pool 準備完了待機、0 台待機からの `$PendingTasks` 自動スケールアウト（`V09`） | ・LSF / HPC Pack が持つ高度なクラスタスケジューラ機能（Fair Share、Backfilling、実行中タスクの追い越し、商用ソルバーライセンス連動）<br>・新規の業務向け Web フロントエンド画面（UI）の提供 |
-| **ネットワーク・認証** | ・Function App の公開アクセス無効化と Private Endpoint / Private DNS 構成<br>・Public IP なし・SSH 拒否の RHEL 9 検証 VM（Run Command 経由）からの閉域デプロイおよび HTTP 検証<br>・Managed Identity による Function ↔ Storage / Batch / DTS 接続<br>・Function key によるAPI保護と、owner/orgヘッダー値を使った受付・照会・結果の照合 | ・Storage / Batch エンドポイントの全面 Private Endpoint 化および Function 送信用 VNet Integration<br>・オンプレミス ExpressRoute / VPN との実回線接続<br>・認証済み利用者への owner/org の安全な結び付け（任意ヘッダー値は本人性を証明しません）<br>・旧Starter混在中や管理API直接操作との競合保証 |
+| **ネットワーク・認証** | ・Function App の公開アクセス無効化と Private Endpoint / Private DNS 構成<br>・Public IP なし・SSH 拒否の RHEL 9 検証 VM（Run Command 経由）からの閉域デプロイおよび HTTP 検証<br>・Managed Identity による Function ↔ Storage / Batch / DTS 接続<br>・Function App 送信用 Regional VNet Integration（`vnet_route_all_enabled = true`）<br>・Azure Batch Account の Private Endpoint 化（`batchAccount` / `nodeManagement`）とパブリックアクセス完全遮断（`publicNetworkAccess: Disabled`）<br>・Azure Batch Pool ノードの VNet サブネット統合およびパブリック IP なし構成（`NoPublicIPAddresses`）<br>・Microsoft Entra ID による EasyAuth v2 サービス間認証および App Role 認可（`Workflow.Execute`）・稼働パッケージ暗号学的同定 | ・Storage アカウントの Private Endpoint 化およびパブリックアクセス遮断（全面閉域化 `V00`）<br>・オンプレミス ExpressRoute / VPN との実回線接続<br>・旧Starter混在中や管理API直接操作との競合保証 |
 
 ---
 
@@ -60,7 +60,7 @@ Batch 基盤を含む環境構築からアプリケーション配置までを 1
 
 **前提条件とスコープ外項目**
 - **事前準備が必要な項目**: Resource Provider（`Microsoft.DurableTask` 等を含む）の登録、クォータ増枠、VM 容量の確保、Marketplace 利用条件の有効化、Azure Compute Gallery の元イメージ準備（スクリプトでは Provider 登録状況の確認、および Pool の resize エラー・準備期限超過の検出を行います）。
-- **現スクリプトの対象外**: Storage / Batch の全面閉域化、VPN / ExpressRoute 回線接続、`UserSubscription` 方式、Gallery 内のイメージバージョン自体のビルド・作成処理、CI/OIDC 連携。なお、Function App の受信は Private Endpoint のみとし、公開ネットワークアクセスを無効化します。
+- **現スクリプトの対象外**: Storage の全面閉域化（Private Endpoint 化およびパブリックアクセス遮断、全面閉域化 `V00`）、VPN / ExpressRoute 回線接続、`UserSubscription` 方式、Gallery 内のイメージバージョン自体のビルド・作成処理、CI/OIDC 連携。なお、Function App および Azure Batch Account の受信は Private Endpoint のみとし、公開ネットワークアクセスを無効化しています。
 
 ### 2. 設定ファイルの作成
 
@@ -243,7 +243,7 @@ terraform -chdir=infra/bootstrap test
 
 `admission20` シナリオでは、同一インスタンスへの集約、投入 Task 数、完了後の再送動作を観測します。ただし、現在の Azure Functions / Durable 管理 API のみでは全世代にわたる Main オーケストレーションの起動履歴を完全には証明できないため、観測値を記録したうえでステータスを `NotRun`（未実証）とし、厳密な「1 度限りの起動（exactly-once schedule）」が実環境で成立したとは断定しません。また、検証ランナー自身はリクエスト入力、Entity 状態、Main オーケストレーション履歴を清掃しません。DTS を選択した場合は Scheduler の 30 日保持ポリシーが別途適用され、期限後の履歴保持は保証しません。
 
-個人の検証環境では VNet 内の検証 VM から Function の Private Endpoint を呼び出します。ローカル端末から Function への直接到達性は不要です。転送用 bundle を専用の転送 Blob コンテナにアップロードし、VM の Managed Identity で取得して実行し、安全な証跡のみ Blob 経由で回収します。NAT Gateway を通る外部通信と Storage / Batch の公開データエンドポイントは今回維持します。VPN / ExpressRoute 接続と Storage / Batch の全面閉域化は [共通ネットワーク設計](docs/network-connectivity-design.md) に記載した後続フェーズです。なお、ローカル環境での Fake / Mock によるテスト成功と、Azure 実環境での接続試験の結果は明確に区別して評価してください。
+個人の検証環境では VNet 内の検証 VM から Function の Private Endpoint を呼び出します。ローカル端末から Function への直接到達性は不要です。転送用 bundle を専用の転送 Blob コンテナにアップロードし、VM の Managed Identity で取得して実行し、安全な証跡のみ Blob 経由で回収します。NAT Gateway を通る外部通信と Storage の公開データエンドポイントは今回維持します（Batch Account の Private Endpoint 化・パブリックアクセス遮断、および Batch Pool の VNet 統合・NoPublicIPAddresses 構成は B案フェーズ2・3 で完了済み）。VPN / ExpressRoute 接続と Storage の全面閉域化（V00）は [共通ネットワーク設計](docs/network-connectivity-design.md) に記載した後続フェーズです。なお、ローカル環境での Fake / Mock によるテスト成功と、Azure 実環境での接続試験の結果は明確に区別して評価してください。
 
 ランナーと Azure 側の処理順序、生成される成果物、およびシナリオ別の詳細な判定条件については [検証ランナーの処理フロー](docs/validation-runner-flow.md) を参照してください。
 

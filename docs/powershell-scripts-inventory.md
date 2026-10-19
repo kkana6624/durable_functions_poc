@@ -311,7 +311,7 @@ flowchart TD
 | パラメータ名 | 型 | 必須/任意 | デフォルト値 | 用途・制約 |
 |---|---|---|---|---|
 | `-Outputs` | `[hashtable]` | 必須 | なし | Terraform デプロイ出力情報 |
-| `-Operation` | `[string]` | 必須 | なし | 実行操作（ValidateSet: `'Deploy'`, `'Validate'`, `'RecoveryStart'`, `'RecoveryComplete'`） |
+| `-Operation` | `[string]` | 必須 | なし | 実行操作（ValidateSet: `'Deploy'`, `'Validate'`, `'RecoveryStart'`, `'RecoveryComplete'`, `'WorkflowAuth'`, `'FunctionValidation'`, `'PoolValidation'`, `'AutoscaleValidation'`） |
 | `-EvidenceDirectory` | `[string]` | 必須 | なし | 証跡ファイル回収先ディレクトリ |
 | `-PackagePath` | `[string]` | 任意 | なし | 配置する Function App ZIP パッケージへのパス（Deploy 操作時に必須） |
 | `-PackageSha256` | `[string]` | 任意 | `''` | ZIP パッケージの期待ハッシュ値 |
@@ -398,7 +398,7 @@ flowchart TD
 
 - **役割・目的**:
   Azure Batch Pool の 0 台待機オートスケール先行投入（`V09`）を実証するスクリプト。計算ノードが 0 台定常（`steady`）の状態にある Pool に対してワークフローを投入し、`$PendingTasks` の増加に伴う自動スケールアウト（1 台起動）、Task 完走、および `finally` ブロックでの固定台数構成への復元を一貫して検証します。
-- **実行コンテキスト**: ホスト側
+- **実行コンテキスト**: ホスト側（Batch 閉域化環境では `Invoke-PrivateVmOperation` を通じて閉域検証 VM ゲスト側に全工程を委譲）
 - **パラメータ一覧**:
 
 | パラメータ名 | 型 | 必須/任意 | デフォルト値 | 用途・制約 |
@@ -410,14 +410,15 @@ flowchart TD
 | `-DedicatedEnvironment` | `[switch]` | 必須 | `$false` | 専用環境確認フラグ |
 | `-TimeoutSeconds` | `[int]` | 任意 | `1800` | タイムアウト秒数（範囲: 300〜3600） |
 | `-EvidenceDirectory` | `[string]` | 任意 | タイムスタンプ付きパス | 証跡保存先ディレクトリ |
+| `-AsGuest` | `[switch]` | 任意 | `$false` | 閉域検証 VM 内でのゲスト直接実行フラグ |
 
 - **主要な提供関数**:
   - `Get-PocAutoscaleFormula($NodeType, $MaxNodes)`: `$PendingTasks` に基づくオートスケール数式文字列を生成。
   - `Invoke-PocBatchPoolRest($Method, $Uri, $Body)`: シェルエスケープ事故を防ぐため一時 JSON ファイル（`@file`）を用いた安全な Batch REST API コール。
   - `Wait-PocPoolSteady` / `Wait-PocPoolZeroNodes` / `Wait-PocAutoscaleIdleEvaluation`: Pool の定常化、0 台ノード化、および評価式収束を待機。
-  - `Invoke-PocAutoscaleValidation`: スケールイン、Autoscale 式有効化、0 台確認、ワークフロー実行、スケールアウト確認、固定台数復元を実行する本体関数。
+  - `Invoke-PocAutoscaleValidation`: スケールイン、Autoscale 式有効化、0 台確認、ワークフロー実行、スケールアウト確認、固定台数復元を実行する本体関数（Batch 閉域環境ではホストから VM へ委譲）。
 - **依存関係・呼び出し関係**:
-  - ドットソース: `Deployment.Common.ps1`, `Test-Deployment.ps1`, `Invoke-PrivateVmOperation.ps1`
+  - ドットソース: `Deployment.Common.ps1`, `Test-Deployment.ps1`, `Invoke-PocValidation.ps1`, `Invoke-PrivateVmOperation.ps1`
 - **対応テストスクリプト**: `scripts/tests/AutoscaleValidation.Tests.ps1`
 
 ---

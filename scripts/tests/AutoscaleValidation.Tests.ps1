@@ -30,7 +30,13 @@ function Invoke-DeploymentValidation {
     return [pscustomobject]@{ Ready=($script:poolState.enableAutoScale -eq $false -and $script:poolState.targetLowPriorityNodes -eq 1) }
 }
 function Invoke-PrivateVmOperation {
-    param($Outputs,$Operation,$Scenarios,$EvidenceDirectory,$TimeoutSeconds)
+    param($Outputs,$Operation,$Scenarios,$EvidenceDirectory,$TimeoutSeconds,$ExpectedFunctionAppName,$ExpectedPoolId,$AllowPoolAutoscaleTransition,$DedicatedEnvironment)
+    if ($Operation -eq 'AutoscaleValidation') {
+        $null=New-Item -ItemType Directory -Path $EvidenceDirectory -Force
+        Write-DeploymentJson (Join-Path $EvidenceDirectory 'autoscale-result.json') @{ Status='Pass'; ExitCode=0; Reason='DelegatedAutoscalePassed' }
+        Write-DeploymentJson (Join-Path $EvidenceDirectory 'summary.json') @{ Status='Pass'; ExitCode=0 }
+        return [pscustomobject]@{ exit_code=0; operation='AutoscaleValidation' }
+    }
     Assert-True ($script:poolState.enableAutoScale -eq $true -and $script:poolState.currentLowPriorityNodes -eq 0 -and $script:nodeCount -eq 0) 'Workflow must be submitted while Pool is in 0-node autoscale state'
     $null=New-Item -ItemType Directory -Path $EvidenceDirectory -Force
     if ($script:failMode -eq 'workflowFail') {
@@ -42,6 +48,19 @@ function Invoke-PrivateVmOperation {
     $script:nodeCount=1
     Write-DeploymentJson (Join-Path $EvidenceDirectory 'summary.json') @{ Status='Pass'; ExitCode=0 }
     return [pscustomobject]@{ exit_code=0 }
+}
+function Invoke-PocValidation {
+    param($DeploymentResultPath,$EvidenceDirectory,$TimeoutSeconds,$Scenarios,$DedicatedEnvironment)
+    Assert-True ($script:poolState.enableAutoScale -eq $true -and $script:poolState.currentLowPriorityNodes -eq 0 -and $script:nodeCount -eq 0) 'Guest workflow must be submitted while Pool is in 0-node autoscale state'
+    $null=New-Item -ItemType Directory -Path $EvidenceDirectory -Force
+    if ($script:failMode -eq 'guestWorkflowFail') {
+        return [pscustomobject]@{ ExitCode=1; Status='Fail' }
+    }
+    $script:poolState.targetLowPriorityNodes=1
+    $script:poolState.currentLowPriorityNodes=1
+    $script:nodeCount=1
+    Write-DeploymentJson (Join-Path $EvidenceDirectory 'summary.json') @{ Status='Pass'; ExitCode=0 }
+    return [pscustomobject]@{ ExitCode=0; Status='Pass' }
 }
 function Invoke-AzJson {
     param([switch]$Sensitive,[string[]]$Arguments)
@@ -134,6 +153,23 @@ try {
     Assert-Fails { Invoke-PocAutoscaleValidation -DeploymentResultPath $deployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $restoreFailEvidence } $script:secret
     $savedRestore=Get-Content -LiteralPath (Join-Path $restoreFailEvidence 'autoscale-result.json') -Raw | ConvertFrom-Json
     Assert-True ($savedRestore.Status -eq 'Fail' -and $savedRestore.Reason -eq 'PoolRestorationFailed' -and $savedRestore.ExitCode -eq 1) 'Restoration failure must record Status=Fail, Reason=PoolRestorationFailed, ExitCode=1'
+    $script:failMode=$null
+    # Private Batch delegation test
+    $privateOutputs=$outputs.Clone(); $privateOutputs.batch_private_ip='10.80.2.5'
+    $privateDeployment=Join-Path $work 'private-deployment.json'
+    Write-DeploymentJson $privateDeployment @{ outputs=$privateOutputs }
+    $pvtEvidence=Join-Path $work 'pvt-pass'
+    $pvtResult=Invoke-PocAutoscaleValidation -DeploymentResultPath $privateDeployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $pvtEvidence
+    Assert-True ($pvtResult.ExitCode -eq 0 -and $pvtResult.Status -eq 'Pass' -and $pvtResult.Reason -eq 'DelegatedAutoscalePassed') 'Private Batch autoscale must delegate to Invoke-PrivateVmOperation'
+
+    # Guest-mode execution test (runs pool transition directly and calls Invoke-PocValidation)
+    $guestEvidence=Join-Path $work 'guest-pass'
+    $guestResult=Invoke-PocAutoscaleValidation -DeploymentResultPath $privateDeployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $guestEvidence -AsGuest
+    Assert-True ($guestResult.ExitCode -eq 0 -and $guestResult.Status -eq 'Pass' -and $guestResult.zeroNodesVerifiedBeforeSubmission -and $guestResult.scaledUpObserved) 'Guest mode autoscale validation should execute directly without host delegation'
+    Assert-True (Test-Path -LiteralPath (Join-Path $guestEvidence 'autoscale-result.json')) 'Guest mode must write autoscale-result.json'
+    Assert-True (Test-Path -LiteralPath (Join-Path $guestEvidence 'summary.json')) 'Guest mode must write summary.json'
+    Assert-True (Test-Path -LiteralPath (Join-Path $guestEvidence 'summary.txt')) 'Guest mode must write summary.txt'
+
     foreach ($file in (Get-ChildItem -LiteralPath $work -Recurse -File)) {
         Assert-True (-not (Get-Content -LiteralPath $file.FullName -Raw).Contains($script:secret)) 'Secret leaked to autoscale evidence'
     }

@@ -28,7 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Verify Actor is Repository Owner
+        shell: bash
         run: |
+          set -eo pipefail
           if [ "${{ github.actor }}" != "${{ github.repository_owner }}" ]; then
             echo "::error::Direct push to main by '${{ github.actor }}' is forbidden. Only repository owner '${{ github.repository_owner }}' is permitted."
             exit 1
@@ -40,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Verify Owner Authorization for PR
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -47,6 +50,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          set -eo pipefail
           PR_AUTHOR="${{ github.event.pull_request.user.login }}"
           if [ "$PR_AUTHOR" = "$OWNER" ]; then
             echo "PR author is repository owner ($OWNER). Authorized."
@@ -57,7 +61,8 @@ jobs:
             PR_HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
           fi
 
-          LATEST_REVIEW=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" | jq -s 'add // [] | [.[] | select(.user.login == "'"$OWNER"'" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | last // empty')
+          RAW_REVIEWS=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews")
+          LATEST_REVIEW=$(echo "$RAW_REVIEWS" | jq -s 'add // [] | [.[] | select(.user.login == "'"$OWNER"'" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | last // empty')
           if [ -z "$LATEST_REVIEW" ]; then
             echo "::error::PR requires explicit approval from repository owner ($OWNER) before merging. No qualifying review found."
             exit 1

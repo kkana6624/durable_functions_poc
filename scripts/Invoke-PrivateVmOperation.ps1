@@ -19,7 +19,7 @@ function Invoke-PrivateVmOperation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Outputs,
-        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','FunctionValidation','PoolValidation')][string]$Operation,
+        [Parameter(Mandatory)][ValidateSet('Deploy','Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','FunctionValidation','PoolValidation','AutoscaleValidation')][string]$Operation,
         [Parameter(Mandatory)][string]$EvidenceDirectory,
         [string]$PackagePath,
         [ValidatePattern('^$|^[0-9a-fA-F]{64}$')][string]$PackageSha256='',
@@ -34,7 +34,10 @@ function Invoke-PrivateVmOperation {
         [string]$AuthUnauthorizedClientId='',
         [string]$AuthManagedIdentityClientId='',
         [string]$AssemblySha256='',
-        [string]$PackageContentSha256=''
+        [string]$PackageContentSha256='',
+        [string]$ExpectedFunctionAppName='',
+        [string]$ExpectedPoolId='',
+        [switch]$AllowPoolAutoscaleTransition
     )
     foreach ($key in @('subscription_id','resource_group_name','validation_vm_name','vm_control_container_name','storage_account_name','function_app_name','function_app_url','function_private_ip')) {
         if (-not $Outputs.ContainsKey($key) -or [string]::IsNullOrWhiteSpace([string]$Outputs[$key])) { throw "Private VM output '$key' is required; apply the private network infrastructure first." }
@@ -68,6 +71,9 @@ function Invoke-PrivateVmOperation {
         if ($Operation -eq 'WorkflowAuth') {
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-WorkflowAuthValidation.ps1') -Destination $bundle
         }
+        if ($Operation -eq 'AutoscaleValidation') {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-PocAutoscaleValidation.ps1') -Destination $bundle
+        }
         $request=@{ operation=$Operation; outputs=$Outputs; timeout_seconds=$TimeoutSeconds; scenarios=@($Scenarios); smoke=[bool]$Smoke; dedicated_environment=[bool]$DedicatedEnvironment; operation_id=$id; package_sha256=$PackageSha256; assembly_sha256=$AssemblySha256; package_content_sha256=$PackageContentSha256 }
         if ($Operation -in @('RecoveryStart','RecoveryComplete')) { $request.recovery_context=$RecoveryContext }
         if ($Operation -eq 'WorkflowAuth') {
@@ -76,6 +82,11 @@ function Invoke-PrivateVmOperation {
             $request.auth_org_id=$AuthOrgId
             if ($AuthUnauthorizedClientId) { $request.auth_unauthorized_client_id=$AuthUnauthorizedClientId }
             if ($AuthManagedIdentityClientId) { $request.auth_managed_identity_client_id=$AuthManagedIdentityClientId }
+        }
+        if ($Operation -eq 'AutoscaleValidation') {
+            $request.expected_function_app_name=$ExpectedFunctionAppName
+            $request.expected_pool_id=$ExpectedPoolId
+            $request.allow_pool_autoscale_transition=[bool]$AllowPoolAutoscaleTransition
         }
         # Preserve the source identity on the initiating host. The guest executes a
         # bundle without .git and must not mislabel that bundle as a Git checkout.
@@ -164,16 +175,18 @@ echo 'Private VM operation completed; sanitized results are in the control conta
         if ($result.operation_id -ne $id -or $result.operation -ne $Operation -or [int]$result.exit_code -notin @(0,1,2)) { throw 'Private VM returned an invalid operation result.' }
         $failureStage=$null
         if ($result.PSObject.Properties['failure_stage'] -and $null -ne $result.failure_stage) {
-            if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','function_connectivity','function_validation','pool_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
+            if ($result.failure_stage -notin @('dns','package_integrity','scm_publish','function_connectivity','function_validation','pool_validation','autoscale_validation','validation_runner','validation_summary','summary_upload','operation')) { throw 'Private VM returned an invalid failure stage.' }
             $failureStage=[string]$result.failure_stage
         }
-        if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth') -and $result.summary_available) {
-            $summaryNames = if ($Operation -eq 'WorkflowAuth') { @('summary.json') } else { @('summary.json','summary.txt') }
+        if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','AutoscaleValidation') -and $result.summary_available) {
+            $summaryNames = if ($Operation -eq 'WorkflowAuth') { @('summary.json') } elseif ($Operation -eq 'AutoscaleValidation') { @('autoscale-result.json','summary.json','summary.txt') } else { @('summary.json','summary.txt') }
             foreach ($name in $summaryNames) {
-                $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',(Join-Path $EvidenceDirectory $name),'--overwrite','true','--auth-mode','login','--no-progress')
+                try {
+                    $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',(Join-Path $EvidenceDirectory $name),'--overwrite','true','--auth-mode','login','--no-progress')
+                } catch { }
             }
         }
-        if ($commandFailed -or ($Operation -in @('Deploy','FunctionValidation','PoolValidation') -and [int]$result.exit_code -ne 0)) { throw "Private VM operation $id failed ($($result.error_code)); stage=$failureStage; raw output suppressed." }
+        if ($commandFailed -or ($Operation -in @('Deploy','FunctionValidation','PoolValidation','AutoscaleValidation') -and [int]$result.exit_code -ne 0)) { throw "Private VM operation $id failed ($($result.error_code)); stage=$failureStage; raw output suppressed." }
         return $result
     }
     finally {
