@@ -51,7 +51,7 @@
 プロセス再起動時も実行履歴から自動的に中間状態が復元され、二重投入を起こさずに安全に処理が継続されます。
 
 ### 2. ネットワーク閉域化とセキュリティ境界の確立
-Function App の受信用 Private Endpoint、送信用 Regional VNet 統合、Azure Batch Account の Private Endpoint、および Batch Pool の VNet サブネット統合（`NoPublicIPAddresses`）により、**パブリックインターネットを経由しない閉域計算基盤**を確立しました。
+Function App の受信用 Private Endpoint、送信用 Regional VNet 統合、Azure Batch Account の Private Endpoint、および Batch Pool の VNet サブネット統合（`NoPublicIPAddresses`）により、**Function 受信および Batch データプレーンの閉域化**を確立しました（※Storage の公開データエンドポイント通信は NAT Gateway 経由で維持されており、Storage の Private Endpoint 化は次期 V00 で対応）。
 さらに Microsoft Entra ID（EasyAuth v2）および App Role 認可により、信頼されたバックエンドからの正規要求のみを受理するセキュリティ境界を実証しました。
 
 ### 3. 利用者キャンセルと排他制御の実用性

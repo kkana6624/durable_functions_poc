@@ -235,7 +235,7 @@ terraform -chdir=infra/bootstrap test
   -Scenarios timeout -DedicatedEnvironment -TimeoutSeconds 900
 ```
 
-デフォルトのシナリオは `single,three,classification,failure,admission20,conflict` です。`TimeoutSeconds` はシナリオ内の待機に適用され、既定 900 秒、指定範囲 60〜3600 秒、ポーリング間隔は 10 秒です。Run Command では cloud-init の準備待ちを最大 900 秒、以後のゲスト操作全体を最大 4200 秒（70 分）に制限し、Action Run Command の 90 分制限内に収めます。長い検証は `-Scenarios` を指定して複数回に分けてください。タイムアウト試験（`timeout`）では実際のデプロイ設定値および Batch Job の `maxWallClockTime` 制約を確認し、設定された Task 遅延時間とランナーの待機上限の組み合わせでタイムアウトを安全に観測できない構成の場合は `NotRun` と判定します。なお、ランナー側の待機期限が超過した場合でも、Azure 上の計算 Job が正常に停止完了したとはみなしません。
+デフォルトのシナリオは `single,three,classification,failure,admission20,conflict` です。`TimeoutSeconds` はシナリオ内の待機に適用され、既定 900 秒、指定範囲 60〜3600 秒、ポーリング間隔は 10 秒です。Run Command では cloud-init の準備待ちを最大 900 秒、以後のゲスト操作全体は動的タイムアウト（`TimeoutSeconds=3600` の場合、通常操作は 3,900 秒、Autoscale は 5,100 秒、上限 5,300 秒）を設定し、Action Run Command の 90 分（5,400 秒）制限内に収めます。また、ゲスト開始時の絶対時刻から `POC_VM_DEADLINE_UTC` を共有し、Pool 復元用の時間（最低 600 秒）を確保します。長い検証は `-Scenarios` を指定して複数回に分けてください。タイムアウト試験（`timeout`）では実際のデプロイ設定値および Batch Job の `maxWallClockTime` 制約を確認し、設定された Task 遅延時間とランナーの待機上限の組み合わせでタイムアウトを安全に観測できない構成の場合は `NotRun` と判定します。なお、ランナー側の待機期限が超過した場合でも、Azure 上の計算 Job が正常に停止完了したとはみなしません。
 
 `-DedicatedEnvironment` は試験専用の環境を指定するスイッチであり、専用 Batch ノードを指定するものではありません（Spot ノードを使用する試験専用環境でも指定します）。
 
@@ -316,7 +316,7 @@ terraform -chdir=infra output
 
 通常の単一 Task 検証は `Invoke-PrivatePocValidation.ps1 -Scenarios single` で VM から HTTP workflow を起動します。以下の BatchSmoke は、Batch エンドポイントへ直接接続できる開発端末で使う補助診断ツールです。ワンコマンド配置の `-Smoke` からは呼び出しません。
 
-ワークフロー認証は既定`PocFunctionKey`を維持し、明示的な`EntraEasyAuth`設定時だけEasyAuthとアプリ内App Role検証を有効にします。各独自APIにはBearerとFunction key、owner/orgが必要です。設定契約・Entra登録の手順と制約は[認証境界](docs/workflow-authentication-design.md)を参照してください。Entra登録、App Role割当、`idtyp` optional claimは自動変更しません。Azure配置・両Durableバックエンドの認証実証は未完です。
+ワークフロー認証は既定`PocFunctionKey`を維持し、明示的な`EntraEasyAuth`設定時だけEasyAuthとアプリ内App Role検証を有効にします。各独自APIにはBearerとFunction key、owner/orgが必要です。設定契約・Entra登録の手順と制約は[認証境界](docs/workflow-authentication-design.md)を参照してください。Entra登録、App Role割当、`idtyp` optional claimは自動変更しません。なお、Azure Storage バックエンド環境では Entra サービス間認証および App Role 認可の実機検証を完了済みです（DTS バックエンド環境での最新認証構成の検証は未実施）。
 
 厳格モードの`deploy.ps1 -Smoke`は事前検証で拒否します。既存のSmoke・Private/通常シナリオ・Recovery/Autoscale runnerは、内部Durable診断を含めBearer未対応です。新しい`scripts/Invoke-WorkflowAuthValidation.ps1`はVM Managed IdentityのIMDSを用い、独自開始・状態・結果APIを検証する限定runnerです。SCM配置の既存Entra/ARM token認証とは別経路で、診断用EasyAuth除外パスは追加しません。
 
@@ -371,7 +371,7 @@ $started
 Invoke-RestMethod -Uri $started.statusQueryGetUri -Headers $headers
 ```
 
-開始202の `statusQueryGetUri` と `Location` は独自の `/api/workflows/{requestId}` を指し、キーを含むDurable管理URLを返しません。`Retry-After` は10秒です。内部検証runnerは開始URL契約を検証した後、system keyから管理URIをメモリ内で生成して詳細診断を続けます。キー・管理URIはログや証跡へ保存しません。この変更はV11の一部であり、Entra認証・App Role検証・所有者伝播の確定および最新コードのAzure実証は未完です。
+開始202の `statusQueryGetUri` と `Location` は独自の `/api/workflows/{requestId}` を指し、キーを含むDurable管理URLを返しません。`Retry-After` は10秒です。内部検証runnerは開始URL契約を検証した後、system keyから管理URIをメモリ内で生成して詳細診断を続けます。キー・管理URIはログや証跡へ保存しません。この独自 API 契約および Entra 認証・App Role 検証・所有者伝播は、Azure Storage バックエンドの実 Azure 環境で実機検証済みです（DTS 環境での最新コード実証は未実施）。
 
 独自状態照会の `resultAvailable` は、公開manifest・aggregate・全Task結果の存在と現行PoC契約の整合性を確認した時点の値です。DurableがCompletedでも成果物欠損時はfalseとなり、結果取得は409を返します。不整合時は固定メッセージの500、一時障害時は503と `Retry-After: 10` を返します。結果取得時にも再検証するため、状態照会後の削除を含め取得成功を保証する値ではありません。
 
@@ -381,7 +381,7 @@ Invoke-RestMethod -Uri $started.statusQueryGetUri -Headers $headers
 - **入力パラメータ**: `taskCount` は `1`〜`3`、`classification` は `light` / `heavy` / `auto` を指定できます。
 - **受付の確定と競合検出**: `runs/poc-<requestId>/admission.json` の単一不変レコード（Version 2）へ入力・instanceId・所有者/組織を条件付き作成します。所有者なしも固定し、同一所有者・入力だけ再送できます。所有者・組織・所有者の有無が異なる場合は `HTTP 403`、所有者一致で入力が異なる場合は `HTTP 409` を返します。任意のowner/orgヘッダーは本人性を証明しません。
 - **同時受付・再送時の動作**: 同一 `requestId` かつ同一所有者・入力の同時リクエストや再送は、同じ Durable Entity へ通知されます。Entity が「起動済み状態」と「Main オーケストレーションの起動指示」を永続化して重複を抑止します。受付Blobの作成とDurable通知は非原子的で、通知失敗時も受付を保持し同一内容の再送で回復します。
-- **旧受付の互換**: 旧 `request.json` / `owner.json` を書き換えず、整合する旧受付は再送時に新レコードへ正規化します。所有者なし旧受付への所有者追加、所有者のみ残る旧受付、新旧の矛盾は拒否します。切替時は旧Starterを停止してください。詳細は [信頼性設計](docs/workflow-reliability.md) を参照してください。今回の変更はローカル実装で、Azure配置・実機検証は未実施です。
+- **旧受付の互換**: 旧 `request.json` / `owner.json` を書き換えず、整合する旧受付は再送時に新レコードへ正規化します。所有者なし旧受付への所有者追加、所有者のみ残る旧受付、新旧の矛盾は拒否します。切替時は旧Starterを停止してください。詳細は [信頼性設計](docs/workflow-reliability.md) を参照してください。なお、この受付排他・所有者一体化は、Azure Storage バックエンドの実 Azure 環境で回帰検証（conflict シナリオ Pass）済みです。
 - **ステータスコードと再試行**:
   - `HTTP 202 (Accepted)` は Durable Entity への通知受理を表します。所有者付きで受け付けたジョブの独自状態照会には、受付時と同じ所有者情報が必要です。内部診断のDurable管理APIは、Main実インスタンスの登録前に一時的な `404` を返す場合があります。
   - 受付確認中の一時的な障害時は `HTTP 503` と `Retry-After` ヘッダーを返します。その場合は同じ `requestId` と入力内容で再送できます。
