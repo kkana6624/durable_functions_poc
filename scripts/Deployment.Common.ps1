@@ -74,6 +74,22 @@ function Write-DeploymentJson {
     [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
 }
 
+function Assert-DeploymentSecretReferences {
+    param([Parameter(Mandatory)][hashtable]$Variables)
+    # Reject before creating .deploy files or invoking tools; sensitive=true only masks display.
+    if ($Variables.ContainsKey('app_service_workflow_function_key') -and $null -ne $Variables.app_service_workflow_function_key) {
+        throw 'Raw Function keys are not supported. Remove app_service_workflow_function_key and use app_service_workflow_function_key_secret_uri.'
+    }
+    if ($Variables.ContainsKey('app_service_workflow_function_key_secret_uri') -and $null -ne $Variables.app_service_workflow_function_key_secret_uri) {
+        $secretUri = $Variables.app_service_workflow_function_key_secret_uri
+        if ($secretUri -isnot [string] -or $secretUri -cnotmatch '^https://[A-Za-z0-9-]+\.vault\.azure\.net/secrets/[A-Za-z0-9-]+(/[A-Fa-f0-9]{32})?/?$') {
+            throw 'app_service_workflow_function_key_secret_uri must be a Key Vault secret URI without credentials, query or fragment.'
+        }
+    } elseif ($Variables.ContainsKey('enable_app_service') -and $Variables.enable_app_service) {
+        throw 'An enabled App Service requires app_service_workflow_function_key_secret_uri.'
+    }
+}
+
 function Get-DeploymentWorkflowAuthSettings {
     param([Parameter(Mandatory)][hashtable]$Variables, [switch]$Smoke)
     $mode = if ($Variables.ContainsKey('workflow_auth_mode')) { [string]$Variables.workflow_auth_mode } else { 'PocFunctionKey' }

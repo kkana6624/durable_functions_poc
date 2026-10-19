@@ -91,18 +91,15 @@ public sealed class UploadService(
         var existingManifest = await storageRepository.TryGetReadyManifestAsync(readyManifestId, cancellationToken);
         if (existingManifest is not null)
         {
+            EnsureSameInput(existingManifest, request, owner, container, normalizedSha);
             logger?.LogInformation("Ready manifest {ReadyManifestId} already exists for owner {OwnerId}; returning existing manifest idempotently.",
                 readyManifestId, owner.OwnerId);
 
-            return new FinalizeUploadResponse(
-                ReadyManifestId: existingManifest.ReadyManifestId,
-                BlobKey: existingManifest.Blob.BlobKey,
-                SizeBytes: existingManifest.Blob.SizeBytes,
-                Sha256: existingManifest.Blob.Sha256);
+            return ToResponse(existingManifest);
         }
 
-        var versionId = request.VersionId;
-        var etag = request.Etag;
+        var versionId = string.IsNullOrWhiteSpace(request.VersionId) ? null : request.VersionId;
+        var etag = string.IsNullOrWhiteSpace(request.Etag) ? null : request.Etag;
 
         // If neither versionId nor etag was provided, query storage properties if BlobServiceClient is available
         if (string.IsNullOrWhiteSpace(versionId) && string.IsNullOrWhiteSpace(etag))
@@ -146,15 +143,50 @@ public sealed class UploadService(
             CreatedAtUtc: DateTimeOffset.UtcNow);
 
         // Saves conditionally and performs full streaming size/SHA-256 target blob verification
-        await storageRepository.SaveReadyManifestAsync(manifest, cancellationToken);
+        try
+        {
+            await storageRepository.SaveReadyManifestAsync(manifest, cancellationToken);
+        }
+        catch (WorkflowConflictException)
+        {
+            // Another Finalize can win after our initial read. Creation time is not
+            // part of input identity, but both callers must have pinned the same blob.
+            var winner = await storageRepository.TryGetReadyManifestAsync(readyManifestId, cancellationToken);
+            if (winner is null)
+                throw;
+
+            EnsureSameInput(winner, request, owner, container, normalizedSha);
+            if (winner.SchemaVersion != manifest.SchemaVersion || winner.Blob != manifest.Blob)
+                throw new WorkflowConflictException("Ready manifest already exists for a different fixed blob version.");
+
+            return ToResponse(winner);
+        }
 
         logger?.LogInformation("Successfully finalized upload and saved ready manifest {ReadyManifestId} for owner {OwnerId}",
             readyManifestId, owner.OwnerId);
 
-        return new FinalizeUploadResponse(
-            ReadyManifestId: readyManifestId,
-            BlobKey: request.BlobKey,
-            SizeBytes: request.ExpectedSizeBytes,
-            Sha256: normalizedSha);
+        return ToResponse(manifest);
     }
+
+    private static void EnsureSameInput(ReadyManifest manifest, FinalizeUploadRequest request,
+        WorkflowOwner owner, string container, string normalizedSha)
+    {
+        // Keep the established manifest ID scheme, and verify every identity field
+        // before treating a stored manifest as a retry. Omitted pins reuse the
+        // previously fixed version; an explicitly supplied pin must match it.
+        if (manifest.OwnerId != owner.OwnerId || manifest.OrgId != owner.OrgId ||
+            manifest.Blob.Container != container || manifest.Blob.BlobKey != request.BlobKey ||
+            manifest.Blob.SizeBytes != request.ExpectedSizeBytes || manifest.Blob.Sha256 != normalizedSha ||
+            (!string.IsNullOrWhiteSpace(request.VersionId) && manifest.Blob.VersionId != request.VersionId) ||
+            (!string.IsNullOrWhiteSpace(request.Etag) && manifest.Blob.Etag != request.Etag))
+        {
+            throw new WorkflowConflictException("Ready manifest already exists for different input or ownership.");
+        }
+    }
+
+    private static FinalizeUploadResponse ToResponse(ReadyManifest manifest) => new(
+        ReadyManifestId: manifest.ReadyManifestId,
+        BlobKey: manifest.Blob.BlobKey,
+        SizeBytes: manifest.Blob.SizeBytes,
+        Sha256: manifest.Blob.Sha256);
 }

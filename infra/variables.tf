@@ -196,6 +196,10 @@ variable "existing_batch_pool_uami_resource_id" {
     )
     error_message = "Existing Batch pool UAMI resource ID must be a valid Microsoft.ManagedIdentity/userAssignedIdentities ARM ID, or null."
   }
+  validation {
+    condition     = var.existing_batch_pool_uami_resource_id == null ? true : try(lower(split("/", var.existing_batch_pool_uami_resource_id)[2]) == lower(var.subscription_id), false)
+    error_message = "The existing Batch pool UAMI must be in the deployment subscription; cross-subscription identity lookups are not configured."
+  }
 }
 variable "gallery_image_version_id" {
   type        = string
@@ -350,6 +354,20 @@ variable "app_service_workflow_function_key" {
   type        = string
   default     = null
   sensitive   = true
-  description = "Optional Function Key for App Service to call Function App."
+  description = "Deprecated. Raw Function keys are forbidden; use app_service_workflow_function_key_secret_uri."
+  validation {
+    condition     = var.app_service_workflow_function_key == null
+    error_message = "Raw Function keys must not enter Terraform variables or deployment artifacts. Use app_service_workflow_function_key_secret_uri."
+  }
+}
+
+variable "app_service_workflow_function_key_secret_uri" {
+  type        = string
+  default     = null
+  description = "Key Vault secret URI containing the Function/host key. Only the reference is stored by Terraform. Grant the App Service UAMI secret-read access and network connectivity externally."
+  validation {
+    condition     = var.app_service_workflow_function_key_secret_uri == null ? !var.enable_app_service : can(regex("^https://[A-Za-z0-9-]+\\.vault\\.azure\\.net/secrets/[A-Za-z0-9-]+(/[A-Fa-f0-9]{32})?/?$", var.app_service_workflow_function_key_secret_uri))
+    error_message = "An enabled App Service requires a Key Vault secret URI (without credentials, query or fragment), not a raw Function key."
+  }
 }
 

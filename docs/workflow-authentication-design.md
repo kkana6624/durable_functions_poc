@@ -39,6 +39,16 @@ Azureの環境変数によるガードは、通常のローカル起動や認証
 
 ## 後続の構成と実証
 
+### App Service からの Function Key 供給
+
+App Service の IaC にはキー実値を渡さず、`app_service_workflow_function_key_secret_uri` に既存 Key Vault の secret URI を設定します。`WORKFLOW_FUNCTION_KEY` は `@Microsoft.KeyVault(SecretUri=...)` 参照となり、App Service に割り当てた UAMI を `key_vault_reference_identity_id` に指定します。Terraform は secret の値を取得しません。旧 `app_service_workflow_function_key` に値がある設定は、`deploy.ps1` が `.deploy` ディレクトリやログを作る前に拒否し、Terraform から直接実行しても変数検証で拒否します。以前の配置で既に作成した tfvars／plan／state の値は、この変更で自動削除・失効しません。
+
+有効化には `enable_app_service = true` と secret URI が必要です。Key Vault と secret は外部管理とし、初回は App Service UAMI の作成後、Vault 管理者がその UAMI に `Key Vault Secrets User`（RBAC）または secret の `Get`（アクセス ポリシー）を付与します。Vault のネットワーク制限がある場合は App Service からの DNS・経路・Private Endpoint 到達性も確保してから参照を更新します。参照が解決できず `@Microsoft.KeyVault(...)` の文字列が残る場合、アプリはキーとして送信せず起動を拒否します。Functions 側が要求するキーのスコープ（複数 API で利用できる host key 等）とローテーションを Vault 管理者と揃えてください。実値を含む旧配置成果物の扱いとキーの失効は、実環境の管理者が別途実施します。[Key Vault 参照の公式手順](https://learn.microsoft.com/en-us/azure/app-service/app-service-key-vault-references)
+
+既存 Batch Pool の Blob 転送では、Pool に既に割り当て済みの同一 subscription の UAMI resource ID を `existing_batch_pool_uami_resource_id` に指定します。IaC はその identity の principal ID を読み、今回の Storage に入力 Reader と出力コンテナ Contributor を付与します。既存 Pool の identity やノード設定は変更しません。UAMI 未指定は旧 JSON 入力経路用であり、ReadyManifest の転送検証完了を意味しません。[ResourceFiles](https://learn.microsoft.com/en-us/azure/batch/resource-files)、[OutputFiles](https://learn.microsoft.com/en-us/azure/batch/batch-task-output-files)
+
+ClaimsPrincipal の JWT 検証は実行環境にかかわらず署名必須です。旧署名バイパス設定が `true` の場合は起動拒否し、認証テストはテスト fixture 内だけで署名鍵を供給します。
+
 tenant ID、API app/client ID、許可するバックエンドclient ID、audience、issuer、App Role、利用者ID形式は環境ごとに確定させます。未確定値を既存Azureリソースやサンプル値から推定しません。厳格モードは明示設定した場合だけ有効にし、不完全な設定は配置前に拒否します。
 
 環境`.psd1`の`Terraform`テーブル（またはTerraform変数）では次を指定します。API client IDとバックエンドclient IDは別の役割です。

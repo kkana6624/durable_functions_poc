@@ -25,6 +25,11 @@ Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=
 $converted=ConvertTo-DeploymentHashtable ([pscustomobject]@{ outer=[pscustomobject]@{ values=@('a','b') } })
 Assert-True ($converted -is [hashtable] -and $converted.outer -is [hashtable] -and $converted.outer.values.Count -eq 2) 'JSON conversion should preserve nested arrays'
 $defaults=Get-DeploymentDurableSettings -Variables @{}
+Assert-DeploymentSecretReferences -Variables @{}
+Assert-DeploymentSecretReferences -Variables @{ enable_app_service=$true; app_service_workflow_function_key_secret_uri='https://test-vault.vault.azure.net/secrets/workflow-key' }
+Assert-Fails { Assert-DeploymentSecretReferences -Variables @{ app_service_workflow_function_key='test-only-rejection-marker' } } 'Raw Function keys are not supported'
+Assert-Fails { Assert-DeploymentSecretReferences -Variables @{ enable_app_service=$true } } 'requires app_service_workflow_function_key_secret_uri'
+Assert-Fails { Assert-DeploymentSecretReferences -Variables @{ app_service_workflow_function_key_secret_uri='https://test-vault.vault.azure.net/secrets/workflow-key?sig=test-only' } } 'without credentials, query or fragment'
 Assert-True ((Get-DeploymentWorkflowAuthSettings -Variables @{}).workflow_auth_mode -ceq 'PocFunctionKey') 'Auth must remain opt-in'
 $auth=@{ workflow_auth_mode='EntraEasyAuth'; workflow_auth_tenant_id='11111111-1111-1111-1111-111111111111'; workflow_auth_api_client_id='22222222-2222-2222-2222-222222222222'; workflow_auth_audience='api://workflow'; workflow_auth_required_app_role='Workflow.Invoke'; workflow_auth_allowed_backend_app_ids=@('33333333-3333-3333-3333-333333333333') }
 $normalized=Get-DeploymentWorkflowAuthSettings -Variables $auth

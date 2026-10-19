@@ -360,7 +360,6 @@ function Invoke-AppServiceValidationMain {
                 $uploadError = "Azure CLI (az) not found in PATH to upload blob to storage account '$StorageAccountName'."
             } else {
                 $tempFile = [System.IO.Path]::GetTempFileName()
-                $stderrFile = [System.IO.Path]::GetTempFileName()
                 try {
                     [System.IO.File]::WriteAllBytes($tempFile, $testData)
                     $azArgs = @(
@@ -375,10 +374,18 @@ function Invoke-AppServiceValidationMain {
                         '--only-show-errors',
                         '--output', 'none'
                     )
-                    $process = Start-Process -FilePath $azCmd.Source -ArgumentList $azArgs -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
-                    if ($process.ExitCode -ne 0) {
-                        $errText = Get-Content $stderrFile -Raw -ErrorAction SilentlyContinue
-                        $uploadError = "az storage blob upload failed with exit code $($process.ExitCode): $errText"
+                    # PowerShell's native argument binder preserves each argument, including
+                    # a temporary filename containing spaces. Start-Process joins the array.
+                    $previousErrorActionPreference = $ErrorActionPreference
+                    try {
+                        $ErrorActionPreference = 'Continue'
+                        $cliOutput = @(& $azCmd.Source @azArgs 2>&1 | ForEach-Object { $_.ToString() })
+                        $uploadExitCode = $LASTEXITCODE
+                    } finally {
+                        $ErrorActionPreference = $previousErrorActionPreference
+                    }
+                    if ($uploadExitCode -ne 0) {
+                        $uploadError = "az storage blob upload failed with exit code ${uploadExitCode}: $($cliOutput -join [Environment]::NewLine)"
                     } else {
                         $uploadPassed = $true
                     }
@@ -386,7 +393,6 @@ function Invoke-AppServiceValidationMain {
                     $uploadError = "Blob upload execution threw exception: $($_.Exception.Message)"
                 } finally {
                     if (Test-Path $tempFile) { Remove-Item -Force $tempFile -ErrorAction SilentlyContinue }
-                    if (Test-Path $stderrFile) { Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue }
                 }
             }
         } elseif ($HttpHandler) {

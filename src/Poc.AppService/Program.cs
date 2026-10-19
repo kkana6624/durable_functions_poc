@@ -29,8 +29,6 @@ builder.Services.Configure<AppServiceAuthenticationOptions>(options =>
         options.Authority = builder.Configuration["APP_SERVICE_AUTH_AUTHORITY"];
     if (!string.IsNullOrWhiteSpace(builder.Configuration["APP_SERVICE_AUTH_AUDIENCE"]))
         options.Audience = builder.Configuration["APP_SERVICE_AUTH_AUDIENCE"];
-    if (bool.TryParse(builder.Configuration["APP_SERVICE_AUTH_BYPASS_SIGNATURE_VALIDATION"], out var bypass))
-        options.BypassSignatureValidation = bypass;
     if (bool.TryParse(builder.Configuration["APP_SERVICE_AUTH_REQUIRE_HTTPS_METADATA"], out var requireHttps))
         options.RequireHttpsMetadata = requireHttps;
 });
@@ -39,6 +37,13 @@ var authMode = builder.Configuration["APP_SERVICE_AUTH_MODE"]
     ?? builder.Configuration.GetSection(AppServiceAuthenticationOptions.SectionName)["Mode"]
     ?? "Stub";
 
+// Reject legacy test-only settings instead of allowing them to weaken deployed authentication.
+if (builder.Configuration.GetValue<bool>("APP_SERVICE_AUTH_BYPASS_SIGNATURE_VALIDATION")
+    || builder.Configuration.GetSection(AppServiceAuthenticationOptions.SectionName).GetValue<bool>("BypassSignatureValidation"))
+{
+    throw new InvalidOperationException("JWT signature validation bypass is not supported. Remove the bypass setting; tests must supply their own signing key through dependency injection.");
+}
+
 builder.Services.AddAuthorization();
 
 if (string.Equals(authMode, "ClaimsPrincipal", StringComparison.OrdinalIgnoreCase))
@@ -46,9 +51,6 @@ if (string.Equals(authMode, "ClaimsPrincipal", StringComparison.OrdinalIgnoreCas
     var authSection = builder.Configuration.GetSection(AppServiceAuthenticationOptions.SectionName);
     var authority = builder.Configuration["APP_SERVICE_AUTH_AUTHORITY"] ?? authSection["Authority"];
     var audience = builder.Configuration["APP_SERVICE_AUTH_AUDIENCE"] ?? authSection["Audience"];
-    var bypassValidation = builder.Configuration.GetValue<bool?>("APP_SERVICE_AUTH_BYPASS_SIGNATURE_VALIDATION")
-        ?? authSection.GetValue<bool?>("BypassSignatureValidation")
-        ?? false;
     var requireHttpsMetadata = builder.Configuration.GetValue<bool?>("APP_SERVICE_AUTH_REQUIRE_HTTPS_METADATA")
         ?? authSection.GetValue<bool?>("RequireHttpsMetadata")
         ?? true;
@@ -66,29 +68,16 @@ if (string.Equals(authMode, "ClaimsPrincipal", StringComparison.OrdinalIgnoreCas
             }
             options.RequireHttpsMetadata = requireHttpsMetadata;
 
-            if (bypassValidation)
+            options.TokenValidationParameters = new TokenValidationParameters
             {
-                options.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateIssuerSigningKey = false,
-                    SignatureValidator = (token, _) => new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(token),
-                    ValidateIssuer = false,
-                    ValidateAudience = false,
-                    ValidateLifetime = false,
-                    RequireSignedTokens = false
-                };
-            }
-            else
-            {
-                options.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateIssuer = !string.IsNullOrWhiteSpace(authority),
-                    ValidIssuer = authority,
-                    ValidateAudience = !string.IsNullOrWhiteSpace(audience),
-                    ValidAudience = audience,
-                    ValidateLifetime = true
-                };
-            }
+                ValidateIssuerSigningKey = true,
+                RequireSignedTokens = true,
+                ValidateIssuer = !string.IsNullOrWhiteSpace(authority),
+                ValidIssuer = authority,
+                ValidateAudience = !string.IsNullOrWhiteSpace(audience),
+                ValidAudience = audience,
+                ValidateLifetime = true
+            };
         });
 
     builder.Services.AddSingleton<IAppServiceCallerResolver, ClaimsPrincipalAppServiceCallerResolver>();
@@ -117,6 +106,11 @@ builder.Services.Configure<WorkflowClientOptions>(options =>
     if (!string.IsNullOrWhiteSpace(builder.Configuration["WORKFLOW_AUTH_AUDIENCE"]))
         options.EntraAudience = builder.Configuration["WORKFLOW_AUTH_AUDIENCE"];
 });
+builder.Services.AddOptions<WorkflowClientOptions>()
+    .Validate(options => options.FunctionKey is null
+        || !options.FunctionKey.TrimStart().StartsWith("@Microsoft.KeyVault(", StringComparison.OrdinalIgnoreCase),
+        "The workflow Function key reference has not been resolved. Check the App Service Key Vault reference configuration.")
+    .ValidateOnStart();
 
 var uamiClientId = builder.Configuration["APP_SERVICE_UAMI_CLIENT_ID"];
 if (!string.IsNullOrWhiteSpace(uamiClientId))

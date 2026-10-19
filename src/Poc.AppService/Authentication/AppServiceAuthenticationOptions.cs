@@ -39,9 +39,4 @@ public sealed class AppServiceAuthenticationOptions
     /// Whether HTTPS is required for metadata addresses or authority. Defaults to true.
     /// </summary>
     public bool RequireHttpsMetadata { get; set; } = true;
-
-    /// <summary>
-    /// When true, bypasses signature validation (useful for local development and unit tests).
-    /// </summary>
-    public bool BypassSignatureValidation { get; set; }
 }

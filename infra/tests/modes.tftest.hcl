@@ -50,6 +50,12 @@ mock_provider "azurerm" {
       client_id    = "88888888-8888-8888-8888-888888888888"
     }
   }
+  mock_data "azurerm_user_assigned_identity" {
+    defaults = {
+      principal_id = "99999999-9999-9999-9999-999999999999"
+      client_id    = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    }
+  }
   mock_resource "azurerm_storage_account" {
     defaults = {
       id                    = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Storage/storageAccounts/poctest001"
@@ -108,13 +114,14 @@ mock_provider "azurerm" {
 }
 
 variables {
-  validation_vm_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA fixture"
-  subscription_id              = "00000000-0000-0000-0000-000000000000"
-  resource_group_name          = "shared-rg"
-  name_suffix                  = "test001"
-  batch_account_id             = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/batch-rg/providers/Microsoft.Batch/batchAccounts/testbatch"
-  batch_endpoint               = "https://testbatch.test-region.batch.azure.com"
-  batch_pool_id                = "shared-windows"
+  app_service_workflow_function_key_secret_uri = "https://test-vault.vault.azure.net/secrets/workflow-key"
+  validation_vm_ssh_public_key                 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA fixture"
+  subscription_id                              = "00000000-0000-0000-0000-000000000000"
+  resource_group_name                          = "shared-rg"
+  name_suffix                                  = "test001"
+  batch_account_id                             = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/batch-rg/providers/Microsoft.Batch/batchAccounts/testbatch"
+  batch_endpoint                               = "https://testbatch.test-region.batch.azure.com"
+  batch_pool_id                                = "shared-windows"
 }
 
 run "workflow_auth_default_is_opt_in" {
@@ -753,7 +760,7 @@ run "app_service_enabled_provisions_isolated_resources" {
     error_message = "App service must provision workflow-input container and grant Storage Blob Data Contributor to UAMI."
   }
   assert {
-    condition     = azurerm_linux_web_app.app_service[0].app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "" && output.deployment.enable_app_service == true
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_INPUT_CONTAINER == "workflow-input" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "@Microsoft.KeyVault(SecretUri=${var.app_service_workflow_function_key_secret_uri})" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "" && output.deployment.enable_app_service == true
     error_message = "App service app_settings must reference Function URL, Storage endpoint, and default FunctionKey auth mode without secrets."
   }
 }
@@ -773,8 +780,8 @@ run "existing_with_custom_uami" {
     existing_batch_pool_uami_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/shared-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/existing-uami"
   }
   assert {
-    condition     = azurerm_linux_function_app.poc.app_settings.BATCH_POOL_UAMI_RESOURCE_ID == var.existing_batch_pool_uami_resource_id && length(azurerm_role_assignment.batch_pool_blob_reader) == 0 && length(azurerm_role_assignment.batch_pool_blob_output_contributor) == 0
-    error_message = "Function app settings must use the specified existing Batch pool UAMI resource ID and not create new pool role assignments."
+    condition     = azurerm_linux_function_app.poc.app_settings.BATCH_POOL_UAMI_RESOURCE_ID == var.existing_batch_pool_uami_resource_id && length(azurerm_role_assignment.batch_pool_blob_reader) == 1 && length(azurerm_role_assignment.batch_pool_blob_output_contributor) == 1 && azurerm_role_assignment.batch_pool_blob_reader[0].principal_id == "99999999-9999-9999-9999-999999999999" && azurerm_role_assignment.batch_pool_blob_output_contributor[0].principal_id == "99999999-9999-9999-9999-999999999999" && length(azurerm_batch_pool.poc) == 0
+    error_message = "The existing pool identity must get storage roles on the new storage without changing the existing pool."
   }
 }
 
@@ -790,21 +797,53 @@ run "app_service_with_entra_auth" {
     workflow_auth_required_app_role       = "Workflow.Invoke"
   }
   assert {
-    condition     = azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "EntraBearer" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "api://workflow" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == ""
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "EntraBearer" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_AUDIENCE == "api://workflow" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "@Microsoft.KeyVault(SecretUri=${var.app_service_workflow_function_key_secret_uri})"
     error_message = "App service should resolve EntraBearer and audience from workflow auth configuration."
   }
 }
 
 run "app_service_with_explicit_auth_settings" {
-  command = plan
+  command = apply
   variables {
-    enable_app_service                = true
-    app_service_workflow_auth_mode    = "FunctionKey"
-    app_service_workflow_function_key = "dummy_secret_key"
+    enable_app_service             = true
+    app_service_workflow_auth_mode = "FunctionKey"
   }
   assert {
-    condition     = azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "dummy_secret_key"
-    error_message = "App service should use explicit auth mode and function key."
+    condition     = azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_AUTH_MODE == "FunctionKey" && azurerm_linux_web_app.app_service[0].app_settings.WORKFLOW_FUNCTION_KEY == "@Microsoft.KeyVault(SecretUri=${var.app_service_workflow_function_key_secret_uri})" && azurerm_linux_web_app.app_service[0].key_vault_reference_identity_id == azurerm_user_assigned_identity.app_service[0].id
+    error_message = "App service must use a Key Vault reference resolved with its assigned identity, never the key value."
   }
+}
+
+run "raw_function_key_rejected" {
+  command = plan
+  variables {
+    app_service_workflow_function_key = "test-only-rejection-marker"
+  }
+  expect_failures = [var.app_service_workflow_function_key]
+}
+
+run "app_service_requires_secret_reference" {
+  command = plan
+  variables {
+    enable_app_service                           = true
+    app_service_workflow_function_key_secret_uri = null
+  }
+  expect_failures = [var.app_service_workflow_function_key_secret_uri]
+}
+
+run "function_key_secret_reference_rejects_query" {
+  command = plan
+  variables {
+    app_service_workflow_function_key_secret_uri = "https://test-vault.vault.azure.net/secrets/workflow-key?sig=test-only"
+  }
+  expect_failures = [var.app_service_workflow_function_key_secret_uri]
+}
+
+run "existing_pool_identity_in_another_subscription_rejected" {
+  command = plan
+  variables {
+    existing_batch_pool_uami_resource_id = "/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/resourceGroups/shared-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/existing-uami"
+  }
+  expect_failures = [var.existing_batch_pool_uami_resource_id]
 }
 

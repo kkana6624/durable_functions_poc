@@ -111,6 +111,13 @@ exit 0
 }
 "@
     Set-Content -LiteralPath $configPath -Value $config -Encoding UTF8
+    # A rejected key must not reach a tool, environment identity, tfvars, plan or log.
+    $rawKeyConfig=$config.Replace("batch_mode='existing'", "batch_mode='existing'; app_service_workflow_function_key='test-only-rejection-marker'")
+    Set-Content -LiteralPath $configPath -Value $rawKeyConfig -Encoding UTF8
+    Assert-Fails { & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'raw-key-rejected' -ConfigFile $configPath -PlanOnly } 'Raw Function keys are not supported'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $temporary '.deploy/raw-key-rejected'))) 'Raw key rejection must happen before any deployment artifact is created'
+    Assert-True (-not (Test-Path -LiteralPath $env:POC_FAKE_TRACE)) 'Raw key rejection must happen before any tool invocation'
+    Set-Content -LiteralPath $configPath -Value $config -Encoding UTF8
     & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'offline' -ConfigFile $configPath -PlanOnly
     Assert-True ($env:Path -eq $oldPath) 'Deployment must restore the caller PATH after PlanOnly'
     $trace=Get-Content -LiteralPath $env:POC_FAKE_TRACE

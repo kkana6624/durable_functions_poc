@@ -17,6 +17,7 @@ $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $config = Import-PowerShellDataFile -LiteralPath (Resolve-Path -LiteralPath $ConfigFile).Path
 if (-not $config.ContainsKey('Terraform') -or -not $config.ContainsKey('Backend')) { throw 'Config must contain Terraform and Backend tables.' }
 $variables = $config.Terraform
+Assert-DeploymentSecretReferences -Variables $variables
 $workflowAuth = Get-DeploymentWorkflowAuthSettings -Variables $variables -Smoke:$Smoke
 foreach ($key in $workflowAuth.Keys) { $variables[$key] = $workflowAuth[$key] }
 foreach ($key in @('subscription_id', 'resource_group_name', 'name_suffix')) {

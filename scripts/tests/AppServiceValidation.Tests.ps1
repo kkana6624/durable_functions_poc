@@ -442,6 +442,50 @@ Describe "Invoke-AppServiceValidation" {
     }
 
     Context "Blob アップロードおよび Finalize 整合性検証 (Scenario 1.5 & Scenario 2)" {
+        It "Uploads through the native CLI with a temporary payload path containing spaces" {
+            $probeRoot = Join-Path ([IO.Path]::GetTempPath()) ('poc-upload-' + [Guid]::NewGuid().ToString('N'))
+            $probeDir = Join-Path $probeRoot 'temporary files with spaces'
+            $null = New-Item -ItemType Directory -Path $probeDir -Force
+            $oldTemp = $env:TEMP
+            $oldTmp = $env:TMP
+            $oldPath = $env:Path
+            try {
+                $fakeAz = Join-Path $probeDir 'az.cmd'
+                @'
+@echo off
+setlocal
+:next
+if "%~1"=="" exit /b 71
+if "%~1"=="--file" goto payload
+shift
+goto next
+:payload
+shift
+if not exist "%~1" exit /b 72
+for %%F in ("%~1") do if not "%%~zF"=="1024" exit /b 73
+if "%~2"=="--overwrite" exit /b 0
+exit /b 74
+'@ | Set-Content -LiteralPath $fakeAz -Encoding ASCII
+                $env:TEMP = $probeDir
+                $env:TMP = $probeDir
+                $env:Path = $probeDir + [IO.Path]::PathSeparator + $oldPath
+                $result = & $scriptPath -AppServiceUrl 'https://example.com' -StorageAccountName 'teststorage' -HttpHandler (New-DefaultFakeHttpHandler) -PollIntervalSeconds 0 -TimeoutSeconds 10
+                $result.Scenarios.UploadBlob.UploadMethod | Should Be 'AzCli'
+                $result.Scenarios.UploadBlob.Passed | Should Be $true
+                $result.AllScenariosPassed | Should Be $true
+                @(Get-ChildItem -LiteralPath $probeDir -Filter '*.tmp').Count | Should Be 0
+            } finally {
+                $env:TEMP = $oldTemp
+                $env:TMP = $oldTmp
+                $env:Path = $oldPath
+                $resolved = [IO.Path]::GetFullPath($probeRoot)
+                $expectedParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+                if ($resolved.StartsWith($expectedParent, [StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved) -like 'poc-upload-*') {
+                    Remove-Item -LiteralPath $resolved -Recurse -Force
+                }
+            }
+        }
+
         It "Invokes custom BlobUploader with correct parameters (Container, BlobKey, 1024-byte payload, accurate SHA-256)" {
             $recorded = @{}
             $uploader = {

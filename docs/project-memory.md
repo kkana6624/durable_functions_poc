@@ -1,5 +1,14 @@
 # プロジェクトメモリ
 
+## 2026-10-19 再レビュー6件の修正（JWT署名・既存Pool RBAC・Finalize固定版/競合・Key Vault参照・CLI空白パス）
+
+- JWT の署名バイパスを実行コードと公開 Options から撤去しました。旧 bypass 設定が true の場合は全環境で起動拒否し、テストは DI で署名鍵・ローカル metadata のみを供給して実際の JWT 検証を行います。Production の正常署名・未署名・別署名鍵・期限・issuer/audience 不一致を回帰確認しました。
+- 既存 Batch Pool に割り当て済みの UAMI は、同一 subscription の data source から principal ID を取得し、新規 Storage に入力 Reader と出力コンテナ Contributor を付与します。既存 Pool 自体は変更しません。新規 Pool モードの role assignment のアドレスは維持しています。
+- Finalize は既存 ID を維持しつつ owner/org、container/key、size/hash と明示された VersionId/ETag を照合します。異なる固定版・組織の再利用は 409、同一入力の同時保存は勝者を再読取し、作成日時差を除いた固定 Blob identity が一致すると同じ応答へ解決します。
+- Function Key の実値を受ける旧 Terraform 変数は廃止扱いとし、`deploy.ps1` は配置成果物・ログを作る前に拒否、Terraform の直接実行でも変数検証で拒否します。`app_service_workflow_function_key_secret_uri` に既存 Key Vault の参照だけを渡し、App Service UAMI で解決します。参照が未解決のままアプリに届いた場合も固定メッセージで起動拒否します。Vault 側の外部権限付与・ネットワーク・初回配置順序・旧成果物の扱いは `docs/workflow-authentication-design.md` に記録しました。
+- 統合検証スクリプトの Azure CLI 呼び出しはネイティブ引数配列で行い、一時ファイルパスの空白を保持します。空白入りの一時ディレクトリと fake `az.cmd` を使い、実際の引数受け渡し・1024 byte のファイル読取・一時ファイル削除を確認しました。
+- ローカル検証: .NET Release 435 件、Terraform Mock 49 件、PowerShell オフライン全 10 スイート（App Service Pester 18 件を含む）、`terraform validate` / `fmt -check` / `git diff --check` がすべて成功。Azure への配置・構成変更・実機検証は行っていません。
+
 ## 2026-10-19 レビュー指摘 P2 3件（ClaimsPrincipal JWT認証処理追加・Finalize決定論的Manifest採番と冪等化・統合検証スクリプト実Blobアップロード対応）の改修完了
 
 レビューで指摘された P2 3 件の課題（[P2] ClaimsPrincipal モードでの JWT 認証処理欠落による 401 エラー、[P2] Finalize 再送時のランダム GUID 採番による 409 競合、[P2] 統合検証スクリプトでの実 Blob アップロード未実施およびサイズ/ハッシュ不整合）を改修し、全 .NET 単体・結合テスト（408件全件）、Terraform テスト（45件全件）、および PowerShell オフライン全テスト（10 スイート 28 グループ全件）の完全合格を確認しました。
