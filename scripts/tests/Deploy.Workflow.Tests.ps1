@@ -11,6 +11,7 @@ $oldTrace=$env:POC_FAKE_TRACE
 $oldDefault=$env:POC_FAKE_DEFAULT
 $oldRequest=$env:POC_FAKE_REQUESTID
 $oldBackend=$env:POC_FAKE_BACKEND
+$oldPrivateBatch=$env:POC_FAKE_PRIVATE_BATCH
 $oldPath=$env:Path
 try {
     foreach ($file in @('deploy.ps1','Deployment.Common.ps1','Test-Deployment.ps1','Validation.Assertions.ps1','Invoke-PrivateVmOperation.ps1')) {
@@ -57,7 +58,11 @@ exit 0
 if (($env:Path -split [regex]::Escape([string][IO.Path]::PathSeparator))[0] -ne $PSScriptRoot) { throw 'Terraform must inherit the configured Azure CLI directory in PATH.' }
 if ('show' -in $args) { '{"resource_changes":[]}' }
 elseif ('output' -in $args) {
-    '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null,"validation_vm_name":"poc-vm","vm_control_container_name":"vm-control","function_private_ip":"10.20.2.4"}'
+    if ($env:POC_FAKE_PRIVATE_BATCH -eq 'true') {
+        '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null,"validation_vm_name":"poc-vm","vm_control_container_name":"vm-control","function_private_ip":"10.20.2.4","batch_private_ip":"10.20.2.5"}'
+    } else {
+        '{"subscription_id":"target-subscription","resource_group_name":"poc-rg","function_app_name":"poc-app","function_app_url":"https://poc.example","storage_account_name":"pocstorage","blob_container_name":"poc-results","blob_endpoint":"https://pocstorage.blob.core.windows.net/","batch_endpoint":"https://batch.example","batch_pool_id":"pool","batch_account_name":"account","batch_resource_group_name":"batch-rg","batch_node_count":null,"validation_vm_name":"poc-vm","vm_control_container_name":"vm-control","function_private_ip":"10.20.2.4"}'
+    }
 }
 else { 'fake terraform success' }
 exit 0
@@ -134,6 +139,18 @@ exit 0
     Assert-True ($validate -ge 0 -and $trace[$validate] -match 'smoke=True timeout=60') 'Smoke switch and configured timeout must survive dot-sourcing and reach the VM'
     Assert-True (@($trace | Where-Object { $_ -match '^az rest .*?/nodes\?' }).Count -eq 0) 'Existing pool smoke must submit tasks without a node-allocation precondition'
     Assert-True (($trace -join "`n") -notmatch 'PRIVATE-FUNCTION-KEY|code=PRIVATE') 'Trace must not contain Function or Durable status keys'
+    $env:POC_FAKE_PRIVATE_BATCH='true'
+    $privateBatchConfigPath=Join-Path $temporary 'private-batch-config.psd1'
+    $privateBatchConfig=$config.Replace("name_suffix='test01'","name_suffix='pvtbatch'")
+    Set-Content -LiteralPath $privateBatchConfigPath -Value $privateBatchConfig -Encoding UTF8
+    Clear-Content -LiteralPath $env:POC_FAKE_TRACE
+    & (Join-Path $temporary 'scripts/deploy.ps1') -Environment 'pvtbatch' -ConfigFile $privateBatchConfigPath
+    $trace=@(Get-Content -LiteralPath $env:POC_FAKE_TRACE)
+    $apply=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match 'terraform .* apply ' })
+    $pool=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation PoolValidation ' })
+    $deploy=[Array]::FindIndex($trace,[Predicate[string]]{ param($line) $line -match '^vm-operation Deploy ' })
+    Assert-True ($apply -ge 0 -and $pool -gt $apply -and $deploy -gt $pool) 'Private Batch deployment must execute PoolValidation on the private VM before Deploy'
+    $env:POC_FAKE_PRIVATE_BATCH='false'
     $bootstrapConfigPath=Join-Path $temporary 'bootstrap-config.psd1'
     $bootstrapConfig=$config.Replace('Create=$false',"Create=`$true; location='japaneast'; deployer_principal_id='deployer-object-id'")
     Set-Content -LiteralPath $bootstrapConfigPath -Value $bootstrapConfig -Encoding UTF8
@@ -214,5 +231,6 @@ exit 0
     $env:POC_FAKE_DEFAULT=$oldDefault
     $env:POC_FAKE_REQUESTID=$oldRequest
     $env:POC_FAKE_BACKEND=$oldBackend
+    $env:POC_FAKE_PRIVATE_BATCH=$oldPrivateBatch
     if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
 }

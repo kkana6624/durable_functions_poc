@@ -5,7 +5,7 @@ resource "azurerm_batch_account" "poc" {
   location                      = local.location
   pool_allocation_mode          = "BatchService"
   allowed_authentication_modes  = ["AAD"]
-  public_network_access_enabled = true
+  public_network_access_enabled = false
   tags                          = local.tags
 }
 data "azurerm_shared_image_version" "existing" {
@@ -26,6 +26,10 @@ resource "azurerm_batch_pool" "poc" {
   max_tasks_per_node             = var.batch_max_tasks_per_node
   inter_node_communication       = "Disabled"
   target_node_communication_mode = "Simplified"
+  network_configuration {
+    subnet_id                        = azurerm_subnet.batch_nodes.id
+    public_address_provisioning_type = "NoPublicIPAddresses"
+  }
   dynamic "fixed_scale" {
     for_each = var.batch_scale_mode == "fixed" ? [1] : []
     content {

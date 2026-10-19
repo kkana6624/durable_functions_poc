@@ -142,6 +142,13 @@ try {
     $script:transportFailureStage='function_validation'
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation FunctionValidation -EvidenceDirectory $evidence } 'stage=function_validation; raw output suppressed'
     $script:transportFailureStage=$null
+    $script:transportExit=0
+    $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation PoolValidation -EvidenceDirectory $evidence -TimeoutSeconds 60
+    Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.operation -eq 'PoolValidation') 'PoolValidation should execute and return success'
+    $script:transportExit=1
+    $script:transportFailureStage='pool_validation'
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation PoolValidation -EvidenceDirectory $evidence } 'stage=pool_validation; raw output suppressed'
+    $script:transportFailureStage=$null
     $script:transportExit=2
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('admission20') -EvidenceDirectory $evidence
     Assert-True ($result.exit_code -eq 2) 'Validate must preserve NotRun exit code 2'

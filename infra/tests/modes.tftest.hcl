@@ -471,12 +471,12 @@ run "new_marketplace_creates_dedicated_resources" {
     error_message = "New mode must create isolated Batch resources and the explicitly requested RG."
   }
   assert {
-    condition     = azurerm_batch_account.poc[0].pool_allocation_mode == "BatchService" && azurerm_batch_account.poc[0].allowed_authentication_modes == toset(["AAD"])
-    error_message = "New Batch accounts must use BatchService and AAD only."
+    condition     = azurerm_batch_account.poc[0].pool_allocation_mode == "BatchService" && azurerm_batch_account.poc[0].allowed_authentication_modes == toset(["AAD"]) && azurerm_batch_account.poc[0].public_network_access_enabled == false
+    error_message = "New Batch accounts must use BatchService, AAD only, and have public network access disabled."
   }
   assert {
-    condition     = azurerm_batch_pool.poc[0].target_node_communication_mode == "Simplified" && azurerm_batch_pool.poc[0].fixed_scale[0].target_dedicated_nodes == 2 && azurerm_batch_pool.poc[0].fixed_scale[0].target_low_priority_nodes == 0 && azurerm_batch_pool.poc[0].max_tasks_per_node == 3 && length(azurerm_monitor_diagnostic_setting.batch) == 1
-    error_message = "Pool sizing, Simplified communication and opt-in diagnostics must be wired."
+    condition     = azurerm_batch_pool.poc[0].target_node_communication_mode == "Simplified" && azurerm_batch_pool.poc[0].fixed_scale[0].target_dedicated_nodes == 2 && azurerm_batch_pool.poc[0].fixed_scale[0].target_low_priority_nodes == 0 && azurerm_batch_pool.poc[0].max_tasks_per_node == 3 && length(azurerm_monitor_diagnostic_setting.batch) == 1 && length(azurerm_batch_pool.poc[0].network_configuration) == 1 && azurerm_batch_pool.poc[0].network_configuration[0].public_address_provisioning_type == "NoPublicIPAddresses" && azurerm_batch_pool.poc[0].network_configuration[0].subnet_id == azurerm_subnet.batch_nodes.id
+    error_message = "Pool sizing, Simplified communication, opt-in diagnostics, and subnet integration with NoPublicIPAddresses must be wired."
   }
   assert {
     condition     = azurerm_batch_pool.poc[0].storage_image_reference[0].version == "20348.2527.240607" && length(data.azurerm_shared_image_version.existing) == 0

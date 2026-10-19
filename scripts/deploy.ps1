@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[a-z][a-z0-9-]{0,30}$')][string] $Environment,
     [Parameter(Mandatory)][string] $ConfigFile,
     [switch] $PlanOnly,
-    [switch] $Smoke
+    [switch] $Smoke,
+    [switch] $AllowBatchPoolRecreation
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -172,12 +173,17 @@ try {
     $plan = Join-Path $run 'deployment.tfplan'
     $null = Invoke-Tool $terraform @('-chdir=infra', 'plan', '-input=false', "-var-file=$variablesPath", "-out=$plan") -LogPath (Join-Path $run 'plan.log')
     $planJson = Invoke-Tool $terraform @('-chdir=infra', 'show', '-json', $plan) | ConvertFrom-Json
-    Assert-DeploymentPlan -Plan $planJson -BatchMode $variables.batch_mode
+    Assert-DeploymentPlan -Plan $planJson -BatchMode $variables.batch_mode -AllowBatchPoolRecreation:$AllowBatchPoolRecreation
     if ($PlanOnly) { Write-Host "Plan saved to $plan. No apply or code deployment performed."; return }
     Write-Host 'Applying infrastructure...'
     $null = Invoke-Tool $terraform @('-chdir=infra', 'apply', '-input=false', $plan) -LogPath (Join-Path $run 'apply.log')
     $outputs = ConvertTo-DeploymentHashtable (Invoke-Tool $terraform @('-chdir=infra', 'output', '-json', 'deployment') | ConvertFrom-Json)
-    $null = Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $timeout
+    if ($outputs.ContainsKey('batch_private_ip') -and $outputs.batch_private_ip) {
+        Write-Host 'Verifying Batch pool readiness from the validation VM...'
+        $null = Invoke-PrivateVmOperation -Outputs $outputs -Operation PoolValidation -EvidenceDirectory (Join-Path $run 'private-vm-pool-validation') -TimeoutSeconds $timeout
+    } else {
+        $null = Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $timeout
+    }
 
     Write-Host 'Deploying the private Function package from the validation VM...'
     $null = Invoke-PrivateVmOperation -Outputs $outputs -Operation Deploy -PackagePath $zip -PackageSha256 $packageSha -AssemblySha256 $assemblySha -PackageContentSha256 $packageContentSha -EvidenceDirectory (Join-Path $run 'private-vm-deploy') -TimeoutSeconds $timeout

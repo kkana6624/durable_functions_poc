@@ -33,6 +33,13 @@ function Assert-PrivateFunctionDns([hashtable]$Outputs) {
     }
 }
 
+function Assert-PrivateBatchDns([hashtable]$Outputs) {
+    if (-not $Outputs.ContainsKey('batch_private_ip') -or [string]::IsNullOrWhiteSpace([string]$Outputs.batch_private_ip)) { return }
+    $hostName=([Uri]$Outputs.batch_endpoint).DnsSafeHost
+    $addresses=@([Net.Dns]::GetHostAddresses($hostName) | ForEach-Object { $_.IPAddressToString })
+    if ($addresses.Count -eq 0 -or @($addresses | Where-Object { $_ -ne $Outputs.batch_private_ip }).Count -gt 0) { throw 'Batch DNS did not resolve exclusively to the expected Private Endpoint IP.' }
+}
+
 function Assert-PrivateFunctionConnectivity([hashtable]$Outputs, [int]$TimeoutSeconds) {
     $workflowUri = [string]$Outputs.function_app_url.TrimEnd('/') + '/api/workflows'
     $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -123,6 +130,7 @@ $result=@{ operation_id=[string]$request.operation_id; operation=[string]$reques
 $stage='dns'
 try {
     Assert-PrivateFunctionDns $outputs
+    Assert-PrivateBatchDns $outputs
     if ($request.operation -eq 'Deploy') {
         $stage='package_integrity'
         $package=Join-Path $PSScriptRoot 'functions.zip'
@@ -130,6 +138,13 @@ try {
         $stage='scm_publish'
         Publish-PrivateFunctionPackage $outputs $package ([int]$request.timeout_seconds)
         $result.package_sha256=$request.package_sha256
+        $result.exit_code=0
+    } elseif ($request.operation -eq 'PoolValidation') {
+        $watch=[Diagnostics.Stopwatch]::StartNew()
+        $remaining=[Math]::Max(1,[Math]::Floor([int]$request.timeout_seconds-$watch.Elapsed.TotalSeconds))
+        $stage='pool_validation'
+        $poolValidation=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $remaining
+        $result.pool_validation=$poolValidation
         $result.exit_code=0
     } elseif ($request.operation -eq 'FunctionValidation') {
         $watch=[Diagnostics.Stopwatch]::StartNew()

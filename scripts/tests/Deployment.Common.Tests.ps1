@@ -16,7 +16,11 @@ Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azur
 Assert-DeploymentPlan -Plan ([pscustomobject]@{}) -BatchMode existing
 Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_batch_pool' @('create'))) }) -BatchMode new
 Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_batch_pool' @('update'))) }) -BatchMode existing } 'must not change'
+Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_batch_pool' @('delete','create'))) }) -BatchMode new -AllowBatchPoolRecreation
+Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_batch_pool' @('delete','create'))) }) -BatchMode new } 'delete or replace'
+Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_batch_pool' @('delete','create'))) }) -BatchMode existing -AllowBatchPoolRecreation } 'must not change'
 Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_linux_function_app' @('delete','create'))) }) -BatchMode new } 'delete or replace'
+Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_linux_function_app' @('delete','create'))) }) -BatchMode new -AllowBatchPoolRecreation } 'delete or replace'
 Assert-Fails { Assert-DeploymentPlan -Plan ([pscustomobject]@{ resource_changes=@((Change 'azurerm_shared_image' @('create'))) }) -BatchMode new } 'reference-only'
 $converted=ConvertTo-DeploymentHashtable ([pscustomobject]@{ outer=[pscustomobject]@{ values=@('a','b') } })
 Assert-True ($converted -is [hashtable] -and $converted.outer -is [hashtable] -and $converted.outer.values.Count -eq 2) 'JSON conversion should preserve nested arrays'

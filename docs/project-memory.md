@@ -1,5 +1,41 @@
 # プロジェクトメモリ
 
+## 2026-10-19 B案フェーズ3: Azure Batch Pool VNet 統合（NoPublicIPAddresses）& Batch Account パブリックアクセス完全遮断の Azure 実機完全合格（B案 100% 完遂）
+
+B案フェーズ3（Azure Batch Pool の VNet サブネット統合／パブリック IP なし構成、および Azure Batch Account のパブリックネットワークアクセス完全遮断）を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`、Batch Account: `pocdf40481149batch`）に適用し、再デプロイおよび閉域検証 VM からの完全実機検証を実施して、**全項目完全合格（Pass、終了コード 0）** を確認しました。これにより **B案（フェーズ1・2・3）が 100% 完遂** しました。
+
+- **対応内容詳細**:
+  1. **Azure Batch Pool の VNet サブネット統合 & `NoPublicIPAddresses`**:
+     - `azurerm_batch_pool.poc` に `network_configuration` ブロックを追加し、`subnet_id = azurerm_subnet.batch_nodes.id`（`10.80.4.0/24`）および `public_address_provisioning_type = "NoPublicIPAddresses"` を適用。
+     - Simplified ノード通信モードにより、ノード用受信 NSG ルールを一切持たず、ノード管理通信は VNet 内の `nodeManagement` Private Endpoint（`10.80.2.6`）経由、外部通信（KMS・パッケージ）は NAT Gateway 経由のアウトバウンドのみで安全に稼働。
+  2. **Azure Batch Account パブリックアクセス完全遮断**:
+     - `azurerm_batch_account.poc` に `public_network_access_enabled = false` を設定。パブリックインターネットからの Batch REST API 呼び出しを完全に遮断。
+  3. **デプロイ・運用スクリプトの安全機構と閉域ルーティング**:
+     - `scripts/Deployment.Common.ps1` の `Assert-DeploymentPlan` に `[switch]$AllowBatchPoolRecreation` を新設。BatchMode = 'new' かつ明示的なオプトイン時のみ `azurerm_batch_pool` の置換（ForceNew）を許可し、他リソースの意図せぬ削除を厳格に阻止。
+     - Batch パブリックアクセス遮断に伴い、オペレータ端末からの直接 Batch REST API 呼び出しが 403 Forbidden となるため、`scripts/deploy.ps1` においてプール健全性待機を閉域検証 VM 経由（`Invoke-PrivateVmOperation -Operation PoolValidation`）へ切り替え。
+     - `scripts/PrivateVm.Worker.ps1` に `Assert-PrivateBatchDns`（Batch FQDN が `10.80.2.5` に解決されることの事前確認）および `PoolValidation` ハンドラー（ARM / Batch REST による steady/succeeded 待機）を実装。
+  4. **IaC & テスト網羅**:
+     - `infra/tests/modes.tftest.hcl` に `public_network_access_enabled == false` および `NoPublicIPAddresses` のアサーションを追加（Terraform Test 37/37 全件 Pass、`terraform fmt -check` Pass）。
+     - `scripts/tests/Deployment.Common.Tests.ps1`, `PrivateVm.Tests.ps1`, `Deploy.Workflow.Tests.ps1` に `PoolValidation` およびプール再作成許可テストを追加（PowerShell オフライン試験 8 スイート全件 Pass、`dotnet test` 294 件 Pass）。
+- **Azure 実機デプロイ成果**: `.deploy/poc/20261019-131731-6874`
+  - インフラ差分: 1 to add / 2 to change / 1 to destroy（プール再作成と Batch Account パブリックアクセス遮断）。
+  - プール健全性確認: 閉域検証 VM から Private Endpoint（`10.80.2.5`）経由でプールが `steady` かつ `succeeded` に達したことを確認。
+  - Function パッケージ再配置および再起動後、15 関数全件のインデックス登録・HTTP 疎通を確認してデプロイ完了（終了コード 0）。
+- **実機 ARM / Batch 状態検証**:
+  - `az batch account show`: `publicNetworkAccess: "Disabled"` を確認。
+  - `az rest --method get --url .../pools/poc-df40481149-pool`:
+    - `provisioningState: "Succeeded"`
+    - `allocationState: "Steady"`
+    - `networkConfiguration.subnetId: ".../subnets/batch-nodes"`
+    - `publicIPAddressConfiguration.provision: "NoPublicIPAddresses"`
+- **実機検証エビデンス**: `artifacts/private-auth-validation/20261019-042651-0796/summary.json`（終了コード 0、Pass）
+  - **未認証遮断（401）**: `anonymous`, `keyOnly`, `forgedPrincipal`, `bearerWithoutKey` の計12プローブすべてで HTTP 401 遮断を確認。
+  - **Audience 不正遮断（401）**: ARM 向けトークンに対し EasyAuth による HTTP 401 遮断を全3 API で確認。
+  - **App Role 不足遮断（403）**: `Workflow.Execute` を持たないユーザー割り当てマネージド ID からの要求に対し、`EntraEasyAuthCallerResolver` による HTTP 403 Forbidden 遮断を全3 API で厳密に確認。
+  - **所有者伝播認可（403）**: 認可トークン存在下での所有者ヘッダー欠落・他者指定に対し HTTP 403 遮断を確認。
+  - **正常系・完全閉域完走（202/200）**: VNet 統合された Function App から Batch Private Endpoint を経由してパブリックアクセス遮断下の Batch Account に Job を作成し、`NoPublicIPAddresses` の閉域ノード上で Task 実行・結果回収・マニフェスト集約を完走し、200 結果取得を確認。
+  - **稼働パッケージ同定（Pass）**: 実機レスポンスヘッダー `livePackageSha256`（`15b78402...`）とデプロイコンテンツ指紋、および `liveAssemblySha256`（`ca3b1382...`）とデプロイアセンブリハッシュが完全一致し、`livePackageVerified: true` を確認。
+
 ## 2026-10-19 B案フェーズ2: Azure Functions Regional VNet Integration & Azure Batch Private Endpoints 実機完全合格
 
 B案フェーズ2（Azure Functions の Regional VNet 統合および Azure Batch Account の Private Endpoint 化）を実 Azure 環境（`poc-durable-batch-rg`、Function App: `poc-df40481149-func`、閉域検証 VM: `poc-df40481149-validation`）に適用し、再デプロイおよび閉域検証 VM からの完全実機検証を実施して、**全項目完全合格（Pass、終了コード 0）** を確認しました。

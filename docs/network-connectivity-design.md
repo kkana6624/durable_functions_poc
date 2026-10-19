@@ -2,27 +2,29 @@
 
 更新日: 2026-10-19
 
-個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、15 Functions（`CancelWorkflow` 含む）の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオおよび利用者キャンセルを含む全 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`）の Pass（コミット `b7ad854` 基準）、B案 Entra ID サービス間認証・認可の Pass（コミット `9ad401c` 基準）、ならびに **B案フェーズ2 Function 送信側 Regional VNet 統合および Batch Private Endpoints（`batchAccount` / `nodeManagement`）の Pass（コミット `119a088` 基準）** は実 Azure 実機検証（Azure Storage バックエンド）で確認済みです。また、過去の配置環境において Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）、および 0 台オートスケール Pool 先行投入（`V09`）の Pass も実機確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。Storage の全面閉域化（Blob/Queue/Table Private Endpoint）、Batch Pool の VNet サブネット統合（`NoPublicIPAddresses`）、および VPN / ExpressRoute 接続は後続フェーズで実施します。
+個人 PoC は、Azure VNet 内の RHEL 9 検証 VM から Function の Private Endpoint を呼び出す構成です。インフラ配置と VM 初期設定、Private SCM 配置、15 Functions（`CancelWorkflow` 含む）の登録、3 Task の HTTP 投入・結果回収・`sum=3` の集約、標準シナリオおよび利用者キャンセルを含む全 6 シナリオ（`single` / `three` / `classification` / `failure` / `conflict` / `cancellation`）の Pass（コミット `b7ad854` 基準）、B案 Entra ID サービス間認証・認可の Pass（コミット `9ad401c` 基準）、B案フェーズ2 Function 送信側 Regional VNet 統合および Batch Private Endpoints（`batchAccount` / `nodeManagement`）の Pass（コミット `119a088` 基準）、ならびに **B案フェーズ3 Batch Pool の VNet サブネット統合（`NoPublicIPAddresses`）および Batch Account パブリックアクセス完全遮断（`public_network_access_enabled = false`）の Pass（実 Azure 実機検証）** は確認済みです。また、過去の配置環境において Function App 再起動復旧（`V05`）、Function ホスト停止中の Batch 側 `MaxWallClockTime` 安全網（`V08`）、および 0 台オートスケール Pool 先行投入（`V09`）の Pass も実機確認済みです（`admission20` は起動履歴取得の制限により `NotRun`、summary 終了コード `2`）。Function および Batch Account の公開ネットワークアクセス `Disabled` と Private Endpoint 接続 `Approved` も確認済みです。Storage の全面閉域化（Blob/Queue/Table Private Endpoint）、実 C++ バイナリ連携（C案）、および VPN / ExpressRoute 接続は後続フェーズで実施します。
 
 ## 1. 今回の構成
 
-Batch の Windows 計算ノードは PoC 設定で Spot 1台・専用0台を要求します。Run Command の実行元となる RHEL 検証 VM は通常 VM のままとし、Spot 回収による配置・検証操作の中断を避けます。Function の受信用 Private Endpoint・NAT・DNS に加え、B案フェーズ2 で送信用 Regional VNet 統合サブネット（`functions-outbound`）および Batch Private Endpoints（`batchAccount` / `nodeManagement`）を導入済みです。Spot の容量と結果回収の制限は [IaC 設計](one-command-deployment-inventory.md) を参照してください。
+Batch の Windows 計算ノードは PoC 設定で Spot 1台・専用0台を要求します。Run Command の実行元となる RHEL 検証 VM は通常 VM のままとし、Spot 回収による配置・検証操作の中断を避けます。Function の受信用 Private Endpoint・NAT・DNS に加え、B案フェーズ2 で送信用 Regional VNet 統合サブネット（`functions-outbound`）および Batch Private Endpoints（`batchAccount` / `nodeManagement`）を導入、さらに B案フェーズ3 で Batch Pool ノードを `batch-nodes` サブネット（`10.80.4.0/24`）へ `NoPublicIPAddresses` 構成で統合し、Batch Account のパブリックアクセスを完全遮断済みです。Spot の容量と結果回収の制限は [IaC 設計](one-command-deployment-inventory.md) を参照してください。
 
 ```mermaid
 flowchart LR
     Local[認証済みローカル端末] --> ARM[ARM / VM Run Command]
     Local --> Blob[転送専用 Blob: bundle と安全な証跡]
     ARM --> VM[RHEL 9 検証 VM / Managed Identity]
-    VM --> PE[Function Private Endpoint]
+    VM --> PE[Function Private Endpoint: sites]
     PE --> Func[HTTP Trigger / Durable Functions]
     VM --> SCM[Private SCM / ZIP 配置]
     DNS[Private DNS: websites / batch] --> VM
     DNS --> Func
+    DNS --> BatchNodes
     Func --> VNetInt[Functions Outbound Subnet: 10.80.3.0/24]
     VNetInt --> BatchPE[Batch Private Endpoints: batchAccount / nodeManagement]
+    BatchNodes[Batch Nodes Subnet: 10.80.4.0/24 / NoPublicIP] --> BatchPE
     VNetInt --> NAT[NAT Gateway]
     VM --> NAT
-    BatchNodes[Batch Nodes Subnet: 10.80.4.0/24] --> NAT
+    BatchNodes --> NAT
     NAT --> Public[Entra / ARM / package repos / Storage]
 ```
 
@@ -33,12 +35,14 @@ flowchart LR
 | 外向き通信 | VM、Functions Outbound、および Batch Nodes の各 subnet に NAT Gateway を関連付け、明示的な outbound 経路を確保。NAT 用 Public IP は送信に使用 |
 | Function | 現行 B1 Dedicated plan を維持し、受信用 Private Endpoint、公開ネットワークアクセス無効化、および送信用 Regional VNet 統合（`virtual_network_subnet_id`、`vnet_route_all_enabled = true`）を構成 |
 | Batch Private Endpoint | Batch Account 操作用（サブリソース `batchAccount`、IP `10.80.2.5`）およびノード管理用（サブリソース `nodeManagement`、IP `10.80.2.6`）の Private Endpoint を `endpoints` サブネット内に作成 |
+| Batch Pool | `batch-nodes` サブネット（`10.80.4.0/24`）へ統合し、`NoPublicIPAddresses` でパブリック IP を完全排除。ノード管理は `nodeManagement` PE、外部アクセスは NAT Gateway 経由で通信 |
+| Batch Account | パブリックネットワークアクセスを完全無効化（`public_network_access_enabled = false`）。REST API 操作は `batchAccount` PE 経由に限定 |
 | DNS | `privatelink.azurewebsites.net` および `privatelink.batch.azure.com` の Private DNS Zone と VNet link を作成し、Function / SCM および Batch の通常ホスト名を Private IP へ解決 |
 | 操作 | ローカル端末から Azure Resource Manager 経由の VM Run Command を使用。VM への SSH 接続・VPN は不要 |
 | 認証 | VM 内で az login --identity。HTTP トリガーは EasyAuth v2 による Entra サービス間認証・App Role 認可および Function key 認証を併用し、キーと Durable 管理 URL はメモリ内で扱う |
-| 今回維持する公開通信 | Storage（Blob / Queue / Table）の公開データエンドポイント、Batch Account の公開アクセス（後続フェーズ3で Disabled 化予定）、ARM / Entra 認証、監視送信、cloud-init のパッケージ取得 |
+| 今回維持する公開通信 | Storage（Blob / Queue / Table）の公開データエンドポイント、ARM / Entra 認証、監視送信、cloud-init のパッケージ取得 |
 
-Function の受信用 Private Endpoint により受信を閉域化し、公開ネットワークアクセスを無効化しています。送信側については B案フェーズ2 において Function App の Regional VNet 統合（`functions-outbound` サブネット `10.80.3.0/24`、`vnet_route_all_enabled = true`）を構成し、Batch Account の Private Endpoint（`batchAccount` `10.80.2.5` および `nodeManagement` `10.80.2.6`）と Private DNS Zone `privatelink.batch.azure.com` への閉域到達性を構成・実 Azure 実機検証済みです（コミット `119a088` 基準）。Storage（Blob / Queue / Table）への送信は NAT Gateway 経由の公開エンドポイント通信を現時点では維持しており、後続フェーズで Storage Private Endpoint を導入します。B1 は受信用 Private Endpoint および送信用 Regional VNet 統合の双方に対応するプランです（[App Service Private Endpoint と SCM](https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint)、[VNet Integration](https://learn.microsoft.com/en-us/azure/app-service/overview-vnet-integration)）。
+Function の受信用 Private Endpoint により受信を閉域化し、公開ネットワークアクセスを無効化しています。送信側については B案フェーズ2・3 において Function App の Regional VNet 統合（`functions-outbound` サブネット `10.80.3.0/24`、`vnet_route_all_enabled = true`）を構成し、Batch Account の Private Endpoint（`batchAccount` `10.80.2.5` および `nodeManagement` `10.80.2.6`）と Private DNS Zone `privatelink.batch.azure.com` への閉域到達性を構成した上で、Batch Pool ノードの VNet 統合（`10.80.4.0/24`、`NoPublicIPAddresses`）および Batch Account パブリックアクセス遮断（`public_network_access_enabled = false`）を実 Azure 実機検証済みです。Storage（Blob / Queue / Table）への送信は NAT Gateway 経由の公開エンドポイント通信を現時点では維持しており、後続フェーズで Storage Private Endpoint を導入します。B1 は受信用 Private Endpoint および送信用 Regional VNet 統合の双方に対応するプランです（[App Service Private Endpoint と SCM](https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint)、[VNet Integration](https://learn.microsoft.com/en-us/azure/app-service/overview-vnet-integration)）。
 
 VM の Public IP を省略しても外部サービスへの送信は必要です。NAT による明示的な送信経路を使用し、暗黙の default outbound access に依存しません。NAT は送信先ドメインの許可リストや送信検査を提供するものではありません（[NAT Gateway](https://learn.microsoft.com/en-us/azure/nat-gateway/nat-overview)、[VM Run Command](https://learn.microsoft.com/en-us/azure/virtual-machines/linux/run-command)、[Managed Identity での CLI 認証](https://learn.microsoft.com/en-us/cli/azure/authenticate-azure-cli-managed-identity)）。
 

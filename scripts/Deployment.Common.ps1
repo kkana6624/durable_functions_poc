@@ -125,18 +125,23 @@ function Assert-DeploymentEnvironmentIdentity {
 }
 
 function Assert-DeploymentPlan {
-    param([Parameter(Mandatory)] $Plan, [Parameter(Mandatory)][string] $BatchMode)
+    param([Parameter(Mandatory)] $Plan, [Parameter(Mandatory)][string] $BatchMode, [switch]$AllowBatchPoolRecreation)
     # Existing resources are reference-only in both modes; replacement/deletion needs a separate migration.
     if (-not $Plan.PSObject.Properties['resource_changes']) { return }
     foreach ($change in @($Plan.resource_changes)) {
         if ($null -eq $change) { continue }
         if ($change.mode -eq 'data') { continue }
         $actions = @($change.change.actions)
-        if ('delete' -in $actions) { throw "Deployment would delete or replace $($change.address). Use a separate reviewed migration."
-        }
         if ($BatchMode -eq 'existing' -and $change.type -in @('azurerm_batch_account', 'azurerm_batch_pool')) {
             if (@($actions | Where-Object { $_ -ne 'no-op' -and $_ -ne 'read' }).Count -gt 0) {
                 throw "Existing Batch resources must not change: $($change.address)"
+            }
+        }
+        if ('delete' -in $actions) {
+            if ($AllowBatchPoolRecreation -and $change.type -eq 'azurerm_batch_pool' -and $BatchMode -eq 'new') {
+                Write-Warning "Allowing replacement of Batch pool $($change.address) under -AllowBatchPoolRecreation."
+            } else {
+                throw "Deployment would delete or replace $($change.address). Use a separate reviewed migration."
             }
         }
         if ($change.type -like 'azurerm_shared_image*') { throw "Gallery resources must remain reference-only in this deployment." }
