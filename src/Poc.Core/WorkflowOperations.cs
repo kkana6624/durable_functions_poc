@@ -7,9 +7,11 @@ public sealed class WorkflowOperations(
     IResultRepository results,
     IWorkloadClassifier classifier,
     WorkflowSettings settings,
-    BlobStorageRepository? storageRepository = null)
+    IBlobStorageRepository? storageRepository = null,
+    BatchStorageOptions? storageOptions = null)
 {
-    private readonly BlobStorageRepository storage = storageRepository ?? new BlobStorageRepository(results);
+    private readonly IBlobStorageRepository storage = storageRepository ?? new BlobStorageRepository(results);
+    private readonly BatchStorageOptions? storageOptions = storageOptions;
 
     private async Task<T?> TryReadAsync<T>(string path, CancellationToken cancellationToken) where T : class
     {
@@ -67,21 +69,24 @@ public sealed class WorkflowOperations(
             int value;
             if (plan.Manifest is not null || !string.IsNullOrEmpty(plan.Request.ReadyManifestId))
             {
+                var manifest = plan.Manifest ?? (string.IsNullOrEmpty(plan.Request.ReadyManifestId)
+                    ? null
+                    : await storage.TryGetReadyManifestAsync(plan.Request.ReadyManifestId, cancellationToken));
+                var outputContainer = storageOptions?.OutputContainer ?? manifest?.Blob.Container
+                    ?? throw new InvalidOperationException($"Cannot determine output container for task {spec.TaskId}.");
+
                 // Verify OutputFiles blob uploaded directly from compute node
-                BatchTaskOutputPayload? outputPayload;
+                BatchTaskOutputPayload outputPayload;
                 try
                 {
-                    outputPayload = await results.ReadAsync<BatchTaskOutputPayload>(spec.OutputBlobPath, cancellationToken);
+                    outputPayload = await storage.ReadTaskOutputAsync(outputContainer, spec.OutputBlobPath, cancellationToken);
                 }
                 catch (Exception ex) when (ex is FileNotFoundException or KeyNotFoundException or Azure.RequestFailedException { Status: 404 })
                 {
                     throw new FileNotFoundException($"Output blob for {spec.TaskId} not found at {spec.OutputBlobPath}.", ex);
                 }
 
-                if (outputPayload is null)
-                    throw new InvalidDataException($"Output blob for {spec.TaskId} was empty or could not be deserialized.");
-
-                outputPayload.Validate(plan.Request.RequestId, spec.TaskId);
+                outputPayload.Validate(plan.Request.RequestId, spec.TaskId, spec.Attempt);
                 value = outputPayload.Value;
             }
             else

@@ -207,6 +207,18 @@ public interface ITargetBlobVerifier
 {
     Task VerifyTargetBlobAsync(ReadyManifest manifest, CancellationToken cancellationToken = default);
 }
+public interface ITaskOutputBlobReader
+{
+    Task<Stream> OpenTaskOutputBlobReadStreamAsync(string container, string blobPath, CancellationToken cancellationToken = default);
+}
+public interface IBlobStorageRepository
+{
+    Task<string> SaveReadyManifestAsync(ReadyManifest manifest, CancellationToken cancellationToken = default);
+    Task<ReadyManifest?> TryGetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default);
+    Task<ReadyManifest> GetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default);
+    Task VerifyTargetBlobAsync(ReadyManifest manifest, CancellationToken cancellationToken = default);
+    Task<BatchTaskOutputPayload> ReadTaskOutputAsync(string container, string blobPath, CancellationToken cancellationToken = default);
+}
 public interface IWorkloadClassifier
 {
     Task<WorkloadClassification> ClassifyAsync(WorkflowRequest request, CancellationToken cancellationToken = default);
@@ -327,20 +339,37 @@ public sealed record BatchTaskOutputPayload(
     string? Sha256 = null,
     long? SizeBytes = null)
 {
-    public void Validate(string expectedRequestId, string expectedTaskId)
+    public void Validate(string expectedRequestId, string expectedTaskId, int expectedAttempt = 0)
     {
         if (SchemaVersion != 1) throw new InvalidDataException($"Unsupported TaskOutput schemaVersion: {SchemaVersion}");
         if (RequestId != expectedRequestId) throw new InvalidDataException($"TaskOutput RequestId mismatch: expected {expectedRequestId}, got {RequestId}");
         if (TaskId != expectedTaskId) throw new InvalidDataException($"TaskOutput TaskId mismatch: expected {expectedTaskId}, got {TaskId}");
+        if (Attempt != expectedAttempt) throw new InvalidDataException($"TaskOutput Attempt mismatch: expected {expectedAttempt}, got {Attempt}");
         if (Status != "Succeeded") throw new InvalidOperationException($"TaskOutput status is not Succeeded: {Status}");
+        if (SizeBytes.HasValue && SizeBytes.Value < 0) throw new InvalidDataException("TaskOutput SizeBytes must be non-negative.");
+        if (Sha256 is not null && (Sha256.Length != 64 || !Sha256.All(char.IsAsciiHexDigitLower)))
+            throw new InvalidDataException("TaskOutput Sha256 must be 64 lowercase hex characters.");
     }
 }
 
 public static class WindowsTaskCommand
 {
-    public static string Build(int delaySeconds, bool fail) => Build(delaySeconds, fail, null, null);
+    public static string Build(int delaySeconds, bool fail) =>
+        Build(delaySeconds, fail, null, null, null, null, null, null, 0);
 
-    public static string Build(int delaySeconds, bool fail, string? inputRelativePath, string? outputFileName)
+    public static string Build(int delaySeconds, bool fail, string? inputRelativePath, string? outputFileName) =>
+        Build(delaySeconds, fail, inputRelativePath, outputFileName, null, null, null, null, 0);
+
+    public static string Build(
+        int delaySeconds,
+        bool fail,
+        string? inputRelativePath,
+        string? outputFileName,
+        string? expectedSha256,
+        long? expectedSizeBytes,
+        string? requestId,
+        string? taskId,
+        int attempt = 0)
     {
         if (delaySeconds is < 1 or > 3600) throw new ArgumentOutOfRangeException(nameof(delaySeconds));
         // Only validated integers and constant text reach the shell. Explicit exit propagates through cmd.
@@ -355,12 +384,22 @@ public static class WindowsTaskCommand
         {
             // Verify input file downloaded by Batch ResourceFiles
             sb.Append($"if (-not (Test-Path -LiteralPath '{inputRelativePath}')) {{ exit 101 }}; ");
+            if (expectedSizeBytes.HasValue && expectedSizeBytes.Value >= 0)
+            {
+                sb.Append($"if ((Get-Item -LiteralPath '{inputRelativePath}').Length -ne {expectedSizeBytes.Value}) {{ exit 102 }}; ");
+            }
+            if (!string.IsNullOrEmpty(expectedSha256))
+            {
+                sb.Append($"if ((Get-FileHash -LiteralPath '{inputRelativePath}' -Algorithm SHA256).Hash.ToLowerInvariant() -ne '{expectedSha256.ToLowerInvariant()}') {{ exit 103 }}; ");
+            }
         }
         // Always write legacy result.txt for backward compatibility
         sb.Append("Set-Content -LiteralPath result.txt -Value 1 -Encoding ASCII; ");
         if (!string.IsNullOrEmpty(outputFileName))
         {
-            sb.Append($"Set-Content -LiteralPath '{outputFileName}' -Value '{{\\\"schemaVersion\\\":1,\\\"status\\\":\\\"Succeeded\\\",\\\"value\\\":1}}' -Encoding ASCII; ");
+            var req = requestId ?? "req";
+            var tId = taskId ?? "task-00";
+            sb.Append($"Set-Content -LiteralPath '{outputFileName}' -Value '{{\\\"schemaVersion\\\":1,\\\"requestId\\\":\\\"{req}\\\",\\\"taskId\\\":\\\"{tId}\\\",\\\"attempt\\\":{attempt},\\\"status\\\":\\\"Succeeded\\\",\\\"value\\\":1}}' -Encoding ASCII; ");
         }
         sb.Append("exit 0\"");
         return sb.ToString();

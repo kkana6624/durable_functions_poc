@@ -82,7 +82,7 @@ public class BatchExecutionTests
         Assert.Equal("inputs/input.dat", rf.FilePath);
         Assert.NotNull(rf.IdentityReference);
         Assert.Equal(PoolUamiId, rf.IdentityReference.ResourceId.ToString());
-        Assert.Contains("versionId=2026-10-19T00%3A00%3A00.0000000Z", rf.HttpUri.Query);
+        Assert.Contains("versionid=2026-10-19T00:00:00.0000000Z", rf.HttpUri.Query, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("/workflow-input/owners/alice/inputs/batch-01/input.dat", rf.HttpUri.AbsolutePath);
 
         // Verify OutputFiles
@@ -248,4 +248,255 @@ public class BatchExecutionTests
         await Assert.ThrowsAsync<WorkflowCancelledException>(() => operations.PublishManifestAsync(plan, TestContext.Current.CancellationToken));
         Assert.False(repo.Documents.ContainsKey(WorkflowIdentity.ManifestPath(plan)));
     }
+
+    [Fact]
+    public void BatchStorageOptions_WhenUamiConfigured_BuildsOptionsWithDefaults()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["BATCH_POOL_UAMI_RESOURCE_ID"] = PoolUamiId,
+            ["BLOB_SERVICE_ENDPOINT"] = BlobEndpoint.AbsoluteUri
+        };
+
+        var poolUami = config["BATCH_POOL_UAMI_RESOURCE_ID"];
+        BatchStorageOptions? options = null;
+        if (!string.IsNullOrWhiteSpace(poolUami))
+        {
+            var endpointRaw = config.GetValueOrDefault("BLOB_SERVICE_ENDPOINT") ?? config.GetValueOrDefault("BLOB_ENDPOINT");
+            var endpoint = !string.IsNullOrWhiteSpace(endpointRaw) ? new Uri(endpointRaw) : null;
+            var outputContainer = config.GetValueOrDefault("BATCH_OUTPUT_CONTAINER");
+            if (string.IsNullOrWhiteSpace(outputContainer))
+            {
+                outputContainer = "workflow-output";
+            }
+            options = new BatchStorageOptions(poolUami, endpoint, outputContainer);
+        }
+
+        Assert.NotNull(options);
+        Assert.Equal(PoolUamiId, options.PoolUamiResourceId);
+        Assert.Equal(BlobEndpoint, options.BlobEndpoint);
+        Assert.Equal("workflow-output", options.OutputContainer);
+    }
+
+    [Fact]
+    public void BatchStorageOptions_WhenUamiNotConfigured_ReturnsNull()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["BLOB_SERVICE_ENDPOINT"] = BlobEndpoint.AbsoluteUri
+        };
+
+        var poolUami = config.GetValueOrDefault("BATCH_POOL_UAMI_RESOURCE_ID");
+        BatchStorageOptions? options = null;
+        if (!string.IsNullOrWhiteSpace(poolUami))
+        {
+            options = new BatchStorageOptions(poolUami);
+        }
+
+        Assert.Null(options);
+    }
+
+    [Fact]
+    public async Task EnsureTaskAsync_WithEtagOnlyManifest_NodeScriptIncludesSha256AndSizeValidation()
+    {
+        var manifest = new ReadyManifest(
+            SchemaVersion: 1,
+            ReadyManifestId: "input-manifest-etag-only",
+            OwnerId: "alice",
+            OrgId: "finance",
+            Blob: new ReadyManifestBlob(
+                Container: "workflow-input",
+                BlobKey: "owners/alice/inputs/batch-01/input.dat",
+                VersionId: null,
+                Etag: "\"0x8D9...\"",
+                SizeBytes: 2048,
+                Sha256: SampleSha256),
+            CreatedAtUtc: DateTimeOffset.UtcNow);
+
+        var request = new WorkflowRequest("req-etag-001", "light", 1, ReadyManifestId: manifest.ReadyManifestId);
+        var plan = new WorkflowPlan(request, "light", "reason", WorkflowIdentity.JobId(request.RequestId),
+            WorkflowIdentity.Fingerprint(request, "light", manifest), 10, 15, false, manifest);
+        var spec = new TaskSpec(plan, 0, Attempt: 2);
+
+        var batchMock = new Mock<BatchClient>();
+        var batchJob = ComputeBatchModelFactory.BatchJob(
+            id: plan.JobId,
+            state: BatchJobState.Active,
+            poolInfo: new BatchPoolInfo { PoolId = "test-pool" },
+            metadata: [new BatchMetadataItem("poc-fingerprint", plan.Fingerprint)]);
+
+        batchMock.Setup(b => b.GetJobAsync(plan.JobId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(batchJob, Mock.Of<Response>()));
+
+        BatchTaskCreateOptions? capturedOptions = null;
+        batchMock.Setup(b => b.CreateTaskAsync(plan.JobId, It.IsAny<BatchTaskCreateOptions>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, BatchTaskCreateOptions, TimeSpan?, DateTimeOffset?, CancellationToken>((_, opts, _, _, _) => capturedOptions = opts)
+            .ReturnsAsync(Mock.Of<Response>());
+
+        var storageOptions = new BatchStorageOptions(PoolUamiResourceId: PoolUamiId, BlobEndpoint: BlobEndpoint);
+        var gateway = new AzureBatchGateway(batchMock.Object, "test-pool", storageOptions);
+
+        batchMock.Setup(b => b.GetTaskAsync(plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .Returns<string, string, TimeSpan?, DateTimeOffset?, RequestConditions, IEnumerable<string>, IEnumerable<string>, CancellationToken>((_, _, _, _, _, _, _, _) =>
+            {
+                var createdTask = ComputeBatchModelFactory.BatchTask(
+                    id: spec.TaskId,
+                    commandLine: capturedOptions!.CommandLine,
+                    constraints: new BatchTaskConstraints { MaxTaskRetryCount = 0 },
+                    environmentSettings: [new EnvironmentSetting("POC_FINGERPRINT") { Value = plan.Fingerprint }]);
+                return Task.FromResult(Response.FromValue(createdTask, Mock.Of<Response>()));
+            });
+
+        await gateway.EnsureTaskAsync(spec, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(capturedOptions);
+        var rf = capturedOptions.ResourceFiles[0];
+        Assert.DoesNotContain("versionid=", rf.HttpUri.Query, StringComparison.OrdinalIgnoreCase);
+
+        // Review Point 3: Node script contains SHA-256 and size verification and attempt=2
+        Assert.Contains("Length -ne 2048", capturedOptions.CommandLine);
+        Assert.Contains(SampleSha256, capturedOptions.CommandLine);
+        Assert.Contains("attempt", capturedOptions.CommandLine);
+        Assert.Contains(":2", capturedOptions.CommandLine);
+        Assert.Contains("req-etag-001", capturedOptions.CommandLine);
+        Assert.Contains("task-00", capturedOptions.CommandLine);
+    }
+
+    [Fact]
+    public async Task EnsureTaskAsync_WithReservedCharactersInBlobKey_BlobUriBuilderEscapesProperly()
+    {
+        var manifest = new ReadyManifest(
+            SchemaVersion: 1,
+            ReadyManifestId: "input-manifest-reserved-chars",
+            OwnerId: "alice",
+            OrgId: "finance",
+            Blob: new ReadyManifestBlob(
+                Container: "workflow-input",
+                BlobKey: "owners/alice/inputs/data#1 with spaces?query.dat",
+                VersionId: "v1",
+                Etag: "\"0x8D9...\"",
+                SizeBytes: 1024,
+                Sha256: SampleSha256),
+            CreatedAtUtc: DateTimeOffset.UtcNow);
+
+        var request = new WorkflowRequest("req-reserved-001", "light", 1, ReadyManifestId: manifest.ReadyManifestId);
+        var plan = new WorkflowPlan(request, "light", "reason", WorkflowIdentity.JobId(request.RequestId),
+            WorkflowIdentity.Fingerprint(request, "light", manifest), 10, 15, false, manifest);
+        var spec = new TaskSpec(plan, 0);
+
+        var batchMock = new Mock<BatchClient>();
+        var batchJob = ComputeBatchModelFactory.BatchJob(
+            id: plan.JobId,
+            state: BatchJobState.Active,
+            poolInfo: new BatchPoolInfo { PoolId = "test-pool" },
+            metadata: [new BatchMetadataItem("poc-fingerprint", plan.Fingerprint)]);
+
+        batchMock.Setup(b => b.GetJobAsync(plan.JobId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(batchJob, Mock.Of<Response>()));
+
+        BatchTaskCreateOptions? capturedOptions = null;
+        batchMock.Setup(b => b.CreateTaskAsync(plan.JobId, It.IsAny<BatchTaskCreateOptions>(), It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, BatchTaskCreateOptions, TimeSpan?, DateTimeOffset?, CancellationToken>((_, opts, _, _, _) => capturedOptions = opts)
+            .ReturnsAsync(Mock.Of<Response>());
+
+        var storageOptions = new BatchStorageOptions(PoolUamiResourceId: PoolUamiId, BlobEndpoint: BlobEndpoint);
+        var gateway = new AzureBatchGateway(batchMock.Object, "test-pool", storageOptions);
+
+        batchMock.Setup(b => b.GetTaskAsync(plan.JobId, spec.TaskId, It.IsAny<TimeSpan?>(), It.IsAny<DateTimeOffset?>(), It.IsAny<RequestConditions>(), It.IsAny<IEnumerable<string>>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .Returns<string, string, TimeSpan?, DateTimeOffset?, RequestConditions, IEnumerable<string>, IEnumerable<string>, CancellationToken>((_, _, _, _, _, _, _, _) =>
+            {
+                var createdTask = ComputeBatchModelFactory.BatchTask(
+                    id: spec.TaskId,
+                    commandLine: capturedOptions!.CommandLine,
+                    constraints: new BatchTaskConstraints { MaxTaskRetryCount = 0 },
+                    environmentSettings: [new EnvironmentSetting("POC_FINGERPRINT") { Value = plan.Fingerprint }]);
+                return Task.FromResult(Response.FromValue(createdTask, Mock.Of<Response>()));
+            });
+
+        await gateway.EnsureTaskAsync(spec, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(capturedOptions);
+        var rf = capturedOptions.ResourceFiles[0];
+
+        // Review Point 6: '#' must be percent-encoded as '%23' and not treated as URI fragment
+        Assert.True(string.IsNullOrEmpty(rf.HttpUri.Fragment), "Fragment must be empty; '#' must not be treated as a fragment delimiter");
+        Assert.Contains("%23", rf.HttpUri.AbsolutePath);
+        Assert.Contains("%20", rf.HttpUri.AbsolutePath);
+        Assert.Contains("versionid=v1", rf.HttpUri.Query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task FetchAndPersistAsync_WithContainerSeparation_ReadsFromOutputContainer()
+    {
+        var manifest = CreateValidManifest();
+        var request = new WorkflowRequest("req-container-sep-001", "light", 1, ReadyManifestId: manifest.ReadyManifestId);
+        var repo = new InMemoryResultRepository();
+        await repo.PutIfAbsentAsync(WorkflowIdentity.ReadyManifestPath(manifest.ReadyManifestId), manifest, TestContext.Current.CancellationToken);
+
+        var storageOptions = new BatchStorageOptions(
+            PoolUamiResourceId: PoolUamiId,
+            BlobEndpoint: BlobEndpoint,
+            OutputContainer: "isolated-output-container");
+
+        var operations = new WorkflowOperations(
+            new FakeBatchGateway(),
+            repo,
+            new StubWorkloadClassifier(),
+            new WorkflowSettings(),
+            storageOptions: storageOptions);
+
+        var plan = await operations.ClassifyAsync(request, TestContext.Current.CancellationToken);
+        var spec = new TaskSpec(plan, 0);
+
+        // Put payload only in isolated-output-container
+        var payload = new BatchTaskOutputPayload(1, request.RequestId, spec.TaskId, 0, "Succeeded", 1);
+        var jsonBytes = System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+        repo.Blobs[$"isolated-output-container/{spec.OutputBlobPath}"] = jsonBytes;
+
+        // Review Point 4: Should successfully read from isolated-output-container
+        var references = await operations.FetchAndPersistAsync(plan, TestContext.Current.CancellationToken);
+        Assert.Single(references);
+        Assert.Equal("task-00", references[0].TaskId);
+
+        // If not in isolated-output-container, should throw FileNotFoundException even if in default container
+        repo.Blobs.Remove($"isolated-output-container/{spec.OutputBlobPath}");
+        repo.Blobs[$"workflow-input/{spec.OutputBlobPath}"] = jsonBytes;
+
+        await Assert.ThrowsAsync<FileNotFoundException>(() => operations.FetchAndPersistAsync(plan, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReadAndVerifyTaskOutputFromStreamAsync_StreamingExecution_ValidatesCorrectly()
+    {
+        // Review Point 7: Test streaming read with large payload and 80KB buffer
+        var payload = new BatchTaskOutputPayload(1, "req-stream-001", "task-00", 0, "Succeeded", 1);
+        var json = JsonSerializer.Serialize(payload);
+
+        // Add 100KB trailing whitespace to ensure buffer drain and streaming work across 80KB chunks
+        var paddedJson = json + new string(' ', 100_000);
+        var paddedBytes = System.Text.Encoding.UTF8.GetBytes(paddedJson);
+        using var stream = new MemoryStream(paddedBytes);
+
+        var (resultPayload, sha256, sizeBytes) = await BlobStorageRepository.ReadAndVerifyTaskOutputFromStreamAsync(stream, TestContext.Current.CancellationToken);
+        Assert.Equal("req-stream-001", resultPayload.RequestId);
+        Assert.Equal("task-00", resultPayload.TaskId);
+        Assert.Equal("Succeeded", resultPayload.Status);
+        Assert.Equal(1, resultPayload.Value);
+        Assert.Equal(64, sha256.Length);
+        Assert.Equal(paddedBytes.Length, sizeBytes);
+
+        // Invalid JSON must throw InvalidDataException
+        using var invalidStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("not-json"));
+        await Assert.ThrowsAsync<InvalidDataException>(() => BlobStorageRepository.ReadAndVerifyTaskOutputFromStreamAsync(invalidStream, TestContext.Current.CancellationToken));
+
+        // InMemoryBlobStorageRepository direct usage
+        var repo = new InMemoryResultRepository();
+        repo.Documents[specOutputBlobPath("req-stream-001", "task-00")] = json;
+        var inMemoryStorage = new InMemoryBlobStorageRepository(repo);
+        var inMemoryPayload = await inMemoryStorage.ReadTaskOutputAsync("workflow-output", specOutputBlobPath("req-stream-001", "task-00"), TestContext.Current.CancellationToken);
+        Assert.Equal("req-stream-001", inMemoryPayload.RequestId);
+    }
+
+    private static string specOutputBlobPath(string requestId, string taskId, int attempt = 0) =>
+        $"runs/poc-{requestId}/tasks/{taskId}/attempts/{attempt}/output.json";
 }

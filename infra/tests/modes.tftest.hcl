@@ -43,6 +43,12 @@ mock_provider "azurerm" {
   mock_resource "azurerm_role_definition" {
     defaults = { role_definition_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/roleDefinitions/44444444-4444-4444-4444-444444444444" }
   }
+  mock_resource "azurerm_user_assigned_identity" {
+    defaults = {
+      id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/test-uami"
+      principal_id = "77777777-7777-7777-7777-777777777777"
+    }
+  }
   mock_resource "azurerm_storage_account" {
     defaults = {
       id                    = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Storage/storageAccounts/poctest001"
@@ -509,6 +515,18 @@ run "new_marketplace_creates_dedicated_resources" {
   assert {
     condition     = azurerm_role_assignment.validation_batch.role_definition_name == "Azure Batch Account Reader" && length(azurerm_role_assignment.validation_batch_contributor) == 1 && azurerm_role_assignment.validation_batch_contributor[0].role_definition_name == "Azure Batch Account Contributor"
     error_message = "New mode must grant VM identity both Reader and Contributor on the dedicated Batch account for autoscale operations."
+  }
+  assert {
+    condition     = azurerm_batch_pool.poc[0].identity[0].type == "UserAssigned" && azurerm_batch_pool.poc[0].identity[0].identity_ids[0] == azurerm_user_assigned_identity.batch_pool.id
+    error_message = "Batch pool must be configured with UserAssigned identity."
+  }
+  assert {
+    condition     = azurerm_role_assignment.batch_pool_blob_reader.role_definition_name == "Storage Blob Data Reader" && azurerm_role_assignment.batch_pool_blob_reader.principal_id == azurerm_user_assigned_identity.batch_pool.principal_id && azurerm_role_assignment.batch_pool_blob_output_contributor.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.batch_pool_blob_output_contributor.principal_id == azurerm_user_assigned_identity.batch_pool.principal_id
+    error_message = "Batch pool UAMI must receive Reader on storage account and Contributor on workflow-output container."
+  }
+  assert {
+    condition     = azurerm_linux_function_app.poc.app_settings.BATCH_POOL_UAMI_RESOURCE_ID == azurerm_user_assigned_identity.batch_pool.id && azurerm_linux_function_app.poc.app_settings.BATCH_OUTPUT_CONTAINER == "workflow-output" && azurerm_linux_function_app.poc.app_settings.BLOB_SERVICE_ENDPOINT == azurerm_storage_account.poc.primary_blob_endpoint
+    error_message = "Function app settings must include Batch storage options."
   }
 }
 

@@ -144,6 +144,9 @@ resource "azurerm_linux_function_app" "poc" {
     BATCH_POLL_SECONDS              = tostring(var.batch_poll_seconds)
     WORKFLOW_TIMEOUT_MIN            = tostring(var.workflow_timeout_minutes)
     WEBSITE_RUN_FROM_PACKAGE        = "1"
+    BATCH_POOL_UAMI_RESOURCE_ID     = azurerm_user_assigned_identity.batch_pool.id
+    BATCH_OUTPUT_CONTAINER          = azurerm_storage_container.workflow_output.name
+    BLOB_SERVICE_ENDPOINT           = azurerm_storage_account.poc.primary_blob_endpoint
   }, local.durable_app_settings, local.workflow_auth_app_settings)
 }
 
@@ -166,4 +169,18 @@ resource "azurerm_role_assignment" "batch" {
   scope                = local.batch_account_id
   role_definition_name = "Azure Batch Job Submitter"
   principal_id         = azurerm_linux_function_app.poc.identity[0].principal_id
+}
+
+# Batch pool nodes download inputs using Storage Blob Data Reader
+resource "azurerm_role_assignment" "batch_pool_blob_reader" {
+  scope                = azurerm_storage_account.poc.id
+  role_definition_name = "Storage Blob Data Reader"
+  principal_id         = azurerm_user_assigned_identity.batch_pool.principal_id
+}
+
+# Batch pool nodes upload task output files to the dedicated output container using Storage Blob Data Contributor
+resource "azurerm_role_assignment" "batch_pool_blob_output_contributor" {
+  scope                = "${azurerm_storage_account.poc.id}/blobServices/default/containers/${azurerm_storage_container.workflow_output.name}"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.batch_pool.principal_id
 }

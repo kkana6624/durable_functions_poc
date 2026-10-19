@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Azure;
 using Azure.Storage.Blobs;
@@ -6,7 +7,7 @@ using Azure.Storage.Blobs.Models;
 
 namespace Poc.Core;
 
-public sealed class BlobStorageRepository(IResultRepository results, BlobServiceClient? blobServiceClient = null, BlobContainerClient? containerClient = null)
+public class BlobStorageRepository(IResultRepository results, BlobServiceClient? blobServiceClient = null, BlobContainerClient? containerClient = null) : IBlobStorageRepository
 {
     private static readonly Regex ContainerNameRegex = new(@"\A[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]\z", RegexOptions.Compiled);
 
@@ -15,6 +16,8 @@ public sealed class BlobStorageRepository(IResultRepository results, BlobService
     public BlobStorageRepository(BlobServiceClient blobServiceClient, BlobContainerClient containerClient) : this(new BlobResultRepository(containerClient), blobServiceClient, containerClient) { }
 
     public Func<ReadyManifest, CancellationToken, Task>? TargetBlobVerifier { get; set; }
+    public Func<string, string, CancellationToken, Task<Stream>>? TaskOutputBlobStreamOpener { get; set; }
+    public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     /// <summary>
     /// Saves a validated ReadyManifest conditionally to inputs/{readyManifestId}/manifest.json
@@ -161,5 +164,152 @@ public sealed class BlobStorageRepository(IResultRepository results, BlobService
         var response = await blobClient.DownloadStreamingAsync(downloadOptions, cancellationToken);
         await using var stream = response.Value.Content;
         await VerifyBlobContentAsync(stream, manifest.Blob.SizeBytes, manifest.Blob.Sha256, cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads and verifies a task output payload from the designated container and blob path using streaming download.
+    /// Memory consumption is bounded by buffer size (80 KiB) and does not expand the entire blob into memory.
+    /// </summary>
+    public virtual async Task<BatchTaskOutputPayload> ReadTaskOutputAsync(string container, string blobPath, CancellationToken cancellationToken = default)
+    {
+        ValidateTargetBlobLocation(container, blobPath);
+
+        Stream stream;
+        if (TaskOutputBlobStreamOpener is not null)
+        {
+            stream = await TaskOutputBlobStreamOpener(container, blobPath, cancellationToken);
+        }
+        else if (results is ITaskOutputBlobReader reader)
+        {
+            stream = await reader.OpenTaskOutputBlobReadStreamAsync(container, blobPath, cancellationToken);
+        }
+        else if (blobServiceClient is not null)
+        {
+            var blobClient = blobServiceClient.GetBlobContainerClient(container).GetBlobClient(blobPath);
+            var response = await blobClient.DownloadStreamingAsync(cancellationToken: cancellationToken);
+            stream = response.Value.Content;
+        }
+        else if (containerClient is not null && string.Equals(containerClient.Name, container, StringComparison.OrdinalIgnoreCase))
+        {
+            var blobClient = containerClient.GetBlobClient(blobPath);
+            var response = await blobClient.DownloadStreamingAsync(cancellationToken: cancellationToken);
+            stream = response.Value.Content;
+        }
+        else
+        {
+            throw new InvalidOperationException($"No suitable BlobServiceClient or BlobContainerClient configured to download task output blob from container '{container}'.");
+        }
+
+        await using (stream)
+        {
+            var (payload, _, _) = await ReadAndVerifyTaskOutputFromStreamAsync(stream, cancellationToken);
+            return payload;
+        }
+    }
+
+    /// <summary>
+    /// Reads and verifies the output stream using an 80 KiB buffer for incremental SHA-256 calculation and size tracking,
+    /// while deserializing BatchTaskOutputPayload without buffering the full content into memory.
+    /// </summary>
+    public static async Task<(BatchTaskOutputPayload Payload, string Sha256, long SizeBytes)> ReadAndVerifyTaskOutputFromStreamAsync(
+        Stream contentStream,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(contentStream);
+
+        await using var hashingStream = new HashingReadStream(contentStream);
+        BatchTaskOutputPayload? payload;
+        try
+        {
+            payload = await JsonSerializer.DeserializeAsync<BatchTaskOutputPayload>(hashingStream, JsonOptions, cancellationToken);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("Output blob could not be deserialized as BatchTaskOutputPayload: " + ex.Message, ex);
+        }
+
+        var drainBuffer = new byte[81920];
+        while (await hashingStream.ReadAsync(drainBuffer.AsMemory(0, drainBuffer.Length), cancellationToken) > 0)
+        {
+        }
+
+        if (payload is null)
+            throw new InvalidDataException("Output blob was empty or could not be deserialized.");
+
+        return (payload, hashingStream.HashHex, hashingStream.TotalBytesRead);
+    }
+}
+
+public sealed class HashingReadStream(Stream inner) : Stream
+{
+    private readonly IncrementalHash hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    private long totalBytesRead;
+
+    public long TotalBytesRead => totalBytesRead;
+    public string HashHex => Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant();
+
+    public override bool CanRead => inner.CanRead;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => inner.CanSeek ? inner.Length : totalBytesRead;
+    public override long Position
+    {
+        get => totalBytesRead;
+        set => throw new NotSupportedException();
+    }
+
+    public override void Flush() => inner.Flush();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        int bytesRead = inner.Read(buffer, offset, count);
+        if (bytesRead > 0)
+        {
+            totalBytesRead += bytesRead;
+            hasher.AppendData(buffer, offset, bytesRead);
+        }
+        return bytesRead;
+    }
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        int bytesRead = await inner.ReadAsync(buffer, cancellationToken);
+        if (bytesRead > 0)
+        {
+            totalBytesRead += bytesRead;
+            hasher.AppendData(buffer.Span.Slice(0, bytesRead));
+        }
+        return bytesRead;
+    }
+
+    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        int bytesRead = await inner.ReadAsync(buffer, offset, count, cancellationToken);
+        if (bytesRead > 0)
+        {
+            totalBytesRead += bytesRead;
+            hasher.AppendData(buffer, offset, bytesRead);
+        }
+        return bytesRead;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            hasher.Dispose();
+            inner.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        hasher.Dispose();
+        await inner.DisposeAsync();
+        await base.DisposeAsync();
     }
 }

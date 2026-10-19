@@ -38,7 +38,7 @@ internal sealed class FakeBatchGateway : IBatchGateway
     }
 }
 
-internal sealed class InMemoryResultRepository : IResultRepository, ITargetBlobVerifier
+internal sealed class InMemoryResultRepository : IResultRepository, ITargetBlobVerifier, ITaskOutputBlobReader
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     public Dictionary<string, string> Documents { get; } = [];
@@ -84,8 +84,52 @@ internal sealed class InMemoryResultRepository : IResultRepository, ITargetBlobV
         await BlobStorageRepository.VerifyBlobContentAsync(stream, manifest.Blob.SizeBytes, manifest.Blob.Sha256, cancellationToken);
     }
 
+    public Task<Stream> OpenTaskOutputBlobReadStreamAsync(string container, string blobPath, CancellationToken cancellationToken = default)
+    {
+        var key = $"{container}/{blobPath}";
+        if (Blobs.TryGetValue(key, out var bytes))
+        {
+            return Task.FromResult<Stream>(new MemoryStream(bytes));
+        }
+        if (Documents.TryGetValue(key, out var jsonWithContainer))
+        {
+            return Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonWithContainer)));
+        }
+        if (Blobs.TryGetValue(blobPath, out bytes))
+        {
+            return Task.FromResult<Stream>(new MemoryStream(bytes));
+        }
+        if (Documents.TryGetValue(blobPath, out var json))
+        {
+            return Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)));
+        }
+        return Task.FromException<Stream>(new FileNotFoundException($"Output blob '{blobPath}' not found in container '{container}'."));
+    }
+
     public Task<T> ReadAsync<T>(string path, CancellationToken cancellationToken = default) =>
         Documents.TryGetValue(path, out var json)
             ? Task.FromResult(JsonSerializer.Deserialize<T>(json, JsonOptions)!)
             : Task.FromException<T>(new FileNotFoundException(path));
+}
+
+internal sealed class InMemoryBlobStorageRepository(InMemoryResultRepository repository) : IBlobStorageRepository
+{
+    public Task<string> SaveReadyManifestAsync(ReadyManifest manifest, CancellationToken cancellationToken = default) =>
+        new BlobStorageRepository(repository).SaveReadyManifestAsync(manifest, cancellationToken);
+
+    public Task<ReadyManifest?> TryGetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
+        new BlobStorageRepository(repository).TryGetReadyManifestAsync(readyManifestId, cancellationToken);
+
+    public Task<ReadyManifest> GetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
+        new BlobStorageRepository(repository).GetReadyManifestAsync(readyManifestId, cancellationToken);
+
+    public Task VerifyTargetBlobAsync(ReadyManifest manifest, CancellationToken cancellationToken = default) =>
+        repository.VerifyTargetBlobAsync(manifest, cancellationToken);
+
+    public async Task<BatchTaskOutputPayload> ReadTaskOutputAsync(string container, string blobPath, CancellationToken cancellationToken = default)
+    {
+        await using var stream = await repository.OpenTaskOutputBlobReadStreamAsync(container, blobPath, cancellationToken);
+        var (payload, _, _) = await BlobStorageRepository.ReadAndVerifyTaskOutputFromStreamAsync(stream, cancellationToken);
+        return payload;
+    }
 }

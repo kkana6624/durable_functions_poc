@@ -1,5 +1,35 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘7件（P1 2件・P2 5件: 本番UAMI転送有効化・出力JSON必須ID・ETag版固定検証・コンテナ分離・出力メタデータ検証・BlobKey予約文字エンコード・ストリーミング検証）の改修完了
+
+レビューで指摘された 7 件の課題（[P1] 本番転送処理の有効化と UAMI/RBAC 接続、[P1] 出力 JSON への必須 ID 付与、[P2] ETag のみの入力に対するノード側ハッシュ/サイズ検証による版固定保証、[P2] 出力先と読取先コンテナの分離対応、[P2] 出力メタデータ（Attempt/Sha256/SizeBytes）の厳格検証、[P2] Blob 名予約文字のエスケープ/正準化、[P2] 大容量出力のストリーミング検証と全量メモリ展開廃止）を改修し、単体テスト（365件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P1] 本番から新しい転送処理が有効にならない問題の解消（AzureBatchGateway.cs / Program.cs / infra）**:
+     - `infra/batch.tf`: `azurerm_user_assigned_identity.batch_pool` を新設し、`azurerm_batch_pool.poc` に `identity { type = "UserAssigned", identity_ids = [...] }` として UAMI を紐付け。
+     - `infra/storage.tf`: 出力用コンテナ `workflow-output` を定義。
+     - `infra/main.tf`: 入力ストレージに対する `Storage Blob Data Reader` および出力コンテナに対する `Storage Blob Data Contributor` を Pool UAMI に RBAC 付与。Function App の `app_settings` に `BATCH_POOL_UAMI_RESOURCE_ID`, `BATCH_OUTPUT_CONTAINER`, `BLOB_SERVICE_ENDPOINT` を追加。
+     - `src/Poc.Functions/Program.cs`: `BATCH_POOL_UAMI_RESOURCE_ID` から `BatchStorageOptions` を生成し、`AzureBatchGateway` の第3引数および DI コンテナにシングルトン登録。環境変数未設定時は `null` とし、ローカル/モック互換性を完全維持。
+  2. **[P1] 生成する出力 JSON が必須 ID を欠く問題の解消（Contracts.cs）**:
+     - `src/Poc.Core/Contracts.cs`: `WindowsTaskCommand.Build` において、`requestId`, `taskId`, `attempt` を受け取り、ノード上で生成される `output.json` にそれらを含めるよう改修。exit 0 でも後段の ID 照合に合格することを保証。
+  3. **[P2] ETag のみの入力で版固定が失われる問題の解消（AzureBatchGateway.cs / Contracts.cs）**:
+     - Azure Batch の `ResourceFile` 仕様上、HTTP ヘッダー（`If-Match`）による ETag 検証ができないため、ノード側の PowerShell スクリプト（`WindowsTaskCommand.Build`）内で `ReadyManifest` に記録された SHA-256 およびサイズを `(Get-Item).Length` および `(Get-FileHash).Hash` で検証。
+     - 受付後に Storage 上で Blob が上書き・改ざんされた場合、ノード側で即座に検知して exit code 102（サイズ不一致）または 103（SHA-256 不一致）で安全にタスクを中断（Fail-Closed）。
+  4. **[P2] 出力先と読取先のコンテナが一致しない問題の解消（WorkflowOperations.cs）**:
+     - `WorkflowOperations` コンストラクタ引数に `BatchStorageOptions? storageOptions = null` を受け取れるように拡張。
+     - `FetchAndPersistAsync` において、`AzureBatchGateway` のアップロード先と同様に `storageOptions?.OutputContainer ?? manifest?.Blob.Container` から出力先コンテナを動的に特定し、コンテナ分離構成下（`workflow-output` と `poc-results` の分離）でも正しいコンテナからタスク出力を取得するように改修。
+  5. **[P2] 不正な出力メタデータでも公開できる問題の解消（Contracts.cs）**:
+     - `BatchTaskOutputPayload.Validate` において、`requestId`, `taskId` の照合に加え、`expectedAttempt`（実行試行回数）、`SizeBytes >= 0`、および `Sha256`（64文字 16進数 hex）の検証を実装。
+     - 異常な Attempt や負のサイズ、不正ハッシュを持つ出力が公開されるのを確実に遮断。
+  6. **[P2] Blob 名の予約文字で取得 URL が変わる問題の解消（AzureBatchGateway.cs）**:
+     - 文字列連結による URI 構築を廃止し、`Azure.Storage.Blobs.BlobUriBuilder` を用いて input ResourceFile の `HttpUri` および OutputFiles の `outputContainerUri` を正準化。
+     - BlobKey に `#`（フラグメント認識）や空白等の予約文字が含まれる場合でも、正しく `%23` 等にエンコードされた正準 URL を構築。
+  7. **[P2] 大容量出力を全量メモリへ読み込む問題の解消（WorkflowOperations.cs / BlobStorageRepository.cs）**:
+     - `results.ReadAsync`（`DownloadContentAsync` による全量バイトメモリ展開）を廃止。
+     - `BlobStorageRepository` に `DownloadStreamingAsync` を用いたストリーミング読み込みパイプラインを実装。
+     - 80 KiB バッファと `IncrementalHash`（SHA-256）を備えた `HashingReadStream` を介して `JsonSerializer.DeserializeAsync<BatchTaskOutputPayload>` へストリームを供給し、残余をドレイン。全量を byte[] / string にメモリ展開することなく O(1) バッファサイズで SHA-256 と総サイズを算出して検証・デシリアライズ。
+     - テスト用 `InMemoryBlobStorageRepository` も `ITaskOutputBlobReader` を実装し、プロダクションと同一の検証経路を透過的にカバー。
+
 ## 2026-10-19 Track 2（Batch 大容量入出力 ResourceFiles/OutputFiles・Blob検証・公開調停）および TASK-0.2（未確定ゲートチェックシート）の実装完了
 
 作業計画書（`docs/app-service-blob-batch-work-plan.md`）の Track 2（TASK-2.1〜2.5）および Track 0（TASK-0.2）を実装し、単体テスト（359件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。これにより現行の 4 KiB Task File API 制約を解消し、Blob 経由の大容量入出力パイプラインを確立しました。

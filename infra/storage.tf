@@ -18,6 +18,12 @@ resource "azurerm_storage_container" "results" {
   container_access_type = "private"
 }
 
+resource "azurerm_storage_container" "workflow_output" {
+  name                  = "workflow-output"
+  storage_account_id    = azurerm_storage_account.poc.id
+  container_access_type = "private"
+}
+
 resource "azurerm_private_endpoint" "storage_blob" {
   name                = "${local.prefix}-pe-storage-blob"
   location            = local.location

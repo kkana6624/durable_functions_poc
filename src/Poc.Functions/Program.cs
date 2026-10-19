@@ -29,14 +29,40 @@ batchOptions.Retry.NetworkTimeout = TimeSpan.FromSeconds(10);
 var blobOptions = new BlobClientOptions();
 blobOptions.Retry.MaxRetries = 1;
 blobOptions.Retry.NetworkTimeout = TimeSpan.FromSeconds(10);
-builder.Services.AddSingleton<IBatchGateway>(new AzureBatchGateway(
-    new BatchClient(new Uri(Required("BATCH_ENDPOINT")), credential, batchOptions), Required("BATCH_POOL_ID")));
 var blobServiceClient = new BlobServiceClient(new Uri(Required("BLOB_ENDPOINT")), credential, blobOptions);
 var containerClient = blobServiceClient.GetBlobContainerClient(Required("BLOB_CONTAINER"));
+
+var poolUamiResourceId = builder.Configuration["BATCH_POOL_UAMI_RESOURCE_ID"];
+BatchStorageOptions? batchStorageOptions = null;
+if (!string.IsNullOrWhiteSpace(poolUamiResourceId))
+{
+    var blobServiceEndpointRaw = builder.Configuration["BLOB_SERVICE_ENDPOINT"] ?? builder.Configuration["BLOB_ENDPOINT"];
+    var blobEndpointUri = !string.IsNullOrWhiteSpace(blobServiceEndpointRaw) ? new Uri(blobServiceEndpointRaw) : blobServiceClient.Uri;
+    var outputContainer = builder.Configuration["BATCH_OUTPUT_CONTAINER"];
+    if (string.IsNullOrWhiteSpace(outputContainer))
+    {
+        outputContainer = "workflow-output";
+    }
+
+    batchStorageOptions = new BatchStorageOptions(
+        PoolUamiResourceId: poolUamiResourceId,
+        BlobEndpoint: blobEndpointUri,
+        OutputContainer: outputContainer);
+}
+
+builder.Services.AddSingleton<IBatchGateway>(new AzureBatchGateway(
+    new BatchClient(new Uri(Required("BATCH_ENDPOINT")), credential, batchOptions),
+    Required("BATCH_POOL_ID"),
+    batchStorageOptions));
 var resultRepo = new BlobResultRepository(containerClient);
+if (batchStorageOptions is not null)
+{
+    builder.Services.AddSingleton(batchStorageOptions);
+}
 var storageRepo = new BlobStorageRepository(resultRepo, blobServiceClient, containerClient);
 builder.Services.AddSingleton<IResultRepository>(resultRepo);
 builder.Services.AddSingleton(storageRepo);
+builder.Services.AddSingleton<IBlobStorageRepository>(storageRepo);
 builder.Services.AddSingleton<IWorkloadClassifier, StubWorkloadClassifier>();
 builder.Services.AddSingleton(new WorkflowSettings(Positive("BATCH_POLL_SECONDS", 10), Positive("WORKFLOW_TIMEOUT_MIN", 15)));
 builder.Services.AddSingleton<WorkflowOperations>();

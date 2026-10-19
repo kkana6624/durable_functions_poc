@@ -16,6 +16,13 @@ data "azurerm_shared_image_version" "existing" {
   gallery_name        = try(split("/", var.gallery_image_version_id)[8], "invalid")
   resource_group_name = try(split("/", var.gallery_image_version_id)[4], "invalid")
 }
+resource "azurerm_user_assigned_identity" "batch_pool" {
+  name                = "${local.prefix}-batch-pool-uami"
+  resource_group_name = local.resource_group_name
+  location            = local.location
+  tags                = local.tags
+}
+
 resource "azurerm_batch_pool" "poc" {
   count                          = var.batch_mode == "new" ? 1 : 0
   name                           = "${local.prefix}-pool"
@@ -26,6 +33,10 @@ resource "azurerm_batch_pool" "poc" {
   max_tasks_per_node             = var.batch_max_tasks_per_node
   inter_node_communication       = "Disabled"
   target_node_communication_mode = "Simplified"
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.batch_pool.id]
+  }
   network_configuration {
     subnet_id                        = azurerm_subnet.batch_nodes.id
     public_address_provisioning_type = "NoPublicIPAddresses"

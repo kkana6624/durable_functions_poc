@@ -1,5 +1,7 @@
 using Azure;
 using Azure.Compute.Batch;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Specialized;
 
 namespace Poc.Core;
 
@@ -63,12 +65,12 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId, BatchSt
             inputRelativePath = "inputs/input.dat";
             outputFileName = "output.json";
 
-            var endpointStr = storageOptions.BlobEndpoint.AbsoluteUri.TrimEnd('/');
-            var inputUriBuilder = new UriBuilder($"{endpointStr}/{manifest.Blob.Container}/{manifest.Blob.BlobKey}");
-            if (!string.IsNullOrEmpty(manifest.Blob.VersionId))
+            var inputUriBuilder = new BlobUriBuilder(storageOptions.BlobEndpoint)
             {
-                inputUriBuilder.Query = $"versionId={Uri.EscapeDataString(manifest.Blob.VersionId)}";
-            }
+                BlobContainerName = manifest.Blob.Container,
+                BlobName = manifest.Blob.BlobKey,
+                VersionId = !string.IsNullOrEmpty(manifest.Blob.VersionId) ? manifest.Blob.VersionId : null
+            };
 
             var identityRef = !string.IsNullOrWhiteSpace(storageOptions.PoolUamiResourceId)
                 ? new BatchNodeIdentityReference { ResourceId = new Azure.Core.ResourceIdentifier(storageOptions.PoolUamiResourceId) }
@@ -76,18 +78,21 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId, BatchSt
 
             resourceFile = new ResourceFile
             {
-                HttpUri = inputUriBuilder.Uri,
+                HttpUri = inputUriBuilder.ToUri(),
                 FilePath = inputRelativePath,
                 IdentityReference = identityRef
             };
 
             var outputContainer = storageOptions.OutputContainer ?? manifest.Blob.Container;
-            var outputContainerUri = new Uri($"{endpointStr}/{outputContainer}");
+            var outputUriBuilder = new BlobUriBuilder(storageOptions.BlobEndpoint)
+            {
+                BlobContainerName = outputContainer
+            };
             outputFile = new OutputFile(
                 filePattern: outputFileName,
                 destination: new OutputFileDestination
                 {
-                    Container = new OutputFileBlobContainerDestination(outputContainerUri)
+                    Container = new OutputFileBlobContainerDestination(outputUriBuilder.ToUri())
                     {
                         IdentityReference = identityRef,
                         Path = spec.OutputBlobPath
@@ -97,7 +102,16 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId, BatchSt
             );
         }
 
-        var command = WindowsTaskCommand.Build(spec.DelaySeconds, spec.InjectFailure, inputRelativePath, outputFileName);
+        var command = WindowsTaskCommand.Build(
+            spec.DelaySeconds,
+            spec.InjectFailure,
+            inputRelativePath,
+            outputFileName,
+            manifest?.Blob.Sha256,
+            manifest?.Blob.SizeBytes,
+            spec.Plan.Request.RequestId,
+            spec.TaskId,
+            spec.Attempt);
         var create = new BatchTaskCreateOptions(spec.TaskId, command) { Constraints = new BatchTaskConstraints { MaxTaskRetryCount = 0 } };
         create.EnvironmentSettings.Add(new EnvironmentSetting(FingerprintEnvironment) { Value = spec.Plan.Fingerprint });
 
