@@ -362,6 +362,22 @@ run "private_function_and_validation_vm" {
     error_message = "Function private DNS must be linked to the VM VNet without dynamic VM registration."
   }
   assert {
+    condition     = azurerm_storage_account.poc.public_network_access_enabled == true && output.deployment.storage_public_network_access_enabled == true
+    error_message = "Storage public network access must default to true until private connectivity is verified."
+  }
+  assert {
+    condition     = contains(azurerm_private_endpoint.storage_blob.private_service_connection[0].subresource_names, "blob") && contains(azurerm_private_endpoint.storage_queue.private_service_connection[0].subresource_names, "queue") && contains(azurerm_private_endpoint.storage_table.private_service_connection[0].subresource_names, "table")
+    error_message = "Storage Private Endpoints must target blob, queue, and table subresources."
+  }
+  assert {
+    condition     = azurerm_private_dns_zone.storage_blob.name == "privatelink.blob.core.windows.net" && azurerm_private_dns_zone.storage_queue.name == "privatelink.queue.core.windows.net" && azurerm_private_dns_zone.storage_table.name == "privatelink.table.core.windows.net"
+    error_message = "Storage private DNS zones must be created for blob, queue, and table."
+  }
+  assert {
+    condition     = azurerm_private_dns_zone_virtual_network_link.storage_blob.virtual_network_id == azurerm_virtual_network.validation.id && azurerm_private_dns_zone_virtual_network_link.storage_queue.virtual_network_id == azurerm_virtual_network.validation.id && azurerm_private_dns_zone_virtual_network_link.storage_table.virtual_network_id == azurerm_virtual_network.validation.id
+    error_message = "Storage private DNS zones must be linked to the validation VNet."
+  }
+  assert {
     condition     = var.validation_vm_subnet_prefix != var.validation_private_endpoint_subnet_prefix && alltrue([for ip in azurerm_network_interface.validation_vm.ip_configuration : ip.public_ip_address_id == null]) && azurerm_linux_virtual_machine.validation.disable_password_authentication && azurerm_linux_virtual_machine.validation.identity[0].type == "SystemAssigned"
     error_message = "VM must use a separate subnet, no public IP, no password login, and a managed identity."
   }
@@ -629,3 +645,15 @@ run "invalid_autoscale_interval_rejected" {
   variables { batch_autoscale_evaluation_interval = "PT1M" }
   expect_failures = [var.batch_autoscale_evaluation_interval]
 }
+
+run "storage_public_network_access_can_be_disabled" {
+  command = plan
+  variables {
+    storage_public_network_access_enabled = false
+  }
+  assert {
+    condition     = azurerm_storage_account.poc.public_network_access_enabled == false && output.deployment.storage_public_network_access_enabled == false
+    error_message = "Storage public network access must be configurable to false."
+  }
+}
+

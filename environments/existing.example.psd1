@@ -16,6 +16,8 @@
         # Keep the validated Azure Storage backend; use a separate environment for DTS.
         durable_backend = 'azureStorage'
         durable_task_hub_name = 'PocBatchHub'
+        # Storage public network access (keep $true until private connectivity is verified)
+        storage_public_network_access_enabled = $true
         # Replace with your SSH PUBLIC key. No public IP/SSH ingress is enabled; use VM Run Command.
         validation_vm_ssh_public_key = 'ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY poc-validation'
         validation_vm_admin_username = 'azureuser'

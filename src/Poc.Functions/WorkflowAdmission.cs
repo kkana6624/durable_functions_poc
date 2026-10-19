@@ -147,6 +147,29 @@ public sealed class WorkflowAdmission(IResultRepository results)
         return await TryReadAsync<BatchJobTerminationStatus>(WorkflowIdentity.TerminationPath(requestId), cancellationToken);
     }
 
+    public async Task<ReadyManifest?> TryGetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(readyManifestId) || results is null) return null;
+        try
+        {
+            var manifest = await results.ReadAsync<ReadyManifest>(WorkflowIdentity.ReadyManifestPath(readyManifestId), cancellationToken);
+            if (manifest is not null)
+            {
+                manifest.Validate();
+                if (manifest.ReadyManifestId != readyManifestId)
+                    throw new InvalidDataException("Ready manifest ID mismatch.");
+            }
+            return manifest;
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (KeyNotFoundException) { return null; }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 404) { return null; }
+    }
+
+    public async Task<ReadyManifest> GetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
+        await TryGetReadyManifestAsync(readyManifestId, cancellationToken)
+            ?? throw new FileNotFoundException($"Ready manifest '{readyManifestId}' not found.");
+
     public Task<WorkflowAdmissionRecord?> GetRecordAsync(string requestId, CancellationToken cancellationToken = default) =>
         ReadRecordAsync(requestId, cancellationToken);
 

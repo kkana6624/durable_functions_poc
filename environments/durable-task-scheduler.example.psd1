@@ -24,6 +24,8 @@
         # existing_service_plan_id = '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/existing-plan-rg/providers/Microsoft.Web/serverFarms/existing-linux-plan'
         durable_backend = 'durableTaskScheduler'
         durable_task_hub_name = 'your-task-hub'
+        # Storage public network access (keep $true until private connectivity is verified)
+        storage_public_network_access_enabled = $true
         validation_vm_ssh_public_key = 'ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY dts-validation'
         validation_vm_admin_username = 'azureuser'
         validation_vm_size = 'Standard_B2s'

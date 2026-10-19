@@ -11,8 +11,8 @@ public sealed class BlobResultRepository(BlobContainerClient container) : IResul
     public string GetUri(string path) => GetBlob(path).Uri.AbsoluteUri;
     private BlobClient GetBlob(string path)
     {
-        if (!path.StartsWith("runs/poc-", StringComparison.Ordinal) || path.Contains("..", StringComparison.Ordinal))
-            throw new ArgumentException("Blob path must be scoped to a PoC run.", nameof(path));
+        if ((!path.StartsWith("runs/poc-", StringComparison.Ordinal) && !path.StartsWith("inputs/", StringComparison.Ordinal)) || path.Contains("..", StringComparison.Ordinal))
+            throw new ArgumentException("Blob path must be scoped to a PoC run or inputs.", nameof(path));
         return container.GetBlobClient(path);
     }
     public async Task<string> PutIfAbsentAsync<T>(string path, T value, CancellationToken cancellationToken = default)

@@ -27,24 +27,6 @@ locals {
   batch_resource_group_name = var.batch_mode == "new" ? local.resource_group_name : try(split("/", var.batch_account_id)[4], null)
 }
 
-resource "azurerm_storage_account" "poc" {
-  name                            = "poc${var.name_suffix}"
-  resource_group_name             = local.resource_group_name
-  location                        = local.location
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
-  min_tls_version                 = "TLS1_2"
-  shared_access_key_enabled       = false
-  default_to_oauth_authentication = true
-  allow_nested_items_to_be_public = false
-  tags                            = local.tags
-}
-
-resource "azurerm_storage_container" "results" {
-  name                  = "poc-results"
-  storage_account_id    = azurerm_storage_account.poc.id
-  container_access_type = "private"
-}
 
 resource "azurerm_service_plan" "poc" {
   count               = var.existing_service_plan_id == null ? 1 : 0

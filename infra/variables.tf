@@ -287,3 +287,10 @@ variable "workflow_timeout_minutes" {
     error_message = "Workflow timeout must be an integer from 1 to 1440 minutes."
   }
 }
+
+variable "storage_public_network_access_enabled" {
+  type        = bool
+  default     = true
+  description = "Enable public network access for the storage account."
+}
+

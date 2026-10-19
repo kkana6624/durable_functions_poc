@@ -119,6 +119,51 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             await badRequest.WriteAsJsonAsync(new { error = InvalidRequestMessage });
             return badRequest;
         }
+
+        if (!string.IsNullOrEmpty(input.ReadyManifestId))
+        {
+            ReadyManifest? readyManifest;
+            try
+            {
+                readyManifest = await admission.TryGetReadyManifestAsync(input.ReadyManifestId, cancellationToken);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
+            {
+                var badManifest = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                await badManifest.WriteAsJsonAsync(new { error = $"Ready manifest '{input.ReadyManifestId}' is invalid." });
+                return badManifest;
+            }
+
+            if (readyManifest is null)
+            {
+                var notFound = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                await notFound.WriteAsJsonAsync(new { error = $"Ready manifest '{input.ReadyManifestId}' not found." });
+                return notFound;
+            }
+
+            bool ownerMismatch = false;
+            if (readyManifest.OwnerId is not null)
+            {
+                if (owner is null ||
+                    !string.Equals(owner.OwnerId, readyManifest.OwnerId, StringComparison.Ordinal) ||
+                    (readyManifest.OrgId is not null && !string.Equals(owner.OrgId, readyManifest.OrgId, StringComparison.Ordinal)))
+                {
+                    ownerMismatch = true;
+                }
+            }
+            else if (owner is not null)
+            {
+                ownerMismatch = true;
+            }
+
+            if (ownerMismatch)
+            {
+                var forbidden = CreateWorkflowResponse(request, HttpStatusCode.Forbidden);
+                await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this ready manifest." });
+                return forbidden;
+            }
+        }
+
         try
         {
             var instanceId = await admission.AdmitAsync(input, client, owner, cancellationToken);

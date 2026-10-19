@@ -13,6 +13,15 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
         catch (Azure.RequestFailedException ex) when (ex.Status == 404) { return null; }
     }
 
+    public Task<string> SaveReadyManifestAsync(ReadyManifest manifest, CancellationToken cancellationToken = default) =>
+        new BlobStorageRepository(results).SaveReadyManifestAsync(manifest, cancellationToken);
+
+    public Task<ReadyManifest?> TryGetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
+        new BlobStorageRepository(results).TryGetReadyManifestAsync(readyManifestId, cancellationToken);
+
+    public Task<ReadyManifest> GetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
+        new BlobStorageRepository(results).GetReadyManifestAsync(readyManifestId, cancellationToken);
+
     public async Task<WorkflowPlan> ClassifyAsync(WorkflowRequest request, CancellationToken cancellationToken = default)
     {
         request.Validate();
@@ -26,9 +35,14 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
         {
             resolution.Validate(request.RequestId);
         }
+        ReadyManifest? manifest = null;
+        if (!string.IsNullOrEmpty(request.ReadyManifestId))
+        {
+            manifest = await TryReadAsync<ReadyManifest>(WorkflowIdentity.ReadyManifestPath(request.ReadyManifestId), cancellationToken);
+        }
         var cancelRequested = cancelRecord is not null || resolution?.Status == "Cancelled";
         return new(request, classification.Classification, classification.Reason, WorkflowIdentity.JobId(request.RequestId),
-            WorkflowIdentity.Fingerprint(request, classification.Classification), settings.PollSeconds, settings.TimeoutMinutes, cancelRequested);
+            WorkflowIdentity.Fingerprint(request, classification.Classification, manifest), settings.PollSeconds, settings.TimeoutMinutes, cancelRequested);
     }
     public Task<BatchJobTerminationStatus> TerminateJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.TerminateJobAsync(plan, cancellationToken);
     public Task EnsureJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default) => batch.EnsureJobAsync(plan, cancellationToken);

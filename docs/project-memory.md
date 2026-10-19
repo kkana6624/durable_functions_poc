@@ -1,5 +1,19 @@
 # プロジェクトメモリ
 
+## 2026-10-19 Track 1（Input Ready パイプライン・契約拡張）および Track 3（Storage 閉域化 IaC）の実装完了
+
+- サブエージェント並列作業により、作業計画書（`docs/app-service-blob-batch-work-plan.md`）の Track 1（TASK-0.1, TASK-1.1〜1.3）および Track 3（TASK-3.1）を実装し、全単体・統合・IaC テストに合格しました。
+- **Track 1 (Input Ready & Contracts)**:
+  - `src/Poc.Core/Contracts.cs`: `ReadyManifest` および `ReadyManifestBlob`（コンテナ・相対キー検証、SHA-256、サイズ、不変性）を定義。`WorkflowRequest` に `ReadyManifestId`、`SchemaVersion`、`AlgorithmVersion`、`Mode` を追加。Fingerprint v1/v2 計算および `inputs/{readyManifestId}/manifest.json` パス解決を実装。
+  - `src/Poc.Core/BlobStorageRepository.cs`: `ReadyManifest` の条件付き作成（ETag による冪等・競合検出）、読み込み、ストリーミングハッシュ・サイズ検証（80KBバッファによる非メモリ展開）を実装。
+  - `src/Poc.Functions/WorkflowAdmission.cs` / `WorkflowFunctions.cs`: `StartWorkflow` で `ReadyManifestId` 指定時にマニフェスト取得・バリデーション・呼出元所有者照合（不一致 403、不在 400）を実施し、`admission.json` v2 形式で排他受付。レガシー v1 要求の 100% 後方互換を維持。
+  - `tests/Poc.Tests/ReadyManifestTests.cs`: 46 件の新規テストを追加（スキーマ検証、シリアライズ、ストア操作、Fingerprint、StartWorkflow 正常/不正/所有者不一致/競合/レガシー）。`dotnet test` 合計 340 件全件 Pass。
+- **Track 3 (Storage Private Endpoints & DNS IaC)**:
+  - `infra/storage.tf`: Storage Account に対する Blob / Queue / Table 各 Private Endpoint を追加（subnet `private_endpoints`）。`storage_public_network_access_enabled` 変数による PNA 切替に対応。
+  - `infra/private-dns.tf`: `privatelink.blob.core.windows.net`, `privatelink.queue.core.windows.net`, `privatelink.table.core.windows.net` の Private DNS ゾーンと VNet リンクを定義。
+  - `infra/outputs.tf` / `infra/tests/modes.tftest.hcl`: 各 Private IP / Endpoint 出力を追加し、Terraform test 全 38 件 Pass、`terraform validate` Pass。
+  - PowerShell オフラインテスト 8 スイート全件 Pass を確認。
+
 ## 2026-10-19 App Service・Blob 入力・実業務 Batch 計算の次期実装指示書を作成
 
 - `docs/app-service-blob-batch-implementation-instructions.md` を、`f87b050` 時点の既存基盤とコード契約を基準に作成しました。これは業務契約・認証/所有者境界・入力 Blob の不変性・Durable/Batch 互換・取消/公開調停・閉域化・受け入れ試験の実装要件を整理した計画書であり、App Service、入力受付、実 C++、Batch 大容量転送の実装完了を意味しません。

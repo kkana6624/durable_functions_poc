@@ -10,7 +10,11 @@ public sealed class AzureBatchGateway(BatchClient client, string poolId) : IBatc
     private static void ValidatePlan(WorkflowPlan plan)
     {
         plan.Request.Validate();
-        if (plan.JobId != WorkflowIdentity.JobId(plan.Request.RequestId) || plan.Fingerprint != WorkflowIdentity.Fingerprint(plan.Request, plan.Classification))
+        if (plan.JobId != WorkflowIdentity.JobId(plan.Request.RequestId))
+            throw new ArgumentException("Invalid workflow identity.");
+        if (string.IsNullOrWhiteSpace(plan.Fingerprint) || plan.Fingerprint.Length != 64 || !plan.Fingerprint.All(char.IsAsciiHexDigitLower))
+            throw new ArgumentException("Invalid workflow identity.");
+        if (string.IsNullOrEmpty(plan.Request.ReadyManifestId) && plan.Fingerprint != WorkflowIdentity.Fingerprint(plan.Request, plan.Classification))
             throw new ArgumentException("Invalid workflow identity.");
     }
     public async Task EnsureJobAsync(WorkflowPlan plan, CancellationToken cancellationToken = default)

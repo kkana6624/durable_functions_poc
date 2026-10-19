@@ -71,12 +71,50 @@ output "deployment" {
     function_private_ip                   = azurerm_private_endpoint.functions.private_service_connection[0].private_ip_address
     batch_private_ip                      = var.batch_mode == "new" ? azurerm_private_endpoint.batch_account[0].private_service_connection[0].private_ip_address : null
     batch_node_management_private_ip      = var.batch_mode == "new" ? azurerm_private_endpoint.batch_node_management[0].private_service_connection[0].private_ip_address : null
+    storage_public_network_access_enabled = var.storage_public_network_access_enabled
+    storage_blob_private_endpoint_id      = azurerm_private_endpoint.storage_blob.id
+    storage_blob_private_ip               = azurerm_private_endpoint.storage_blob.private_service_connection[0].private_ip_address
+    storage_queue_private_endpoint_id     = azurerm_private_endpoint.storage_queue.id
+    storage_queue_private_ip              = azurerm_private_endpoint.storage_queue.private_service_connection[0].private_ip_address
+    storage_table_private_endpoint_id     = azurerm_private_endpoint.storage_table.id
+    storage_table_private_ip              = azurerm_private_endpoint.storage_table.private_service_connection[0].private_ip_address
     workflow_auth_mode                    = var.workflow_auth_mode
     workflow_auth_allowed_backend_app_ids = var.workflow_auth_allowed_backend_app_ids
   }
+}
+
+output "storage_blob_private_endpoint_id" {
+  value       = azurerm_private_endpoint.storage_blob.id
+  description = "The ID of the Storage Blob Private Endpoint."
+}
+
+output "storage_blob_private_ip" {
+  value       = azurerm_private_endpoint.storage_blob.private_service_connection[0].private_ip_address
+  description = "The private IP address of the Storage Blob Private Endpoint."
+}
+
+output "storage_queue_private_endpoint_id" {
+  value       = azurerm_private_endpoint.storage_queue.id
+  description = "The ID of the Storage Queue Private Endpoint."
+}
+
+output "storage_queue_private_ip" {
+  value       = azurerm_private_endpoint.storage_queue.private_service_connection[0].private_ip_address
+  description = "The private IP address of the Storage Queue Private Endpoint."
+}
+
+output "storage_table_private_endpoint_id" {
+  value       = azurerm_private_endpoint.storage_table.id
+  description = "The ID of the Storage Table Private Endpoint."
+}
+
+output "storage_table_private_ip" {
+  value       = azurerm_private_endpoint.storage_table.private_service_connection[0].private_ip_address
+  description = "The private IP address of the Storage Table Private Endpoint."
 }
 
 output "workflow_auth_allowed_backend_app_ids" {
   value       = var.workflow_auth_allowed_backend_app_ids
   description = "Allowed backend application client IDs for EntraEasyAuth mode."
 }
+
