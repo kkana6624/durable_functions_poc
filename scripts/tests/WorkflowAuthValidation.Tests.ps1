@@ -2,6 +2,7 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot '../Invoke-WorkflowAuthValidation.ps1')
 $realGetKeys=${function:Get-WorkflowAuthKeys}
+$realInvokeHttp=${function:Invoke-WorkflowAuthHttp}
 function Assert-True([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message } }
 $directory=Join-Path ([IO.Path]::GetTempPath()) ('workflow-auth-tests-'+[Guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $directory
@@ -121,5 +122,50 @@ try {
         try {Assert-WorkflowAuthUri $url 'https://app.example' '/api/workflows/x'} catch {$failed=$true}
         Assert-True $failed 'Unsafe public URL accepted'
     }
+
+    # Verify real Invoke-WorkflowAuthHttp behavior on malformed JSON containing sensitive content
+    Add-Type -TypeDefinition @'
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading.Tasks;
+public sealed class MalformedJsonLoopbackServer : IDisposable {
+    private readonly TcpListener listener;
+    public readonly int Port;
+    public MalformedJsonLoopbackServer(string payload) {
+        listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        Port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Task.Factory.StartNew(() => {
+            try {
+                using (var client = listener.AcceptTcpClient())
+                using (var stream = client.GetStream()) {
+                    var reader = new System.IO.StreamReader(stream, Encoding.UTF8, false, 1024, true);
+                    string line;
+                    while (!String.IsNullOrEmpty(line = reader.ReadLine())) {}
+                    var bytes = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + Encoding.UTF8.GetByteCount(payload) + "\r\nConnection: close\r\n\r\n" + payload);
+                    stream.Write(bytes, 0, bytes.Length);
+                }
+            } catch {}
+        }, TaskCreationOptions.LongRunning);
+    }
+    public void Dispose() { try { listener.Stop(); } catch {} }
+}
+'@
+    $server = [MalformedJsonLoopbackServer]::new("{ malformed json body: " + $script:secret + " }")
+    try {
+        $caught = $null
+        try {
+            & $realInvokeHttp -Uri "http://127.0.0.1:$($server.Port)/api" -Method 'Get' -Headers @{} -Body $null
+        } catch {
+            $caught = $_.Exception
+        }
+        Assert-True ($caught -ne $null -and $caught.Data['WorkflowAuthCode'] -eq 'InvalidJsonResponse') 'Malformed JSON must fail immediately with InvalidJsonResponse'
+        Assert-True ($null -eq $caught.Data['WorkflowAuthMessage'] -or $caught.Data['WorkflowAuthMessage'] -notmatch $script:secret) 'Malformed JSON must not leak response content in exception message'
+    } finally {
+        $server.Dispose()
+    }
+
     Write-Host 'WorkflowAuthValidation offline tests passed (Fake HTTP/token/keys; no Azure calls).'
 } finally { Remove-Item -LiteralPath $directory -Recurse -Force }

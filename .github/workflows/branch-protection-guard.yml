@@ -45,6 +45,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           PR_AUTHOR="${{ github.event.pull_request.user.login }}"
           if [ "$PR_AUTHOR" = "$OWNER" ]; then
@@ -52,11 +53,28 @@ jobs:
             exit 0
           fi
 
-          REVIEWS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '[.[] | select(.user.login == "'"$OWNER"'") | .state] | last')
-          if [ "$REVIEWS" = "APPROVED" ]; then
-            echo "PR has been reviewed and approved by repository owner ($OWNER)."
-            exit 0
-          else
-            echo "::error::PR requires explicit approval from repository owner ($OWNER) before merging. Current owner review status: ${REVIEWS:-NONE}"
+          if [ -z "$PR_HEAD_SHA" ]; then
+            PR_HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          fi
+
+          LATEST_REVIEW=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" | jq -s 'add // [] | [.[] | select(.user.login == "'"$OWNER"'" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | last // empty')
+          if [ -z "$LATEST_REVIEW" ]; then
+            echo "::error::PR requires explicit approval from repository owner ($OWNER) before merging. No qualifying review found."
             exit 1
           fi
+
+          REVIEW_STATE=$(echo "$LATEST_REVIEW" | jq -r '.state // empty')
+          REVIEW_COMMIT=$(echo "$LATEST_REVIEW" | jq -r '.commit_id // empty')
+
+          if [ "$REVIEW_STATE" != "APPROVED" ]; then
+            echo "::error::PR requires explicit approval from repository owner ($OWNER) before merging. Current owner review status: ${REVIEW_STATE:-NONE}"
+            exit 1
+          fi
+
+          if [ -z "$PR_HEAD_SHA" ] || [ -z "$REVIEW_COMMIT" ] || [ "$REVIEW_COMMIT" != "$PR_HEAD_SHA" ]; then
+            echo "::error::PR approval is stale. Approved commit was '${REVIEW_COMMIT:-UNKNOWN}', but current PR head is '${PR_HEAD_SHA:-UNKNOWN}'. Repository owner ($OWNER) must re-approve the latest changes."
+            exit 1
+          fi
+
+          echo "PR has been reviewed and approved by repository owner ($OWNER) at commit ($REVIEW_COMMIT)."
+          exit 0

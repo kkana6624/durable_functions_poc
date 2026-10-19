@@ -71,7 +71,13 @@ function Invoke-WorkflowAuthHttp([string]$Uri,[string]$Method,[hashtable]$Header
             if ($code -in @(200,202)) {
                 $content=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
                 if ($content.Length -gt 65536) { Stop-WorkflowAuthValidation 'OversizedResponse' }
-                $data=ConvertTo-DeploymentHashtable ($content | ConvertFrom-Json)
+                $parsed=$null
+                try {
+                    $parsed = $content | ConvertFrom-Json
+                } catch {
+                    Stop-WorkflowAuthValidation 'InvalidJsonResponse'
+                }
+                $data=ConvertTo-DeploymentHashtable $parsed
                 if ($response.Headers.Location) { $location=$response.Headers.Location.ToString() }
             }
             return @{Code=$code;Data=$data;Location=$location;PackageSha256=$packageHeader;AssemblySha256=$assemblyHeader}
@@ -81,8 +87,7 @@ function Invoke-WorkflowAuthHttp([string]$Uri,[string]$Method,[hashtable]$Header
                 Start-Sleep -Seconds 2
                 continue
             }
-            $cleanMsg = [regex]::Replace($_.Exception.Message, 'https?://[^\s/$.?#].[^\s]*', '<sanitized-url>')
-            Stop-WorkflowAuthValidation 'HttpRequestFailed' ($_.Exception.GetType().Name + ': ' + $cleanMsg)
+            Stop-WorkflowAuthValidation 'HttpRequestFailed' ($_.Exception.GetType().Name)
         }
         finally { if ($response) {$response.Dispose()}; $request.Dispose(); $client.Dispose(); $handler.Dispose() }
     }
