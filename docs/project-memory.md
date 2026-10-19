@@ -1,5 +1,12 @@
 # プロジェクトメモリ
 
+## 2026-10-19 App Service・Blob 入力・実業務 Batch 計算の次期実装指示書を作成
+
+- `docs/app-service-blob-batch-implementation-instructions.md` を、`f87b050` 時点の既存基盤とコード契約を基準に作成しました。これは業務契約・認証/所有者境界・入力 Blob の不変性・Durable/Batch 互換・取消/公開調停・閉域化・受け入れ試験の実装要件を整理した計画書であり、App Service、入力受付、実 C++、Batch 大容量転送の実装完了を意味しません。
+- 既存オンプレミス Web backend を置換するか App Service を追加するか、上流ユーザー認証と owner/org 対応、業務データ形式・最大サイズ・バイナリ仕様は未確定ゲートです。Azure に対する新規実装・構成変更・実機検証はこの文書作成では行っていません。
+- Azure Storage Durable backend を既定の既存環境として保持し、Durable Task Scheduler への切替・追加検証は独立した環境と状態として扱う方針を記録します。実行中 history/Entity の backend 間移行や接続先設定だけの切替は前提にしません。
+- DTS 比較環境は Azure Storage 環境と並存する別 RG・Terraform state key・Function App・Storage・Task Hub とし、DTS Private Endpoint/DNS の追加と現行コードの最新回帰が必要です。Durable backend の in-place 接続設定変更だけを履歴移行として扱いません。
+
 ## 2026-10-19 ドキュメント再構成およびレビュー指摘3件（P3閉域化範囲限定・P3認証実証整合・P3動的タイムアウト記述）の改修完了
 
 ドキュメント全体の「AI くささ」を排除した人間向け構造化（結論・責務境界・クイックスタート・引き継ぎバックログの整理）に加え、レビューで指摘された 3 件の文書整合性課題（[P3] 閉域化達成範囲の限定と Storage 公開維持の明記、[P3] README 内での認証・受付排他の実証完了状況の整合、[P3] ゲスト操作タイムアウトの動的計算への同期）を改修しました。

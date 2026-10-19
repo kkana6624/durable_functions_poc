@@ -8,6 +8,8 @@
 
 これに伴い、PoC としての検証フェーズを終了し、本ドキュメントを**「次期開発フェーズ（実業務アプリ連携・本番化）への引き継ぎ計画書」**として再構成します。
 
+App Service からの入力 Blob 受付、実業務データ契約、Windows Batch の実バイナリと大容量入出力、および Azure Storage 環境と並存する DTS 比較環境（別 RG/state/Function App/Storage/Task Hub、DTS Private Endpoint と最新コード回帰を含む）の具体要件は、[次期実装指示書](app-service-blob-batch-implementation-instructions.md) にまとめています。既存の [P0 実装指示書](CODEX_IMPLEMENTATION_INSTRUCTIONS.md) は当時の構成・履歴として扱い、次期実装では新指示書と合意済みの業務契約を適用します。Durable backend の接続設定だけを変更して既存履歴を移行するものではありません。
+
 ---
 
 ## 2. 実機検証済みの基盤範囲（完了項目）

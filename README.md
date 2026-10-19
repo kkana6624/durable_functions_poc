@@ -2,7 +2,7 @@
 
 Windows Batch Pool への Task 投入から、Durable Functions（子オーケストレーションおよび永続 Timer）による完了待機、Batch File API 経由での結果取得、Blob 保存・集約、最終 Manifest 公開までの一連の非同期ワークフローを検証する PoC 資材です。
 
-設計の背景と実装要件については、[設計書](docs/azure-hpc-modernization-poc-design.md) および [実装指示書](docs/CODEX_IMPLEMENTATION_INSTRUCTIONS.md) を参照してください。
+設計の背景と既存 PoC の実装要件については、[設計書](docs/azure-hpc-modernization-poc-design.md) および当時の [P0 実装指示書](docs/CODEX_IMPLEMENTATION_INSTRUCTIONS.md) を参照してください。App Service・Blob 入力・実業務 Batch 計算、および Azure Storage 環境と並存する DTS 比較環境（別 RG・state・Function App・Storage/Task Hub、DTS Private Endpoint を含む）の次期実装要件は、[次期実装指示書](docs/app-service-blob-batch-implementation-instructions.md) を参照してください。これは新しい実装計画であり、既存の PoC に未実装機能が含まれることを示します。DTS 接続先の設定変更だけで既存の実行履歴を移行する計画ではありません。
 
 ## 1. PoC の結論と到達点
 
