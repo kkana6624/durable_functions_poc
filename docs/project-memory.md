@@ -1,5 +1,21 @@
 # プロジェクトメモリ
 
+## 2026-10-19 PoC 完了に伴う Azure リソースの完全破棄（Teardown）完了
+
+- PoC の完了・区切りに伴い、本リポジトリの資材によって作成された全 Azure リソースを安全に破棄・削除しました。
+- **破棄実績**:
+  1. **DTS PoC 環境 (`poc-durable-scheduler-rg`)**:
+     - `scripts/destroy.ps1`（Terraform destroy）により、Durable Task Scheduler、Task Hub、Function App、Storage Account、Validation VM、Private Endpoints、Private DNS Zones、RBAC 割当など全 36 リソースおよびリソースグループを完全破棄。
+  2. **メイン PoC 環境 (`poc-durable-batch-rg`)**:
+     - Terraform destroy により Batch Account、Batch Pool、Function App、Storage Account、App Service Plan、Validation VM、VNet、Subnets、Private Endpoints、NAT Gateway、RBAC 割当等の管理リソースを破棄。
+     - 一時的・プラットフォーム付帯リソース（`poc-unauthorized-id`、`Application Insights Smart Detection`）を含め、リソースグループ `poc-durable-batch-rg` を完全削除。
+  3. **Terraform バックエンド環境 (`poc-terraform-state-rg`)**:
+     - ストレージアカウント（`pocdf40481149state`）の blob/container リース解放状態を確認の上、リソースグループ `poc-terraform-state-rg` を完全削除。
+  4. **残存リソースの確認**:
+     - サブスクリプション全体で `az resource list` を照会し、Azure 既定の `NetworkWatcherRG`（`NetworkWatcher_japaneast`）以外の全 PoC リソースグループ・リソースが存在しない（完全削除済み）ことを検証・確認。
+- **破棄自動化スクリプトの追加**:
+  - `scripts/destroy.ps1`: `deploy.ps1` と対称的に、設定ファイルと環境名を指定して Terraform destroy（およびオプションで bootstrap backend destroy）を安全に実行するスクリプトをリポジトリに追加。
+
 ## 2026-10-19 レビュー指摘 P1（EasyAuth未対応拒否・VM権限拡充）の改修および P2（EasyAuth導入時のヘルスチェック課題）の記録
 
 - **[P1] App Service EasyAuth モードの未対応拒否（IaC / デプロイガード / アプリ起動ガード）**:
