@@ -24,4 +24,24 @@ public sealed class AppServiceAuthenticationOptions
     /// Default is false (unauthenticated requests return 401).
     /// </summary>
     public bool AllowAnonymousInStub { get; set; }
+
+    /// <summary>
+    /// OpenID Connect / Entra ID authority URL (e.g. https://login.microsoftonline.com/{tenantId}/v2.0).
+    /// </summary>
+    public string? Authority { get; set; }
+
+    /// <summary>
+    /// Expected audience (aud) for JWT bearer tokens.
+    /// </summary>
+    public string? Audience { get; set; }
+
+    /// <summary>
+    /// Whether HTTPS is required for metadata addresses or authority. Defaults to true.
+    /// </summary>
+    public bool RequireHttpsMetadata { get; set; } = true;
+
+    /// <summary>
+    /// When true, bypasses signature validation (useful for local development and unit tests).
+    /// </summary>
+    public bool BypassSignatureValidation { get; set; }
 }

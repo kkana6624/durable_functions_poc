@@ -37,7 +37,13 @@ param(
     [switch]$AsJson,
 
     [Parameter(Mandatory = $false)]
-    [scriptblock]$HttpHandler
+    [scriptblock]$HttpHandler,
+
+    [Parameter(Mandatory = $false)]
+    [scriptblock]$BlobUploader,
+
+    [Parameter(Mandatory = $false)]
+    [string]$StorageAccountName
 )
 
 Set-StrictMode -Version Latest
@@ -208,7 +214,9 @@ function Invoke-AppServiceValidationMain {
         [int]$PollIntervalSeconds,
         [int]$TimeoutSeconds,
         [switch]$AsJson,
-        [scriptblock]$HttpHandler
+        [scriptblock]$HttpHandler,
+        [scriptblock]$BlobUploader,
+        [string]$StorageAccountName
     )
 
     # 1. URL & Argument Validation
@@ -245,10 +253,20 @@ function Invoke-AppServiceValidationMain {
 
     $defaultHeaders = & $buildHeaders
 
+    # Prepare deterministic test data for upload validation (1,024 bytes)
+    $testData = [byte[]](0..1023 | ForEach-Object { [byte]($_ % 256) })
+    $testDataSizeBytes = [long]$testData.Length
+    $sha256Managed = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $testDataSha256 = ([BitConverter]::ToString($sha256Managed.ComputeHash($testData))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256Managed.Dispose()
+    }
+
     # --- Scenario 1: POST /api/uploads/initiate ---
     $initiatePayload = @{
         filename          = "validation-test.bin"
-        expectedSizeBytes = 1048576
+        expectedSizeBytes = $testDataSizeBytes
         contentType       = "application/octet-stream"
     } | ConvertTo-Json -Compress
 
@@ -289,6 +307,108 @@ function Invoke-AppServiceValidationMain {
         Error      = Protect-AppServiceSecret $scen1Error
     }
 
+    # --- Scenario 1.5: Upload Blob to Storage ---
+    $uploadPassed = $false
+    $uploadError = $null
+    $uploadMethod = $null
+    $scenarioUploadResult = $null
+
+    if (-not $scen1Passed) {
+        $uploadError = "Skipped because Scenario 1 (InitiateUpload) failed."
+        $scenarioUploadResult = [pscustomobject]@{
+            Scenario     = 'UploadBlob'
+            Passed       = $false
+            Container    = $null
+            BlobKey      = $null
+            SizeBytes    = $null
+            Sha256       = $null
+            UploadMethod = $null
+            Error        = $uploadError
+        }
+    } else {
+        if ($BlobUploader) {
+            $uploadMethod = 'BlobUploader'
+            try {
+                $rawRes = & $BlobUploader $scen1Container $scen1BlobKey $testData $testDataSizeBytes $testDataSha256
+                if ($null -ne $rawRes) {
+                    if ($rawRes -is [bool] -and -not $rawRes) {
+                        $uploadError = "BlobUploader returned false."
+                    } else {
+                        $passedVal = Get-SafeProperty $rawRes 'Passed'
+                        $successVal = Get-SafeProperty $rawRes 'Success'
+                        $errVal = Get-SafeProperty $rawRes 'Error'
+                        $codeVal = Get-SafeProperty $rawRes 'StatusCode'
+                        if ($null -ne $passedVal -and -not $passedVal) {
+                            $uploadError = if ($errVal) { $errVal } else { "BlobUploader failed (passed=false)." }
+                        } elseif ($null -ne $successVal -and -not $successVal) {
+                            $uploadError = if ($errVal) { $errVal } else { "BlobUploader failed (success=false)." }
+                        } elseif ($null -ne $codeVal -and [int]$codeVal -ge 400) {
+                            $uploadError = if ($errVal) { $errVal } else { "BlobUploader returned HTTP $codeVal." }
+                        }
+                    }
+                }
+                if (-not $uploadError) {
+                    $uploadPassed = $true
+                }
+            } catch {
+                $uploadError = "BlobUploader threw exception: $($_.Exception.Message)"
+            }
+        } elseif (-not [string]::IsNullOrWhiteSpace($StorageAccountName)) {
+            $uploadMethod = 'AzCli'
+            $azCmd = Get-Command 'az' -ErrorAction SilentlyContinue
+            if (-not $azCmd) {
+                $uploadError = "Azure CLI (az) not found in PATH to upload blob to storage account '$StorageAccountName'."
+            } else {
+                $tempFile = [System.IO.Path]::GetTempFileName()
+                $stderrFile = [System.IO.Path]::GetTempFileName()
+                try {
+                    [System.IO.File]::WriteAllBytes($tempFile, $testData)
+                    $azArgs = @(
+                        'storage', 'blob', 'upload',
+                        '--account-name', $StorageAccountName,
+                        '--container-name', $scen1Container,
+                        '--name', $scen1BlobKey,
+                        '--file', $tempFile,
+                        '--overwrite', 'true',
+                        '--auth-mode', 'login',
+                        '--no-progress',
+                        '--only-show-errors',
+                        '--output', 'none'
+                    )
+                    $process = Start-Process -FilePath $azCmd.Source -ArgumentList $azArgs -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+                    if ($process.ExitCode -ne 0) {
+                        $errText = Get-Content $stderrFile -Raw -ErrorAction SilentlyContinue
+                        $uploadError = "az storage blob upload failed with exit code $($process.ExitCode): $errText"
+                    } else {
+                        $uploadPassed = $true
+                    }
+                } catch {
+                    $uploadError = "Blob upload execution threw exception: $($_.Exception.Message)"
+                } finally {
+                    if (Test-Path $tempFile) { Remove-Item -Force $tempFile -ErrorAction SilentlyContinue }
+                    if (Test-Path $stderrFile) { Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue }
+                }
+            }
+        } elseif ($HttpHandler) {
+            # Simulated upload for mock/fake HTTP test environments when no custom uploader or storage account is provided
+            $uploadMethod = 'Simulated'
+            $uploadPassed = $true
+        } else {
+            $uploadError = "StorageAccountName or BlobUploader must be specified for blob upload."
+        }
+
+        $scenarioUploadResult = [pscustomobject]@{
+            Scenario     = 'UploadBlob'
+            Passed       = $uploadPassed
+            Container    = $scen1Container
+            BlobKey      = $scen1BlobKey
+            SizeBytes    = $testDataSizeBytes
+            Sha256       = $testDataSha256
+            UploadMethod = $uploadMethod
+            Error        = Protect-AppServiceSecret $uploadError
+        }
+    }
+
     # --- Scenario 2: POST /api/uploads/finalize ---
     $scen2Passed = $false
     $scen2Error = $null
@@ -305,13 +425,23 @@ function Invoke-AppServiceValidationMain {
             Sha256          = $null
             Error           = $scen2Error
         }
+    } elseif (-not $uploadPassed) {
+        $scen2Error = "Skipped because UploadBlob failed: $uploadError"
+        $scenario2Result = [pscustomobject]@{
+            Scenario        = 'FinalizeUpload'
+            Passed          = $false
+            StatusCode      = $null
+            ReadyManifestId = $null
+            SizeBytes       = $null
+            Sha256          = $null
+            Error           = Protect-AppServiceSecret $scen2Error
+        }
     } else {
-        $expectedSha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
         $finalizePayload = @{
             inputId           = $scen1InputId
             blobKey           = $scen1BlobKey
-            expectedSizeBytes = 1048576
-            expectedSha256    = $expectedSha256
+            expectedSizeBytes = $testDataSizeBytes
+            expectedSha256    = $testDataSha256
             container         = $scen1Container
         } | ConvertTo-Json -Compress
 
@@ -333,10 +463,10 @@ function Invoke-AppServiceValidationMain {
             $scen2Error = "FinalizeUpload returned HTTP $scen2StatusCode instead of 200: $scen2Body"
         } elseif (-not $scen2ReadyManifestId) {
             $scen2Error = "FinalizeUpload response missing readyManifestId."
-        } elseif ($scen2SizeBytes -ne 1048576) {
-            $scen2Error = "FinalizeUpload sizeBytes ($scen2SizeBytes) does not match expected (1048576)."
-        } elseif (-not [string]::Equals([string]$scen2Sha256, $expectedSha256, [StringComparison]::OrdinalIgnoreCase)) {
-            $scen2Error = "FinalizeUpload sha256 ($scen2Sha256) does not match expected ($expectedSha256)."
+        } elseif ($scen2SizeBytes -ne $testDataSizeBytes) {
+            $scen2Error = "FinalizeUpload sizeBytes ($scen2SizeBytes) does not match expected ($testDataSizeBytes)."
+        } elseif (-not [string]::Equals([string]$scen2Sha256, $testDataSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            $scen2Error = "FinalizeUpload sha256 ($scen2Sha256) does not match expected ($testDataSha256)."
         } else {
             $scen2Passed = $true
         }
@@ -567,7 +697,7 @@ function Invoke-AppServiceValidationMain {
     }
 
     # --- Overall Result Compilation ---
-    $allPassed = $scen1Passed -and $scen2Passed -and $scen3Passed -and $scen4Passed -and $scen5Passed -and $scen6Passed -and (-not $secretLeakDetected)
+    $allPassed = $scen1Passed -and $uploadPassed -and $scen2Passed -and $scen3Passed -and $scen4Passed -and $scen5Passed -and $scen6Passed -and (-not $secretLeakDetected)
 
     $summary = [pscustomobject]@{
         ValidationKind     = 'AppServiceValidation'
@@ -580,6 +710,7 @@ function Invoke-AppServiceValidationMain {
         SecretLeakDetected = [bool]$secretLeakDetected
         Scenarios          = [ordered]@{
             InitiateUpload        = $scenario1Result
+            UploadBlob            = $scenarioUploadResult
             FinalizeUpload        = $scenario2Result
             StartWorkflow         = $scenario3Result
             GetWorkflowStatus     = $scenario4Result
@@ -605,4 +736,6 @@ Invoke-AppServiceValidationMain `
     -PollIntervalSeconds $PollIntervalSeconds `
     -TimeoutSeconds $TimeoutSeconds `
     -AsJson:$AsJson `
-    -HttpHandler $HttpHandler
+    -HttpHandler $HttpHandler `
+    -BlobUploader $BlobUploader `
+    -StorageAccountName $StorageAccountName

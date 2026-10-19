@@ -218,12 +218,22 @@ Describe "Invoke-AppServiceValidation" {
             $scen1.BlobKey | Should Be "owners/app-owner-001/inputs/in-fake-001/validation-test.bin"
             $scen1.Container | Should Be "workflow-input"
 
+            # Verify Scenario 1.5: UploadBlob
+            $scenUpload = $result.Scenarios.UploadBlob
+            $scenUpload.Passed | Should Be $true
+            $scenUpload.Container | Should Be "workflow-input"
+            $scenUpload.BlobKey | Should Be "owners/app-owner-001/inputs/in-fake-001/validation-test.bin"
+            $scenUpload.SizeBytes | Should Be 1024
+            $scenUpload.Sha256 | Should Be "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
+            $scenUpload.UploadMethod | Should Be "Simulated"
+
             # Verify Scenario 2: FinalizeUpload
             $scen2 = $result.Scenarios.FinalizeUpload
             $scen2.Passed | Should Be $true
             $scen2.StatusCode | Should Be 200
             $scen2.ReadyManifestId | Should Be "ready-fake-001"
-            $scen2.SizeBytes | Should Be 1048576
+            $scen2.SizeBytes | Should Be 1024
+            $scen2.Sha256 | Should Be "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
 
             # Verify Scenario 3: StartWorkflow
             $scen3 = $result.Scenarios.StartWorkflow
@@ -385,6 +395,8 @@ Describe "Invoke-AppServiceValidation" {
             $result.AllScenariosPassed | Should Be $false
             $result.Scenarios.InitiateUpload.Passed | Should Be $false
             $result.Scenarios.InitiateUpload.StatusCode | Should Be 500
+            $result.Scenarios.UploadBlob.Passed | Should Be $false
+            $result.Scenarios.UploadBlob.Error | Should Match "Skipped because Scenario 1"
             $result.Scenarios.FinalizeUpload.Passed | Should Be $false
             $result.Scenarios.FinalizeUpload.Error | Should Match "Skipped because Scenario 1"
         }
@@ -429,6 +441,107 @@ Describe "Invoke-AppServiceValidation" {
         }
     }
 
+    Context "Blob アップロードおよび Finalize 整合性検証 (Scenario 1.5 & Scenario 2)" {
+        It "Invokes custom BlobUploader with correct parameters (Container, BlobKey, 1024-byte payload, accurate SHA-256)" {
+            $recorded = @{}
+            $uploader = {
+                param($Container, $BlobKey, $Data, $SizeBytes, $Sha256)
+                $recorded['Container'] = $Container
+                $recorded['BlobKey']   = $BlobKey
+                $recorded['DataLen']   = $Data.Length
+                $recorded['SizeBytes'] = $SizeBytes
+                $recorded['Sha256']    = $Sha256
+                return @{ Passed = $true }
+            }
+
+            $handler = New-DefaultFakeHttpHandler
+            $result = & $scriptPath -AppServiceUrl "https://app-poc-test.azurewebsites.net" `
+                -PollIntervalSeconds 0 `
+                -TimeoutSeconds 10 `
+                -HttpHandler $handler `
+                -BlobUploader $uploader
+
+            $result.AllScenariosPassed | Should Be $true
+            $recorded['Container'] | Should Be "workflow-input"
+            $recorded['BlobKey'] | Should Be "owners/app-owner-001/inputs/in-fake-001/validation-test.bin"
+            $recorded['DataLen'] | Should Be 1024
+            $recorded['SizeBytes'] | Should Be 1024
+            $recorded['Sha256'] | Should Be "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
+
+            $result.Scenarios.UploadBlob.Passed | Should Be $true
+            $result.Scenarios.UploadBlob.UploadMethod | Should Be "BlobUploader"
+            $result.Scenarios.UploadBlob.SizeBytes | Should Be 1024
+            $result.Scenarios.UploadBlob.Sha256 | Should Be "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
+        }
+
+        It "Ensures Finalize receives accurate expectedSizeBytes and expectedSha256 matching uploaded blob" {
+            $finalizeReceived = @{}
+            $handler = {
+                param($Uri, $Method, $Headers, $Body)
+                if ($Method -eq 'POST' -and $Uri -match '/api/uploads/finalize$') {
+                    $json = $Body | ConvertFrom-Json
+                    $finalizeReceived['expectedSizeBytes'] = $json.expectedSizeBytes
+                    $finalizeReceived['expectedSha256']    = $json.expectedSha256
+                    $finalizeReceived['blobKey']           = $json.blobKey
+                    $finalizeReceived['container']         = $json.container
+                }
+                $defaultHandler = New-DefaultFakeHttpHandler
+                return & $defaultHandler $Uri $Method $Headers $Body
+            }
+
+            $result = & $scriptPath -AppServiceUrl "https://app-poc-test.azurewebsites.net" `
+                -PollIntervalSeconds 0 `
+                -TimeoutSeconds 10 `
+                -HttpHandler $handler
+
+            $result.AllScenariosPassed | Should Be $true
+            $finalizeReceived['expectedSizeBytes'] | Should Be 1024
+            $finalizeReceived['expectedSha256'] | Should Be "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
+            $finalizeReceived['container'] | Should Be "workflow-input"
+            $finalizeReceived['blobKey'] | Should Be "owners/app-owner-001/inputs/in-fake-001/validation-test.bin"
+        }
+
+        It "Fails validation and skips FinalizeUpload when BlobUploader returns failure" {
+            $uploader = {
+                param($Container, $BlobKey, $Data, $SizeBytes, $Sha256)
+                return @{ Passed = $false; Error = "Disk quota exceeded in blob storage" }
+            }
+
+            $handler = New-DefaultFakeHttpHandler
+            $result = & $scriptPath -AppServiceUrl "https://app-poc-test.azurewebsites.net" `
+                -PollIntervalSeconds 0 `
+                -TimeoutSeconds 10 `
+                -HttpHandler $handler `
+                -BlobUploader $uploader
+
+            $result.AllScenariosPassed | Should Be $false
+            $result.Scenarios.UploadBlob.Passed | Should Be $false
+            $result.Scenarios.UploadBlob.Error | Should Match "Disk quota exceeded"
+            $result.Scenarios.FinalizeUpload.Passed | Should Be $false
+            $result.Scenarios.FinalizeUpload.Error | Should Match "Skipped because UploadBlob failed"
+        }
+
+        It "Fails validation and skips FinalizeUpload when BlobUploader throws exception" {
+            $uploader = {
+                param($Container, $BlobKey, $Data, $SizeBytes, $Sha256)
+                throw "Network socket reset during blob transfer"
+            }
+
+            $handler = New-DefaultFakeHttpHandler
+            $result = & $scriptPath -AppServiceUrl "https://app-poc-test.azurewebsites.net" `
+                -PollIntervalSeconds 0 `
+                -TimeoutSeconds 10 `
+                -HttpHandler $handler `
+                -BlobUploader $uploader
+
+            $result.AllScenariosPassed | Should Be $false
+            $result.Scenarios.UploadBlob.Passed | Should Be $false
+            $result.Scenarios.UploadBlob.Error | Should Match "BlobUploader threw exception"
+            $result.Scenarios.FinalizeUpload.Passed | Should Be $false
+            $result.Scenarios.FinalizeUpload.Error | Should Match "Skipped because UploadBlob failed"
+        }
+    }
+
     Context "出力形式 (-AsJson)" {
         It "Returns valid JSON string when -AsJson is specified" {
             $handler = New-DefaultFakeHttpHandler
@@ -445,6 +558,8 @@ Describe "Invoke-AppServiceValidation" {
             $parsed.AllScenariosPassed | Should Be $true
             $parsed.ExitCode | Should Be 0
             $parsed.Scenarios.InitiateUpload.Passed | Should Be $true
+            $parsed.Scenarios.UploadBlob.Passed | Should Be $true
+            $parsed.Scenarios.FinalizeUpload.Passed | Should Be $true
         }
     }
 }

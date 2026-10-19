@@ -1,5 +1,7 @@
 using Azure.Identity;
 using Azure.Storage.Blobs;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
 using Poc.AppService.Authentication;
 using Poc.AppService.Clients;
 using Poc.AppService.Endpoints;
@@ -23,22 +25,82 @@ builder.Services.Configure<AppServiceAuthenticationOptions>(options =>
         options.DefaultOwnerId = builder.Configuration["APP_SERVICE_DEFAULT_OWNER_ID"];
     if (!string.IsNullOrWhiteSpace(builder.Configuration["APP_SERVICE_DEFAULT_ORG_ID"]))
         options.DefaultOrgId = builder.Configuration["APP_SERVICE_DEFAULT_ORG_ID"];
+    if (!string.IsNullOrWhiteSpace(builder.Configuration["APP_SERVICE_AUTH_AUTHORITY"]))
+        options.Authority = builder.Configuration["APP_SERVICE_AUTH_AUTHORITY"];
+    if (!string.IsNullOrWhiteSpace(builder.Configuration["APP_SERVICE_AUTH_AUDIENCE"]))
+        options.Audience = builder.Configuration["APP_SERVICE_AUTH_AUDIENCE"];
+    if (bool.TryParse(builder.Configuration["APP_SERVICE_AUTH_BYPASS_SIGNATURE_VALIDATION"], out var bypass))
+        options.BypassSignatureValidation = bypass;
+    if (bool.TryParse(builder.Configuration["APP_SERVICE_AUTH_REQUIRE_HTTPS_METADATA"], out var requireHttps))
+        options.RequireHttpsMetadata = requireHttps;
 });
 
 var authMode = builder.Configuration["APP_SERVICE_AUTH_MODE"]
     ?? builder.Configuration.GetSection(AppServiceAuthenticationOptions.SectionName)["Mode"]
     ?? "Stub";
 
+builder.Services.AddAuthorization();
+
 if (string.Equals(authMode, "ClaimsPrincipal", StringComparison.OrdinalIgnoreCase))
 {
+    var authSection = builder.Configuration.GetSection(AppServiceAuthenticationOptions.SectionName);
+    var authority = builder.Configuration["APP_SERVICE_AUTH_AUTHORITY"] ?? authSection["Authority"];
+    var audience = builder.Configuration["APP_SERVICE_AUTH_AUDIENCE"] ?? authSection["Audience"];
+    var bypassValidation = builder.Configuration.GetValue<bool?>("APP_SERVICE_AUTH_BYPASS_SIGNATURE_VALIDATION")
+        ?? authSection.GetValue<bool?>("BypassSignatureValidation")
+        ?? false;
+    var requireHttpsMetadata = builder.Configuration.GetValue<bool?>("APP_SERVICE_AUTH_REQUIRE_HTTPS_METADATA")
+        ?? authSection.GetValue<bool?>("RequireHttpsMetadata")
+        ?? true;
+
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            if (!string.IsNullOrWhiteSpace(authority))
+            {
+                options.Authority = authority;
+            }
+            if (!string.IsNullOrWhiteSpace(audience))
+            {
+                options.Audience = audience;
+            }
+            options.RequireHttpsMetadata = requireHttpsMetadata;
+
+            if (bypassValidation)
+            {
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = false,
+                    SignatureValidator = (token, _) => new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(token),
+                    ValidateIssuer = false,
+                    ValidateAudience = false,
+                    ValidateLifetime = false,
+                    RequireSignedTokens = false
+                };
+            }
+            else
+            {
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = !string.IsNullOrWhiteSpace(authority),
+                    ValidIssuer = authority,
+                    ValidateAudience = !string.IsNullOrWhiteSpace(audience),
+                    ValidAudience = audience,
+                    ValidateLifetime = true
+                };
+            }
+        });
+
     builder.Services.AddSingleton<IAppServiceCallerResolver, ClaimsPrincipalAppServiceCallerResolver>();
 }
 else if (string.Equals(authMode, "EasyAuth", StringComparison.OrdinalIgnoreCase))
 {
+    builder.Services.AddAuthentication();
     builder.Services.AddSingleton<IAppServiceCallerResolver, EasyAuthAppServiceCallerResolver>();
 }
 else
 {
+    builder.Services.AddAuthentication();
     builder.Services.AddSingleton<IAppServiceCallerResolver, StubAppServiceCallerResolver>();
 }
 
@@ -112,6 +174,9 @@ else
 builder.Services.AddSingleton<IUploadService, UploadService>();
 
 var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapGet("/", () => Results.Ok(new { service = "Poc.AppService", status = "Healthy" }));
 app.MapUploadEndpoints();

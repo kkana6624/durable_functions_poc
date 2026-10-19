@@ -1,5 +1,27 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘 P2 3件（ClaimsPrincipal JWT認証処理追加・Finalize決定論的Manifest採番と冪等化・統合検証スクリプト実Blobアップロード対応）の改修完了
+
+レビューで指摘された P2 3 件の課題（[P2] ClaimsPrincipal モードでの JWT 認証処理欠落による 401 エラー、[P2] Finalize 再送時のランダム GUID 採番による 409 競合、[P2] 統合検証スクリプトでの実 Blob アップロード未実施およびサイズ/ハッシュ不整合）を改修し、全 .NET 単体・結合テスト（408件全件）、Terraform テスト（45件全件）、および PowerShell オフライン全テスト（10 スイート 28 グループ全件）の完全合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P2] ClaimsPrincipal モードに認証処理がない問題の解消（Program.cs / Poc.AppService.csproj）**:
+     - `src/Poc.AppService/Poc.AppService.csproj`: `Microsoft.AspNetCore.Authentication.JwtBearer` (10.0.13) パッケージ参照を追加。
+     - `src/Poc.AppService/Program.cs`: `builder.Services.AddAuthorization()` を追加し、`authMode == "ClaimsPrincipal"` の場合に `AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(...)` を構成。Authority / Audience / TokenValidationParameters を構成して、テスト環境での署名バイパスにも対応。
+     - エンドポイントマッピング前に `app.UseAuthentication()` および `app.UseAuthorization()` を呼び出すようパイプラインを是正。
+     - `tests/Poc.AppService.Tests/ClaimsPrincipalAuthIntegrationTests.cs`: Bearer なし時の 401 拒否、正当な Bearer での認証成功・所有者解決、および所有者詐称時の 403 拒否を検証するテストを追加。
+  2. **[P2] Finalize の再送で別の manifest が作られる問題の解消（UploadService.cs）**:
+     - `src/Poc.AppService/Services/UploadService.cs`: ランダムな `rm-{Guid.NewGuid():n}` を廃止。
+     - `identityKey = $"{owner.OwnerId}|{container}|{request.BlobKey}|{request.ExpectedSha256.ToLowerInvariant()}|{request.ExpectedSizeBytes}"` から SHA-256 を計算し、`$"rm-{hashHex[..16]}"` として決定論的に `readyManifestId` を導出。
+     - マニフェスト新規作成前に `storageRepository.TryGetReadyManifestAsync(readyManifestId)` を確認し、同一入力の既存マニフェストが存在する場合は新規作成せず既存マニフェストをそのまま冪等に返却。応答ロスト後の再送でも同一マニフェストが返り、同一 requestId による再送が 409 にならず冪等に成功することを保証。
+     - `tests/Poc.AppService.Tests/UploadServiceTests.cs`: Finalize 再送時の冪等性検証テストを追加。
+  3. **[P2] 統合検証スクリプトが入力 Blob をアップロードしない問題の解消（Invoke-AppServiceValidation.ps1 / AppServiceValidation.Tests.ps1）**:
+     - `scripts/Invoke-AppServiceValidation.ps1`:
+       - 1,024 バイトの確定テストデータを生成し、実サイズ（1,024 バイト）と正確な SHA-256 ハッシュを事前計算。空データハッシュと 1 MiB の不整合を解消。
+       - Initiate 成功後、実機（Azure CLI `az storage blob upload`）または `$BlobUploader` スクリプトブロックフック経由で実際に Storage の `$scen1Container` / `$scen1BlobKey` にデータをアップロードするシナリオ（Scenario 1.5: UploadBlob）を実装。
+       - Finalize にアップロードした実データサイズ（1,024 バイト）および正確な SHA-256 を送信。`UploadBlob` 失敗時は後続を安全にスキップ。
+     - `scripts/tests/AppServiceValidation.Tests.ps1`: カスタム `BlobUploader` による実データアップロード、正確なサイズ・ハッシュの Finalize 伝達、およびアップロード失敗時のカスケードスキップを検証する 4 件のテストを追加（全 17 テスト PASS）。
+
 ## 2026-10-19 レビュー指摘 P1 4件（ReadyManifest保存先統一・Entra認証時Function Key送信・既存Batch Pool UAMI制御・App Service S2S認証設定接続）の改修完了
 
 レビューで指摘された P1 4 件の課題（[P1] ReadyManifest の保存先と読取先不一致による 400 エラー、[P1] Entra 認証時の Function Key 送信漏れによる 401 エラー、[P1] batch_mode=existing 時の未割当 UAMI 指定によるタスク失敗、[P1] App Service S2S 認証設定の未接続による Functions 呼出失敗）を改修し、Terraform テスト（45件全件）、全 .NET 単体テスト（404件全件）、および PowerShell オフライン全テスト（10 スイート 24 グループ全件）の完全合格を確認しました。

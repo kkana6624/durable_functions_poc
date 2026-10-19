@@ -204,4 +204,47 @@ public class UploadServiceTests
 
         await Assert.ThrowsAsync<FileNotFoundException>(() => service.FinalizeUploadAsync(finalizeRequest, owner));
     }
+
+    [Fact]
+    public async Task FinalizeUpload_ReplaySameInput_ReturnsIdenticalReadyManifestIdIdempotently()
+    {
+        var repo = new InMemoryBlobStorageRepository();
+        var options = Options.Create(new UploadServiceOptions
+        {
+            DefaultContainer = "workflow-input"
+        });
+        var service = new UploadService(repo, options);
+        var owner = new WorkflowOwner("alice", "org-x");
+
+        var initResponse = service.InitiateUpload(new InitiateUploadRequest("input.dat", 5), owner);
+
+        var blobBytes = Encoding.UTF8.GetBytes("hello");
+        var sha256 = ComputeSha256(blobBytes);
+        repo.Blobs[$"workflow-input/{initResponse.BlobKey}"] = blobBytes;
+
+        var finalizeRequest = new FinalizeUploadRequest(
+            InputId: initResponse.InputId,
+            BlobKey: initResponse.BlobKey,
+            ExpectedSizeBytes: blobBytes.Length,
+            ExpectedSha256: sha256,
+            VersionId: null,
+            Etag: "\"test-etag\"");
+
+        // First finalize call creates and persists manifest
+        var response1 = await service.FinalizeUploadAsync(finalizeRequest, owner);
+        Assert.NotNull(response1);
+        Assert.False(string.IsNullOrWhiteSpace(response1.ReadyManifestId));
+        Assert.StartsWith("rm-", response1.ReadyManifestId);
+
+        // Delete blob from storage to verify the replayed call returns existing manifest without target blob re-fetch
+        repo.Blobs.Clear();
+
+        // Second finalize call (replay) must return the identical readyManifestId
+        var response2 = await service.FinalizeUploadAsync(finalizeRequest, owner);
+        Assert.NotNull(response2);
+        Assert.Equal(response1.ReadyManifestId, response2.ReadyManifestId);
+        Assert.Equal(response1.BlobKey, response2.BlobKey);
+        Assert.Equal(response1.SizeBytes, response2.SizeBytes);
+        Assert.Equal(response1.Sha256, response2.Sha256);
+    }
 }

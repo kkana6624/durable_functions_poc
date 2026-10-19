@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Azure.Storage.Blobs;
 using Microsoft.Extensions.Logging;
@@ -80,6 +82,25 @@ public sealed class UploadService(
         var container = string.IsNullOrWhiteSpace(request.Container) ? serviceOptions.DefaultContainer : request.Container;
         BlobStorageRepository.ValidateTargetBlobLocation(container, request.BlobKey);
 
+        var normalizedSha = request.ExpectedSha256.ToLowerInvariant();
+        var identityKey = $"{owner.OwnerId}|{container}|{request.BlobKey}|{normalizedSha}|{request.ExpectedSizeBytes}";
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(identityKey));
+        var hashHex = Convert.ToHexString(hashBytes).ToLowerInvariant();
+        var readyManifestId = $"rm-{hashHex[..16]}";
+
+        var existingManifest = await storageRepository.TryGetReadyManifestAsync(readyManifestId, cancellationToken);
+        if (existingManifest is not null)
+        {
+            logger?.LogInformation("Ready manifest {ReadyManifestId} already exists for owner {OwnerId}; returning existing manifest idempotently.",
+                readyManifestId, owner.OwnerId);
+
+            return new FinalizeUploadResponse(
+                ReadyManifestId: existingManifest.ReadyManifestId,
+                BlobKey: existingManifest.Blob.BlobKey,
+                SizeBytes: existingManifest.Blob.SizeBytes,
+                Sha256: existingManifest.Blob.Sha256);
+        }
+
         var versionId = request.VersionId;
         var etag = request.Etag;
 
@@ -104,18 +125,17 @@ public sealed class UploadService(
             // Fallback for test/mock repositories: pin with content-derived etag if still null
             if (string.IsNullOrWhiteSpace(versionId) && string.IsNullOrWhiteSpace(etag))
             {
-                etag = $"\"{request.ExpectedSha256.ToLowerInvariant()[..16]}\"";
+                etag = $"\"{normalizedSha[..16]}\"";
             }
         }
 
-        var readyManifestId = $"rm-{Guid.NewGuid():n}";
         var blob = new ReadyManifestBlob(
             Container: container,
             BlobKey: request.BlobKey,
             VersionId: versionId,
             Etag: etag,
             SizeBytes: request.ExpectedSizeBytes,
-            Sha256: request.ExpectedSha256.ToLowerInvariant());
+            Sha256: normalizedSha);
 
         var manifest = new ReadyManifest(
             SchemaVersion: 1,
@@ -135,6 +155,6 @@ public sealed class UploadService(
             ReadyManifestId: readyManifestId,
             BlobKey: request.BlobKey,
             SizeBytes: request.ExpectedSizeBytes,
-            Sha256: request.ExpectedSha256.ToLowerInvariant());
+            Sha256: normalizedSha);
     }
 }
