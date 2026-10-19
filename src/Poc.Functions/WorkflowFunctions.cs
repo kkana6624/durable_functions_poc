@@ -120,69 +120,69 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
             return badRequest;
         }
 
-        if (!string.IsNullOrEmpty(input.ReadyManifestId))
+        try
         {
-            ReadyManifest? readyManifest;
-            try
+            if (!string.IsNullOrEmpty(input.ReadyManifestId))
             {
-                readyManifest = await admission.TryGetReadyManifestAsync(input.ReadyManifestId, cancellationToken);
-            }
-            catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
-            {
-                var badManifest = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
-                await badManifest.WriteAsJsonAsync(new { error = $"Ready manifest '{input.ReadyManifestId}' is invalid." });
-                return badManifest;
-            }
+                ReadyManifest? readyManifest;
+                try
+                {
+                    readyManifest = await admission.TryGetReadyManifestAsync(input.ReadyManifestId, cancellationToken);
+                }
+                catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
+                {
+                    var badManifest = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                    await badManifest.WriteAsJsonAsync(new { error = $"Ready manifest '{input.ReadyManifestId}' is invalid." });
+                    return badManifest;
+                }
 
-            if (readyManifest is null)
-            {
-                var notFound = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
-                await notFound.WriteAsJsonAsync(new { error = $"Ready manifest '{input.ReadyManifestId}' not found." });
-                return notFound;
-            }
+                if (readyManifest is null)
+                {
+                    var notFound = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                    await notFound.WriteAsJsonAsync(new { error = $"Ready manifest '{input.ReadyManifestId}' not found." });
+                    return notFound;
+                }
 
-            bool ownerMismatch = false;
-            if (readyManifest.OwnerId is not null)
-            {
-                if (owner is null ||
-                    !string.Equals(owner.OwnerId, readyManifest.OwnerId, StringComparison.Ordinal) ||
-                    (readyManifest.OrgId is not null && !string.Equals(owner.OrgId, readyManifest.OrgId, StringComparison.Ordinal)))
+                bool ownerMismatch = false;
+                if (readyManifest.OwnerId is not null)
+                {
+                    if (owner is null ||
+                        !string.Equals(owner.OwnerId, readyManifest.OwnerId, StringComparison.Ordinal) ||
+                        (readyManifest.OrgId is not null && !string.Equals(owner.OrgId, readyManifest.OrgId, StringComparison.Ordinal)))
+                    {
+                        ownerMismatch = true;
+                    }
+                }
+                else if (owner is not null)
                 {
                     ownerMismatch = true;
                 }
-            }
-            else if (owner is not null)
-            {
-                ownerMismatch = true;
+
+                if (ownerMismatch)
+                {
+                    var forbidden = CreateWorkflowResponse(request, HttpStatusCode.Forbidden);
+                    await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this ready manifest." });
+                    return forbidden;
+                }
+
+                try
+                {
+                    await admission.VerifyReadyManifestBlobAsync(readyManifest, cancellationToken);
+                }
+                catch (Exception ex) when (ex is InvalidDataException or ArgumentException or FileNotFoundException)
+                {
+                    var badBlob = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                    await badBlob.WriteAsJsonAsync(new { error = $"Ready target blob is invalid or not found: {ex.Message}" });
+                    return badBlob;
+                }
+                catch (Azure.RequestFailedException ex) when (ex.Status is 404 or 412)
+                {
+                    var badBlob = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
+                    await badBlob.WriteAsJsonAsync(new { error = $"Ready target blob is not accessible or version condition failed (HTTP {ex.Status})." });
+                    return badBlob;
+                }
             }
 
-            if (ownerMismatch)
-            {
-                var forbidden = CreateWorkflowResponse(request, HttpStatusCode.Forbidden);
-                await forbidden.WriteAsJsonAsync(new { error = "Caller is not authorized to access this ready manifest." });
-                return forbidden;
-            }
-
-            try
-            {
-                await admission.VerifyReadyManifestBlobAsync(readyManifest, cancellationToken);
-            }
-            catch (Exception ex) when (ex is InvalidDataException or ArgumentException or FileNotFoundException)
-            {
-                var badBlob = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
-                await badBlob.WriteAsJsonAsync(new { error = $"Ready target blob is invalid or not found: {ex.Message}" });
-                return badBlob;
-            }
-            catch (Azure.RequestFailedException ex) when (ex.Status is 404 or 412)
-            {
-                var badBlob = CreateWorkflowResponse(request, HttpStatusCode.BadRequest);
-                await badBlob.WriteAsJsonAsync(new { error = $"Ready target blob is not accessible or version condition failed (HTTP {ex.Status})." });
-                return badBlob;
-            }
-        }
-
-        try
-        {
             var instanceId = await admission.AdmitAsync(input, client, owner, cancellationToken);
             return await AcceptedAsync(request, instanceId, input.RequestId);
         }
@@ -924,8 +924,11 @@ public sealed class WorkflowFunctions(WorkflowOperations operations, WorkflowAdm
         OperationCanceledException => true,
         RequestFailedException { Status: 0 or 408 or 429 or 500 or 502 or 503 or 504 } => true,
         Grpc.Core.RpcException { StatusCode: Grpc.Core.StatusCode.Unavailable or Grpc.Core.StatusCode.DeadlineExceeded or Grpc.Core.StatusCode.ResourceExhausted } => true,
-        HttpRequestException { StatusCode: null or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or
-            HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout } => true,
+        HttpRequestException
+        {
+            StatusCode: null or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or
+            HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout
+        } => true,
         _ => false
     };
     private static async Task RetryableActivity(Func<Task> operation, CancellationToken cancellationToken) =>

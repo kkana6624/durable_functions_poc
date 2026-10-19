@@ -164,10 +164,10 @@ try {
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence -ExpectedFunctionAppName 'app' -ExpectedPoolId 'pool' -AllowPoolAutoscaleTransition -DedicatedEnvironment
     Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.operation -eq 'AutoscaleValidation' -and $script:transportRequest.expected_function_app_name -eq 'app' -and $script:transportRequest.expected_pool_id -eq 'pool' -and $script:transportRequest.allow_pool_autoscale_transition) 'AutoscaleValidation should transfer parameters and execute successfully'
     Assert-True ('autoscale-result.json' -in $script:transportDownloads -and 'summary.json' -in $script:transportDownloads -and 'summary.txt' -in $script:transportDownloads) 'AutoscaleValidation must retrieve autoscale-result and summaries'
-    Assert-True ($script:transportLastShell -match 'timeout 2400 pwsh') 'AutoscaleValidation default timeout must compute guest timeout to reserve restoration time'
-    Assert-True ($script:transportLastShell -match '\$env:POC_VM_DEADLINE_UTC\s*=\s*\$guestStartUtc\.AddSeconds\(\[int\]\$t\.budget_seconds\)\.ToString\("o"\)') 'Guest must initialize POC_VM_DEADLINE_UTC from transport budget_seconds'
+    Assert-True ($script:transportLastShell -match 'guest_timeout=2400' -and $script:transportLastShell -match 'timeout "\$rem_guest_timeout" pwsh') 'AutoscaleValidation default timeout must compute guest timeout to reserve restoration time'
+    Assert-True ($script:transportLastShell -match 'export POC_VM_SCRIPT_START_UTC="\$script_start_utc"' -and $script:transportLastShell -match '\$env:POC_VM_DEADLINE_UTC\s*=\s*\$guestStartUtc\.AddSeconds\(\[int\]\$t\.budget_seconds\)\.ToString\("o"\)') 'Guest must initialize POC_VM_DEADLINE_UTC from transport budget_seconds'
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence -ExpectedFunctionAppName 'app' -ExpectedPoolId 'pool' -AllowPoolAutoscaleTransition -DedicatedEnvironment -TimeoutSeconds 3600
-    Assert-True ($script:transportLastShell -match 'timeout 5100 pwsh') 'AutoscaleValidation with 3600s must compute guest timeout exceeding 4200 to reserve restoration time'
+    Assert-True ($script:transportLastShell -match 'guest_timeout=5100' -and $script:transportLastShell -match 'timeout "\$rem_guest_timeout" pwsh') 'AutoscaleValidation with 3600s must compute guest timeout exceeding 4200 to reserve restoration time'
     $script:transportExit=1
     $script:transportFailureStage='autoscale_validation'
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence } 'stage=autoscale_validation; raw output suppressed'

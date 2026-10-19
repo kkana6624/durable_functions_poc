@@ -120,6 +120,8 @@ function Invoke-PrivateVmOperation {
 #!/bin/sh
 set -eu
 umask 077
+script_start_epoch=$(date +%s)
+script_start_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if ! timeout 900 cloud-init status --wait >/dev/null 2>&1; then
   echo 'Private VM initialization failed or timed out.' >&2
   exit 1
@@ -127,11 +129,19 @@ fi
 work=$(mktemp -d /var/tmp/poc-vm-XXXXXXXX)
 export AZURE_CONFIG_DIR="$work/azure"
 export POC_VM_TRANSPORT='__TRANSPORT__'
+export POC_VM_SCRIPT_START_UTC="$script_start_utc"
+init_elapsed=$(( $(date +%s) - script_start_epoch ))
+guest_timeout=__GUEST_TIMEOUT__
+rem_guest_timeout=$(( guest_timeout - init_elapsed ))
+if [ "$rem_guest_timeout" -le 0 ]; then
+  echo 'Private VM operation timed out during initialization.' >&2
+  exit 1
+fi
 # Worker output is deliberately suppressed; only allowlisted JSON artifacts are returned via Blob.
-if ! timeout __GUEST_TIMEOUT__ pwsh -NoLogo -NoProfile -NonInteractive -Command '
+if ! timeout "$rem_guest_timeout" pwsh -NoLogo -NoProfile -NonInteractive -Command '
   $ErrorActionPreference="Stop"
   try {
-    $guestStartUtc=[DateTime]::UtcNow
+    $guestStartUtc=if ($env:POC_VM_SCRIPT_START_UTC) { [DateTime]::Parse($env:POC_VM_SCRIPT_START_UTC, $null, [System.Globalization.DateTimeStyles]::AdjustToUniversal) } else { [DateTime]::UtcNow }
     $t=$env:POC_VM_TRANSPORT | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) } | ConvertFrom-Json
     if ($t.PSObject.Properties["budget_seconds"] -and $t.budget_seconds) {
       $env:POC_VM_DEADLINE_UTC=$guestStartUtc.AddSeconds([int]$t.budget_seconds).ToString("o")

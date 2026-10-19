@@ -2,8 +2,15 @@ using System.Globalization;
 
 namespace Poc.Core;
 
-public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository results, IWorkloadClassifier classifier, WorkflowSettings settings)
+public sealed class WorkflowOperations(
+    IBatchGateway batch,
+    IResultRepository results,
+    IWorkloadClassifier classifier,
+    WorkflowSettings settings,
+    BlobStorageRepository? storageRepository = null)
 {
+    private readonly BlobStorageRepository storage = storageRepository ?? new BlobStorageRepository(results);
+
     private async Task<T?> TryReadAsync<T>(string path, CancellationToken cancellationToken) where T : class
     {
         if (results is null) return null;
@@ -14,13 +21,13 @@ public sealed class WorkflowOperations(IBatchGateway batch, IResultRepository re
     }
 
     public Task<string> SaveReadyManifestAsync(ReadyManifest manifest, CancellationToken cancellationToken = default) =>
-        new BlobStorageRepository(results).SaveReadyManifestAsync(manifest, cancellationToken);
+        storage.SaveReadyManifestAsync(manifest, cancellationToken);
 
     public Task<ReadyManifest?> TryGetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
-        new BlobStorageRepository(results).TryGetReadyManifestAsync(readyManifestId, cancellationToken);
+        storage.TryGetReadyManifestAsync(readyManifestId, cancellationToken);
 
     public Task<ReadyManifest> GetReadyManifestAsync(string readyManifestId, CancellationToken cancellationToken = default) =>
-        new BlobStorageRepository(results).GetReadyManifestAsync(readyManifestId, cancellationToken);
+        storage.GetReadyManifestAsync(readyManifestId, cancellationToken);
 
     public async Task<WorkflowPlan> ClassifyAsync(WorkflowRequest request, CancellationToken cancellationToken = default)
     {

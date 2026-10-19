@@ -1,5 +1,25 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘3件（P2一時障害503応答・P2保存ヘルパーDIリポジトリ接続・P2初期化待機総予算算入）の改修完了
+
+レビューで指摘された 3 件の課題（[P2] Ready 入力受付時の一時障害に対する Retry-After 付き 503 応答の保証、[P2] `WorkflowOperations.SaveReadyManifestAsync` における DI 登録済み `BlobStorageRepository` 接続による本番 `InvalidOperationException` の解消、[P2] `Invoke-PrivateVmOperation.ps1` における VM 初期化待ち時間の総時間予算算入とスクリプト開始時からの残余時間計算）を改修し、単体テスト（353件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P2] Ready 入力受付時の一時障害に対する Retry-After 付き 503 応答の保証**:
+     - `src/Poc.Functions/WorkflowFunctions.cs`: `StartWorkflow` 内の Ready マニフェスト取得（`TryGetReadyManifestAsync`）および実体 Blob 検証（`VerifyReadyManifestBlobAsync`）を受付処理全体の `try { ... }` ブロックの内部に移動。
+     - Storage の HTTP 503 / 500 / 408 / 429 等の一時例外が発生した場合に、未処理例外（500/クラッシュ）とせず `catch (Exception ex) when (IsTransientRequestFailure(ex, cancellationToken))` により捕捉し、`Retry-After: 10` ヘッダー付きの `503 Service Unavailable` を確実に返却するよう改修。
+     - `tests/Poc.Tests/ReadyManifestTests.cs`: マニフェスト取得時および実体検証時の一時障害注入テスト（503 および `Retry-After: 10` の検証）を追加。
+  2. **[P2] Ready マニフェスト保存ヘルパーの本番構成対応（DI リポジトリ接続）**:
+     - `src/Poc.Core/WorkflowOperations.cs`: コンストラクタ引数に `BlobStorageRepository? storageRepository = null` を追加し、`storage = storageRepository ?? new BlobStorageRepository(results)` をフィールドとして保持。
+     - `SaveReadyManifestAsync`, `TryGetReadyManifestAsync`, `GetReadyManifestAsync` においてリポジトリを毎回新規作成（`results` のみ渡す不完全なインスタンス）するのをやめ、DI 登録された `BlobStorageRepository`（`BlobServiceClient` / `BlobContainerClient` を持つ完全なインスタンス）を使用するよう改修。保存前実体検証が `InvalidOperationException` で失敗する問題を解消。
+     - `tests/Poc.Tests/ReadyManifestTests.cs`: DI 構成のリポジトリを注入した `WorkflowOperations` によるマニフェスト保存・検証・取得の回帰テストを追加。
+  3. **[P2] VM 初期化待ち時間の総時間予算算入とスクリプト開始時からの残余時間計算**:
+     - `scripts/Invoke-PrivateVmOperation.ps1`: ゲストシェルスクリプト `run.sh` の最先頭（`cloud-init` 待機前）で `script_start_epoch=$(date +%s)` および `script_start_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)` を記録し、`POC_VM_SCRIPT_START_UTC` として環境変数をエクスポート。
+     - 初期化消費時間 `init_elapsed=$(( $(date +%s) - script_start_epoch ))` を算出し、外側の timeout を `rem_guest_timeout=$(( guest_timeout - init_elapsed ))` として初期化時間を差し引いた残余タイムアウトを適用。
+     - ゲスト pwsh 内で `$guestStartUtc` を `POC_VM_SCRIPT_START_UTC` から復元し、`$env:POC_VM_DEADLINE_UTC = $guestStartUtc.AddSeconds([int]$t.budget_seconds).ToString("o")` をスクリプト開始時を起点として計算。
+     - 初期化に最大 900 秒（例: 700 秒）かかった場合でも、スクリプト全体の合計実行時間が Azure VM Run Command の 90 分（5,400 秒）上限を超過せず、Pool 復元時間（600 秒）や証跡回収時間を安全に確保。
+     - `scripts/tests/PrivateVm.Tests.ps1`: 残余時間計算（`guest_timeout` / `rem_guest_timeout`、`POC_VM_SCRIPT_START_UTC`）のアサーションに同期更新。
+
 ## 2026-10-19 レビュー指摘2件（P2旧受付データ再送500回避・P2Ready入力実体検証の受付接続）の改修完了
 
 レビューで指摘された 2 件の課題（[P2] 旧 admission.json v2 再シリアライズによる不一致と 500 エラーの解消、[P2] Ready 入力実体検証の受付経路接続およびバージョン固定必須化）を改修し、単体テスト（350件全件）および PowerShell オフライン全テスト（8 スイート）の合格を確認しました。

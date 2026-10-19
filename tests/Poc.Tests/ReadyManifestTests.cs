@@ -672,6 +672,102 @@ public class ReadyManifestTests
         Assert.Equal(instanceId, admittedInstanceId);
     }
 
+    [Fact]
+    public async Task StartWorkflow_ReadyManifest_TransientStorageFailure_Returns503WithRetryAfter()
+    {
+        // Regression test for Issue 1:
+        // Transient storage failure when fetching ReadyManifest must return 503 Service Unavailable with Retry-After
+        var (client, _) = CreateDurableClient();
+        var repo = new Mock<IResultRepository>();
+        repo.Setup(r => r.ReadAsync<ReadyManifest>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Azure.RequestFailedException(503, "Storage is temporarily unavailable."));
+
+        var admission = new WorkflowAdmission(repo.Object);
+        var operations = new WorkflowOperations(new FakeBatchGateway(), repo.Object, new StubWorkloadClassifier(), new WorkflowSettings());
+        var functions = new WorkflowFunctions(operations, admission, new PocFunctionKeyCallerResolver());
+
+        var requestJson = JsonSerializer.Serialize(new
+        {
+            requestId = "req-transient-manifest-001",
+            readyManifestId = "manifest-transient-001"
+        });
+        var request = CreateRequest(requestJson);
+
+        var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.True(response.Headers.Contains("Retry-After"));
+        Assert.Equal("10", response.Headers.GetValues("Retry-After").First());
+    }
+
+    [Fact]
+    public async Task StartWorkflow_ReadyManifestBlobVerification_TransientStorageFailure_Returns503WithRetryAfter()
+    {
+        // Regression test for Issue 1:
+        // Transient storage failure when verifying ReadyManifest target blob must return 503 Service Unavailable with Retry-After
+        var (client, _) = CreateDurableClient();
+        var repo = new InMemoryResultRepository();
+        var manifest = CreateValidManifest("manifest-transient-002");
+        await repo.PutIfAbsentAsync(WorkflowIdentity.ReadyManifestPath(manifest.ReadyManifestId), manifest, TestContext.Current.CancellationToken);
+
+        var storageRepo = new BlobStorageRepository(repo)
+        {
+            TargetBlobVerifier = (_, _) => throw new Azure.RequestFailedException(503, "Storage transient failure during stream download.")
+        };
+        var admission = new WorkflowAdmission(repo, storageRepo);
+        var operations = new WorkflowOperations(new FakeBatchGateway(), repo, new StubWorkloadClassifier(), new WorkflowSettings(), storageRepo);
+        var functions = new WorkflowFunctions(operations, admission, new PocFunctionKeyCallerResolver());
+
+        var requestJson = JsonSerializer.Serialize(new
+        {
+            requestId = "req-transient-blob-002",
+            readyManifestId = manifest.ReadyManifestId
+        });
+        var request = CreateRequest(requestJson, headers: new Dictionary<string, string>
+        {
+            ["X-Poc-Owner-Id"] = "alice",
+            ["X-Poc-Org-Id"] = "finance"
+        });
+
+        var response = await functions.StartWorkflow(request, client.Object, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.True(response.Headers.Contains("Retry-After"));
+        Assert.Equal("10", response.Headers.GetValues("Retry-After").First());
+    }
+
+    [Fact]
+    public async Task WorkflowOperations_SaveReadyManifestAsync_WithInjectedRepository_Succeeds()
+    {
+        // Regression test for Issue 2:
+        // WorkflowOperations with DI-injected BlobStorageRepository must use the injected repository
+        // and successfully verify/save without InvalidOperationException
+        var repo = new InMemoryResultRepository();
+        var manifest = CreateValidManifest("manifest-ops-001");
+        AddValidTestBlob(repo, manifest);
+
+        bool verifierInvoked = false;
+        var storageRepo = new BlobStorageRepository(repo)
+        {
+            TargetBlobVerifier = (m, ct) =>
+            {
+                verifierInvoked = true;
+                return Task.CompletedTask;
+            }
+        };
+
+        var operations = new WorkflowOperations(new FakeBatchGateway(), repo, new StubWorkloadClassifier(), new WorkflowSettings(), storageRepo);
+        var savedPath = await operations.SaveReadyManifestAsync(manifest, TestContext.Current.CancellationToken);
+
+        Assert.True(verifierInvoked, "TargetBlobVerifier on injected BlobStorageRepository should have been called.");
+        Assert.NotNull(savedPath);
+        Assert.Contains(WorkflowIdentity.ReadyManifestPath(manifest.ReadyManifestId), savedPath);
+
+        var retrieved = await operations.GetReadyManifestAsync(manifest.ReadyManifestId, TestContext.Current.CancellationToken);
+        Assert.NotNull(retrieved);
+        Assert.Equal(manifest.ReadyManifestId, retrieved.ReadyManifestId);
+    }
+
     private static (Mock<DurableTaskClient> Client, Mock<DurableEntityClient> Entities) CreateDurableClient()
     {
         var client = new Mock<DurableTaskClient>("test");
