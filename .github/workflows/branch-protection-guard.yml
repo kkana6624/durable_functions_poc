@@ -1,0 +1,62 @@
+name: "Owner Direct Push & Merge Guard"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  pull_request_review:
+    types:
+      - submitted
+      - edited
+      - dismissed
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify-owner-push:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Actor is Repository Owner
+        run: |
+          if [ "${{ github.actor }}" != "${{ github.repository_owner }}" ]; then
+            echo "::error::Direct push to main by '${{ github.actor }}' is forbidden. Only repository owner '${{ github.repository_owner }}' is permitted."
+            exit 1
+          fi
+          echo "Verified: Push by repository owner '${{ github.actor }}'."
+
+  verify-owner-approval:
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Owner Authorization for PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          if [ "$PR_AUTHOR" = "$OWNER" ]; then
+            echo "PR author is repository owner ($OWNER). Authorized."
+            exit 0
+          fi
+
+          REVIEWS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '[.[] | select(.user.login == "'"$OWNER"'") | .state] | last')
+          if [ "$REVIEWS" = "APPROVED" ]; then
+            echo "PR has been reviewed and approved by repository owner ($OWNER)."
+            exit 0
+          else
+            echo "::error::PR requires explicit approval from repository owner ($OWNER) before merging. Current owner review status: ${REVIEWS:-NONE}"
+            exit 1
+          fi

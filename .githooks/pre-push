@@ -1,0 +1,23 @@
+#!/bin/sh
+# Pre-push hook to prevent accidental direct push to main by non-owners
+remote="$1"
+url="$2"
+
+z40="0000000000000000000000000000000000000000"
+
+while read local_ref local_sha remote_ref remote_sha
+do
+    if [ "$remote_ref" = "refs/heads/main" ]; then
+        current_user=$(git config user.name)
+        current_email=$(git config user.email)
+        # Expected owner: kkana6624 / k.kanase1547@outlook.jp
+        if [ "$current_user" != "kkana6624" ] && [ "$current_email" != "k.kanase1547@outlook.jp" ]; then
+            echo "ERROR: Direct push to main is restricted to repository owner (kkana6624)." >&2
+            echo "Current git user: $current_user <$current_email>" >&2
+            echo "Please submit changes via a topic branch and create a Pull Request." >&2
+            exit 1
+        fi
+    fi
+done
+
+exit 0
