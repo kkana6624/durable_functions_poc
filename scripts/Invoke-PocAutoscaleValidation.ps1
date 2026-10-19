@@ -177,19 +177,20 @@ function Invoke-PocAutoscaleValidation {
         completedUtc=$null
     }
     $restorationReserveSeconds = 600
-    $deadlineUtc = if (Get-Variable -Name env:POC_VM_DEADLINE_UTC -ValueOnly -ErrorAction SilentlyContinue) {
-        [DateTime]::Parse($env:POC_VM_DEADLINE_UTC, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+    $deadlineEnv = [Environment]::GetEnvironmentVariable('POC_VM_DEADLINE_UTC')
+    $deadlineUtc = if (-not [string]::IsNullOrWhiteSpace($deadlineEnv)) {
+        [DateTime]::Parse($deadlineEnv, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
     } else {
         [DateTime]::UtcNow.AddSeconds($TimeoutSeconds + 600 + $restorationReserveSeconds)
     }
     try {
         $poolMutated=$true
         $summary.stage='PrepareZeroNodes'
+        $prepRemaining = ($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds
+        if ($prepRemaining -lt 60) { throw 'Insufficient time remaining before pool preparation while reserving restoration time.' }
         if ($initialPool.enableAutoScale) {
             $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/disableautoscale?api-version=2025-06-01"
         }
-        $prepRemaining = ($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds
-        if ($prepRemaining -lt 60) { throw 'Insufficient time remaining before pool preparation while reserving restoration time.' }
         $steadyInitial=Wait-PocPoolSteady -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds ([Math]::Min(300, [int]$prepRemaining))
         if ([int]$steadyInitial.targetDedicatedNodes -ne 0 -or [int]$steadyInitial.targetLowPriorityNodes -ne 0 -or [int]$steadyInitial.currentDedicatedNodes -ne 0 -or [int]$steadyInitial.currentLowPriorityNodes -ne 0) {
             $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/resize?api-version=2025-06-01" -Body @{

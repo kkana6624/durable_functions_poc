@@ -170,10 +170,26 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $guestEvidence 'summary.json')) 'Guest mode must write summary.json'
     Assert-True (Test-Path -LiteralPath (Join-Path $guestEvidence 'summary.txt')) 'Guest mode must write summary.txt'
 
+    # POC_VM_DEADLINE_UTC environment variable adoption and enforcement tests
+    [Environment]::SetEnvironmentVariable('POC_VM_DEADLINE_UTC', [DateTime]::UtcNow.AddSeconds(-10).ToString('o'))
+    $expiredEvidence = Join-Path $work 'expired-deadline'
+    Assert-Fails { Invoke-PocAutoscaleValidation -DeploymentResultPath $privateDeployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $expiredEvidence -AsGuest } 'Insufficient time remaining before pool preparation'
+
+    [Environment]::SetEnvironmentVariable('POC_VM_DEADLINE_UTC', [DateTime]::UtcNow.AddSeconds(630).ToString('o'))
+    $tightEvidence = Join-Path $work 'tight-deadline'
+    Assert-Fails { Invoke-PocAutoscaleValidation -DeploymentResultPath $privateDeployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $tightEvidence -AsGuest } 'Insufficient time remaining before pool preparation'
+
+    [Environment]::SetEnvironmentVariable('POC_VM_DEADLINE_UTC', [DateTime]::UtcNow.AddSeconds(3600).ToString('o'))
+    $validDeadlineEvidence = Join-Path $work 'valid-deadline'
+    $validResult = Invoke-PocAutoscaleValidation -DeploymentResultPath $privateDeployment -ExpectedFunctionAppName app -ExpectedPoolId pool -AllowPoolAutoscaleTransition -DedicatedEnvironment -EvidenceDirectory $validDeadlineEvidence -AsGuest
+    Assert-True ($validResult.ExitCode -eq 0 -and $validResult.Status -eq 'Pass') 'Valid POC_VM_DEADLINE_UTC should be adopted and pass'
+    [Environment]::SetEnvironmentVariable('POC_VM_DEADLINE_UTC', $null)
+
     foreach ($file in (Get-ChildItem -LiteralPath $work -Recurse -File)) {
         Assert-True (-not (Get-Content -LiteralPath $file.FullName -Raw).Contains($script:secret)) 'Secret leaked to autoscale evidence'
     }
     Write-Host 'Autoscale validation Fake tests passed (not Azure execution).'
 } finally {
+    [Environment]::SetEnvironmentVariable('POC_VM_DEADLINE_UTC', $null)
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
