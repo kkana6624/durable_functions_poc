@@ -25,6 +25,7 @@ $script:transportBundleHash=''
 $script:transportPackageHash=''
 $script:transportCalls=@()
 $script:transportSummaryDownloadFails=$false
+$script:transportSummaryArtifacts=$null
 $script:transportLastShell=''
 function Invoke-AzJson {
     param([string[]]$Arguments,[switch]$Sensitive)
@@ -69,6 +70,7 @@ function Invoke-AzJson {
         $transport=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1])) | ConvertFrom-Json
         Assert-True ($transport.sha256 -eq $script:transportBundleHash) 'Guest must receive the uploaded bundle hash'
         Assert-True ($transport.operation_id -eq $script:transportRequest.operation_id) 'Guest operation identity must match bundle'
+        Assert-True ($transport.budget_seconds -gt 0) 'Guest transport must include budget_seconds'
         Assert-True ($shell -notmatch 'PRIVATE-FUNCTION-KEY|[?&](sig|code)=') 'Run Command must contain no secrets'
         Assert-True ($shell -match 'az storage blob download [^\r\n]*--no-progress') 'Guest bundle download must suppress progress'
         $message=if ($script:transportGuestFails) { 'guest script failed' } else { 'Private VM operation completed; sanitized results are in the control container.' }
@@ -85,8 +87,11 @@ function Invoke-AzJson {
         $script:transportDownloads+=$name
         if ($name -eq 'vm-operation.json') {
             $id=if ($script:transportInvalidId) { 'wrong-id' } else { $script:transportRequest.operation_id }
-            @{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','AutoscaleValidation'));validation=@{Ready=$true} } |
-                ConvertTo-Json | Set-Content -LiteralPath $file -Encoding UTF8
+            $res=@{ operation_id=$id;operation=$script:transportRequest.operation;exit_code=$script:transportExit;error_code='FixtureFailure';failure_stage=$script:transportFailureStage;summary_available=($script:transportRequest.operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','AutoscaleValidation'));validation=@{Ready=$true} }
+            if ($null -ne $script:transportSummaryArtifacts) {
+                $res['summary_artifacts'] = $script:transportSummaryArtifacts
+            }
+            $res | ConvertTo-Json | Set-Content -LiteralPath $file -Encoding UTF8
         } elseif ($name -eq 'summary.json') {
             if ($script:transportSummaryDownloadFails) { throw 'BlobNotFound' }
             '{"status":"NotRun"}' | Set-Content -LiteralPath $file -Encoding UTF8
@@ -159,9 +164,10 @@ try {
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence -ExpectedFunctionAppName 'app' -ExpectedPoolId 'pool' -AllowPoolAutoscaleTransition -DedicatedEnvironment
     Assert-True ($result.exit_code -eq 0 -and $script:transportRequest.operation -eq 'AutoscaleValidation' -and $script:transportRequest.expected_function_app_name -eq 'app' -and $script:transportRequest.expected_pool_id -eq 'pool' -and $script:transportRequest.allow_pool_autoscale_transition) 'AutoscaleValidation should transfer parameters and execute successfully'
     Assert-True ('autoscale-result.json' -in $script:transportDownloads -and 'summary.json' -in $script:transportDownloads -and 'summary.txt' -in $script:transportDownloads) 'AutoscaleValidation must retrieve autoscale-result and summaries'
-    Assert-True ($script:transportLastShell -match 'timeout 2220 pwsh') 'AutoscaleValidation default timeout must compute guest timeout to reserve restoration time'
+    Assert-True ($script:transportLastShell -match 'timeout 2400 pwsh') 'AutoscaleValidation default timeout must compute guest timeout to reserve restoration time'
+    Assert-True ($script:transportLastShell -match '\$env:POC_VM_DEADLINE_UTC\s*=\s*\$guestStartUtc\.AddSeconds\(\[int\]\$t\.budget_seconds\)\.ToString\("o"\)') 'Guest must initialize POC_VM_DEADLINE_UTC from transport budget_seconds'
     $result=Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence -ExpectedFunctionAppName 'app' -ExpectedPoolId 'pool' -AllowPoolAutoscaleTransition -DedicatedEnvironment -TimeoutSeconds 3600
-    Assert-True ($script:transportLastShell -match 'timeout 4920 pwsh') 'AutoscaleValidation with 3600s must compute guest timeout exceeding 4200 to reserve restoration time'
+    Assert-True ($script:transportLastShell -match 'timeout 5100 pwsh') 'AutoscaleValidation with 3600s must compute guest timeout exceeding 4200 to reserve restoration time'
     $script:transportExit=1
     $script:transportFailureStage='autoscale_validation'
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation AutoscaleValidation -EvidenceDirectory $evidence } 'stage=autoscale_validation; raw output suppressed'
@@ -171,6 +177,11 @@ try {
     Assert-True ($result.exit_code -eq 2) 'Validate must preserve NotRun exit code 2'
     Assert-True ($script:transportRequest.scenarios.Count -eq 1 -and $script:transportRequest.scenarios[0] -eq 'admission20') 'Selected validation scenarios must reach the VM'
     Assert-True ('summary.json' -in $script:transportDownloads -and 'summary.txt' -in $script:transportDownloads) 'Validate must retrieve both sanitized summaries'
+    $script:transportSummaryArtifacts = @('../../probe.txt')
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('admission20') -EvidenceDirectory $evidence } 'untrusted or invalid summary artifact name'
+    $script:transportSummaryArtifacts = @('unauthorized.json')
+    Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('admission20') -EvidenceDirectory $evidence } 'untrusted or invalid summary artifact name'
+    $script:transportSummaryArtifacts = $null
     $script:transportSummaryDownloadFails = $true
     Assert-Fails { Invoke-PrivateVmOperation -Outputs $outputs -Operation Validate -Scenarios @('admission20') -EvidenceDirectory $evidence } 'failed to retrieve evidence summary file\(s\) \(summary\.json\)'
     $script:transportSummaryDownloadFails = $false

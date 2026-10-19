@@ -112,10 +112,10 @@ function Invoke-PrivateVmOperation {
         [IO.Compression.ZipFile]::CreateFromDirectory($bundle,$archive)
         $blob="operations/$id/bundle.zip"
         $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','upload','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',$blob,'--file',$archive,'--auth-mode','login','--overwrite','false','--no-progress')
-        # Only non-secret names and a hash enter Run Command (which is a privileged management operation).
-        $transport=@{ subscription=$Outputs.subscription_id; account=$Outputs.storage_account_name; container=$Outputs.vm_control_container_name; blob=$blob; sha256=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash; operation_id=$id }
+        $budgetSeconds = if ($Operation -eq 'AutoscaleValidation') { $TimeoutSeconds + 1200 } else { $TimeoutSeconds }
+        $transport=@{ subscription=$Outputs.subscription_id; account=$Outputs.storage_account_name; container=$Outputs.vm_control_container_name; blob=$blob; sha256=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash; operation_id=$id; budget_seconds=$budgetSeconds }
         $encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($transport | ConvertTo-Json -Compress)))
-        $guestTimeoutSec = if ($Operation -eq 'AutoscaleValidation') { [Math]::Min(5300, $TimeoutSeconds + 1320) } else { [Math]::Max(900, [Math]::Min(5300, $TimeoutSeconds + 600)) }
+        $guestTimeoutSec = [Math]::Min(5300, $budgetSeconds + 300)
         $shell=@'
 #!/bin/sh
 set -eu
@@ -131,7 +131,11 @@ export POC_VM_TRANSPORT='__TRANSPORT__'
 if ! timeout __GUEST_TIMEOUT__ pwsh -NoLogo -NoProfile -NonInteractive -Command '
   $ErrorActionPreference="Stop"
   try {
+    $guestStartUtc=[DateTime]::UtcNow
     $t=$env:POC_VM_TRANSPORT | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) } | ConvertFrom-Json
+    if ($t.PSObject.Properties["budget_seconds"] -and $t.budget_seconds) {
+      $env:POC_VM_DEADLINE_UTC=$guestStartUtc.AddSeconds([int]$t.budget_seconds).ToString("o")
+    }
     az login --identity --output none 2>$null
     if ($LASTEXITCODE -ne 0) { throw "Login" }
     az account set --subscription $t.subscription 2>$null
@@ -180,19 +184,36 @@ echo 'Private VM operation completed; sanitized results are in the control conta
             $failureStage=[string]$result.failure_stage
         }
         if ($Operation -in @('Validate','RecoveryStart','RecoveryComplete','WorkflowAuth','AutoscaleValidation') -and $result.summary_available) {
-            $summaryNames = if ($result.PSObject.Properties['summary_artifacts'] -and $result.summary_artifacts.Count -gt 0) {
-                @($result.summary_artifacts)
-            } elseif ($Operation -eq 'WorkflowAuth') {
+            $allowedSummaryNames = if ($Operation -eq 'WorkflowAuth') {
                 @('summary.json')
             } elseif ($Operation -eq 'AutoscaleValidation') {
                 @('autoscale-result.json','summary.json','summary.txt')
             } else {
                 @('summary.json','summary.txt')
             }
+            $candidates = if ($result.PSObject.Properties['summary_artifacts'] -and $result.summary_artifacts.Count -gt 0) {
+                @($result.summary_artifacts)
+            } else {
+                $allowedSummaryNames
+            }
+            $summaryNames = @()
+            foreach ($candidate in $candidates) {
+                $name = [string]$candidate
+                if ($name -in $allowedSummaryNames -and $name -notmatch '[\\/]' -and [IO.Path]::GetFileName($name) -eq $name) {
+                    if ($name -notin $summaryNames) { $summaryNames += $name }
+                } else {
+                    throw "Private VM returned an untrusted or invalid summary artifact name: $name"
+                }
+            }
             $retrievalErrors = @()
+            $resolvedEvidenceDir = [IO.Path]::GetFullPath($EvidenceDirectory).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
             foreach ($name in $summaryNames) {
+                $targetFile = [IO.Path]::GetFullPath((Join-Path $EvidenceDirectory $name))
+                if (-not $targetFile.StartsWith($resolvedEvidenceDir, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Path traversal rejected for summary artifact: $name"
+                }
                 try {
-                    $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',(Join-Path $EvidenceDirectory $name),'--overwrite','true','--auth-mode','login','--no-progress')
+                    $null=Invoke-AzJson -Sensitive -Arguments @('storage','blob','download','--account-name',$Outputs.storage_account_name,'--container-name',$Outputs.vm_control_container_name,'--name',"operations/$id/$name",'--file',$targetFile,'--overwrite','true','--auth-mode','login','--no-progress')
                 } catch {
                     $retrievalErrors += $name
                 }

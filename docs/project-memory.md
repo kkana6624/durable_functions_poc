@@ -1,5 +1,26 @@
 # プロジェクトメモリ
 
+## 2026-10-19 レビュー指摘2件（P2タイムアウト起算点統一／Pool復元保証・P2証跡回収パストラバーサル防止）の改修完了
+
+レビューで指摘された 2 件の課題（[P2・残存] ゲスト検証タイムアウトの起算点不一致による Pool 復元中断リスクの解消、[P2・新規] ゲスト指定ファイル名による証跡ディレクトリ外上書き／パストラバーサルの防止）を改修し、PowerShell オフライン全テスト（8 スイート）の合格を確認しました。
+
+- **対応内容詳細**:
+  1. **[P2・残存] ゲスト開始時の絶対期限共有（`POC_VM_DEADLINE_UTC`）と Pool 復元時間の完全保証**:
+     - `scripts/Invoke-PrivateVmOperation.ps1`: ホスト側で `budget_seconds`（`AutoscaleValidation` では `$TimeoutSeconds + 1200`、その他は `$TimeoutSeconds`）を算出し、Run Command の `$transport` メタデータへ含めて VM に渡す。
+     - ゲストシェルスクリプト（`run.sh` / `pwsh`）: ゲスト `pwsh` の最先端（初期化直後）で `$guestStartUtc = [DateTime]::UtcNow` を記録し、`$env:POC_VM_DEADLINE_UTC = $guestStartUtc.AddSeconds([int]$t.budget_seconds).ToString("o")` を環境変数としてエクスポート。
+     - 外側の bash `timeout` は `[Math]::Min(5300, $budgetSeconds + 300)` に設定し、Azure Action Run Command 上限（5,400 秒 / 90 分）の範囲内で内部処理全体に対して 300 秒の安全マージンを確保。
+     - `scripts/Invoke-PocAutoscaleValidation.ps1`: `$deadlineUtc` を `$env:POC_VM_DEADLINE_UTC` から取得（ゲスト外フォールバックあり）。バンドルダウンロード再試行（最大 300 秒）や展開に要した時間にかかわらず、準備待機・0台待機・評価待機・ワークフロー検証の各残余制限時間を `($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds` から一元的に算出。
+     - `finally` 内のプール復元（オートスケール無効化、固定スケールリサイズ待機、レディネス検証）に最低 600 秒（`$restorationReserveSeconds`）を確実に残存させ、外側の `timeout` に先行消費されて復元が中断されるリスクを完全に排除。
+  2. **[P2・新規] 証跡回収における固定許可リストとパストラバーサル防止**:
+     - `scripts/Invoke-PrivateVmOperation.ps1`: VM から返却される `$result.summary_artifacts` の各ファイル名に対し、操作別の厳格な固定許可リスト（`WorkflowAuth`: `summary.json`、`AutoscaleValidation`: `autoscale-result.json`, `summary.json`, `summary.txt`、その他: `summary.json`, `summary.txt`）による検証を導入。
+     - パス区切り文字（`\`, `/`）を含むファイル名や `[IO.Path]::GetFileName($name) -ne $name` となる不正な指定を即座に検知し、`throw "Private VM returned an untrusted or invalid summary artifact name: $name"` で拒否。
+     - さらに `[IO.Path]::GetFullPath` による正準化を行い、`$targetFile.StartsWith($resolvedEvidenceDir)` により、万一の未知の文字列表現でも `$EvidenceDirectory` 境界外への書き込みを防御。
+  3. **テスト検証**:
+     - `scripts/tests/PrivateVm.Tests.ps1`:
+       - `..\..\probe.txt` や許可リスト外のファイル名を安全な Fake で注入し、正しく拒否されることを検証するテストケースを追加。
+       - Run Command のシェルコマンドに `POC_VM_DEADLINE_UTC` の初期化コードが含まれること、およびタイムアウト計算（2,400 秒 / 5,100 秒）が正しく反映されることのアサーションを追加。
+     - `scripts/tests/AutoscaleValidation.Tests.ps1` および全 8 スイートの PowerShell テストを実行し、全件 PASS を確認。
+
 ## 2026-10-19 レビュー指摘4件（P2配置ガード置換回避・P2既存Batch権限絞り込み・P2オートスケール復元時間確保・P3証跡回収失敗通知）の改修完了
 
 全体レビューで指摘された 4 件の課題（[P2] `validation_batch` の Reader → Contributor 変更による既存環境デプロイ停止の回避、[P2] `batch_mode=existing` 共有 Batch に対する Reader 維持と過剰権限防止、[P2] オートスケールゲスト検証における全体期限共有と Pool 復元時間の確保、[P3] `Invoke-PrivateVmOperation` での証跡サマリ回収失敗の明示的通知）を改修し、IaC およびオフライン全テストの合格を確認しました。

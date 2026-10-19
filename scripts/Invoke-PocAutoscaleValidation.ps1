@@ -176,17 +176,19 @@ function Invoke-PocAutoscaleValidation {
         restoredPoolReadyVerified=$false
         completedUtc=$null
     }
-    $overallWatch = [Diagnostics.Stopwatch]::StartNew()
     $restorationReserveSeconds = 600
-    # Overall deadline budget includes the verification wait ($TimeoutSeconds), preparation budget, and restoration reserve.
-    $overallBudgetSeconds = $TimeoutSeconds + 600 + $restorationReserveSeconds
+    $deadlineUtc = if (Get-Variable -Name env:POC_VM_DEADLINE_UTC -ValueOnly -ErrorAction SilentlyContinue) {
+        [DateTime]::Parse($env:POC_VM_DEADLINE_UTC, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+    } else {
+        [DateTime]::UtcNow.AddSeconds($TimeoutSeconds + 600 + $restorationReserveSeconds)
+    }
     try {
         $poolMutated=$true
         $summary.stage='PrepareZeroNodes'
         if ($initialPool.enableAutoScale) {
             $null=Invoke-PocBatchPoolRest -Method post -Uri "$endpoint/pools/$poolId/disableautoscale?api-version=2025-06-01"
         }
-        $prepRemaining = $overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds
+        $prepRemaining = ($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds
         if ($prepRemaining -lt 60) { throw 'Insufficient time remaining before pool preparation while reserving restoration time.' }
         $steadyInitial=Wait-PocPoolSteady -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds ([Math]::Min(300, [int]$prepRemaining))
         if ([int]$steadyInitial.targetDedicatedNodes -ne 0 -or [int]$steadyInitial.targetLowPriorityNodes -ne 0 -or [int]$steadyInitial.currentDedicatedNodes -ne 0 -or [int]$steadyInitial.currentLowPriorityNodes -ne 0) {
@@ -197,7 +199,7 @@ function Invoke-PocAutoscaleValidation {
                 nodeDeallocationOption='taskcompletion'
             }
         }
-        $zeroRemaining = $overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds
+        $zeroRemaining = ($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds
         if ($zeroRemaining -lt 60) { throw 'Insufficient time remaining for zero node wait while reserving restoration time.' }
         $null=Wait-PocPoolZeroNodes -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds ([Math]::Min(600, [int]$zeroRemaining))
         $summary.zeroNodeSteadyObservedUtc=[DateTime]::UtcNow.ToString('o')
@@ -208,7 +210,7 @@ function Invoke-PocAutoscaleValidation {
         }
         $zeroAutoscalePool=Wait-PocPoolZeroNodes -Endpoint $endpoint -PoolId $poolId -TimeoutSeconds 180
         $summary.stage='EvaluatePendingTasksAutoscale'
-        $evalRemaining = $overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds
+        $evalRemaining = ($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds
         if ($evalRemaining -lt 60) { throw 'Insufficient time remaining for autoscale idle evaluation while reserving restoration time.' }
         $null=Wait-PocAutoscaleIdleEvaluation -Endpoint $endpoint -PoolId $poolId -Formula $formula -TimeoutSeconds ([Math]::Min(300, [int]$evalRemaining))
         if (-not $zeroAutoscalePool.enableAutoScale -or [int]$zeroAutoscalePool.targetDedicatedNodes -ne 0 -or [int]$zeroAutoscalePool.targetLowPriorityNodes -ne 0) {
@@ -217,7 +219,7 @@ function Invoke-PocAutoscaleValidation {
         $summary.autoscaleEnabledObservedUtc=[DateTime]::UtcNow.ToString('o')
         $summary.zeroNodesVerifiedBeforeSubmission=$true
         $summary.stage='SubmitSingleWorkflowOnZeroNodePool'
-        $remainingForWorkflow = [int]($overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds - $restorationReserveSeconds)
+        $remainingForWorkflow = [int](($deadlineUtc - [DateTime]::UtcNow).TotalSeconds - $restorationReserveSeconds)
         if ($remainingForWorkflow -lt 60) {
             throw "Insufficient time remaining ($remainingForWorkflow s) for workflow validation while reserving $restorationReserveSeconds s for pool restoration."
         }
@@ -263,7 +265,7 @@ function Invoke-PocAutoscaleValidation {
     } finally {
         try {
             if ($poolMutated) {
-                $restoreRemaining = [Math]::Max(60, [int]($overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds))
+                $restoreRemaining = [Math]::Max(60, [int](($deadlineUtc - [DateTime]::UtcNow).TotalSeconds))
                 $steadyTimeout = [Math]::Min(600, [Math]::Max(30, [int]($restoreRemaining / 2)))
                 $currentPool=Invoke-PocBatchPoolRest -Method get -Uri "$endpoint/pools/$poolId`?api-version=2025-06-01"
                 if ($currentPool.enableAutoScale) {
@@ -279,7 +281,7 @@ function Invoke-PocAutoscaleValidation {
                     }
                 }
                 $summary.restoredFixedScaleSucceeded=$true
-                $readinessRemaining = [Math]::Max(60, [int]($overallBudgetSeconds - $overallWatch.Elapsed.TotalSeconds))
+                $readinessRemaining = [Math]::Max(60, [int](($deadlineUtc - [DateTime]::UtcNow).TotalSeconds))
                 $readinessTimeout = [Math]::Min(600, $readinessRemaining)
                 $readiness=Invoke-DeploymentValidation -Outputs $outputs -Phase Pool -TimeoutSeconds $readinessTimeout -PollSeconds 10
                 $summary.restoredPoolReadyVerified=[bool]$readiness.Ready
